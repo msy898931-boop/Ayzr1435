@@ -442,32 +442,73 @@ def card_levels() -> str:
 
 
 def card_scenarios() -> str:
+    """The two conditional trades, priced by the desk's own rules.
+
+    A scenario is a plan with a trigger instead of a market entry, so it is
+    sized by the same _sized() the live plan uses: risk in the owner's $8-10
+    window, target a fixed multiple of it. The trigger is a hair past the level
+    (a break, not a touch), and the level is passed to _sized() so a level close
+    enough to matter can tighten the stop.
+    """
     m = read_market()
     live = m["live"]
-    a = m["atrs"].get("15m") or m["atrs"].get("1h") or 8.0
     res, sup = _levels(live)
     lines = [f"🎬 <b>السيناريوهات</b> — {SYMBOL}",
              f"السعر <b>{num(live)}</b>", ""]
+    if not res and not sup:
+        lines.append("ما قدرت أقرأ المستويات الآن.")
+        return "\n".join(lines)
     if res:
         trig = res[0] + 0.5
-        stop = trig - a * 1.2
-        tgt = res[1] if len(res) > 1 else trig + a * 3
-        rr = abs(tgt - trig) / abs(trig - stop) if trig != stop else 0
+        p = _sized(trig, "long", res[0])
+        nxt = f" · المقاومة التالية {num(res[1])}" if len(res) > 1 else ""
         lines += ["<b>🟢 سيناريو صعود</b>",
-                  f"  المشغّل: اختراق <b>{num(trig)}</b>",
-                  f"  الوقف: {num(stop)} · الهدف: {num(tgt)}",
-                  f"  R:R ≈ {rr:.2f}", ""]
+                  f"  المشغّل: اختراق <b>{num(trig)}</b> "
+                  f"(+{trig - live:.1f} نقطة){nxt}",
+                  f"  الوقف: {num(p['stop'])} · الهدف: {num(p['target'])}",
+                  f"  R:R ≈ {p['rr']:.2f} (مخاطرة ${p['risk_usd']:.0f})", ""]
     if sup:
         trig = sup[0] - 0.5
-        stop = trig + a * 1.2
-        tgt = sup[1] if len(sup) > 1 else trig - a * 3
-        rr = abs(trig - tgt) / abs(stop - trig) if trig != stop else 0
+        p = _sized(trig, "short", sup[0])
+        nxt = f" · الدعم التالي {num(sup[1])}" if len(sup) > 1 else ""
         lines += ["<b>🔴 سيناريو هبوط</b>",
-                  f"  المشغّل: كسر <b>{num(trig)}</b>",
-                  f"  الوقف: {num(stop)} · الهدف: {num(tgt)}",
-                  f"  R:R ≈ {rr:.2f}", ""]
-    lines.append("<i>سيناريوهات مشروطة — ما تنفّذ إلا لما يتحقق المشغّل.</i>")
+                  f"  المشغّل: كسر <b>{num(trig)}</b> "
+                  f"(−{live - trig:.1f} نقطة){nxt}",
+                  f"  الوقف: {num(p['stop'])} · الهدف: {num(p['target'])}",
+                  f"  R:R ≈ {p['rr']:.2f} (مخاطرة ${p['risk_usd']:.0f})", ""]
+    lines.append("<i>سيناريوهات مشروطة — ما تنفّذ إلا لما يتحقق المشغّل. "
+                 f"الوقف والهدف من قواعد المكتب (مخاطرة ${STOP_MIN_USD:.0f}-"
+                 f"${STOP_MAX_USD:.0f}، R:R {TARGET_RR}).</i>")
     return "\n".join(lines)
+
+
+def _sized(entry: float, direction: str, stop_level: float | None) -> dict:
+    """Size one trade from `entry`, the desk's single set of rules.
+
+    Risk sits inside the owner's $8-10 window and is tightened by `stop_level`
+    when that level is close enough to matter. The target is a RISK MULTIPLE,
+    never the next level: the old scenario card aimed at the next level, which
+    can sit a point away and quote a trade at R:R 0.16 -- a trade this desk's
+    own floor would refuse. Here the R:R is the target multiple by construction
+    and can never fall under MIN_RR. plan() and the scenario card both call
+    this, so no surface can quote a trade the desk would reject.
+    """
+    d = 1 if direction == "long" else -1
+    pts = STOP_PICK_USD / POINT_VALUE
+    if stop_level is not None:
+        room = (entry - stop_level) * d / POINT_VALUE
+        if room > 0:
+            pts = min(room + 1.0, STOP_MAX_USD / POINT_VALUE)
+    pts = max(STOP_MIN_USD / POINT_VALUE,
+              min(pts, STOP_MAX_USD / POINT_VALUE))
+    stop = entry - d * pts * POINT_VALUE
+    rr = max(TARGET_RR, MIN_RR)
+    tgt = entry + d * pts * POINT_VALUE * rr
+    risk_usd = abs(entry - stop) * POINT_VALUE
+    gain_usd = abs(tgt - entry) * POINT_VALUE
+    return {"direction": direction, "entry": entry, "stop": stop,
+            "target": tgt, "rr": rr, "risk_usd": risk_usd,
+            "risk_pts": risk_usd / POINT_VALUE, "gain_usd": gain_usd}
 
 
 def plan(m: dict | None = None) -> dict | None:
@@ -490,32 +531,15 @@ def plan(m: dict | None = None) -> dict | None:
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
     res, sup = _levels(live)
 
-    def sized(direction: str) -> dict | None:
-        d = 1 if direction == "long" else -1
+    def sized(direction: str) -> dict:
         # A long's stop belongs just BELOW the nearest support; a short's just
-        # ABOVE the nearest resistance. Aim mid-window, then let that level
-        # tighten it -- but never past the window's edge.
+        # ABOVE the nearest resistance.
         level = (max(sup) if sup else None) if direction == "long" \
             else (min(res) if res else None)
-        pts = STOP_PICK_USD / POINT_VALUE
-        if level is not None:
-            room = (live - level) * d / POINT_VALUE
-            if room > 0:
-                pts = min(room + 1.0, STOP_MAX_USD / POINT_VALUE)
-        pts = max(STOP_MIN_USD / POINT_VALUE,
-                  min(pts, STOP_MAX_USD / POINT_VALUE))
-        stop = live - d * pts * POINT_VALUE
-        tgt = live + d * pts * POINT_VALUE * TARGET_RR
-        risk_usd = abs(live - stop) * POINT_VALUE
-        gain_usd = abs(tgt - live) * POINT_VALUE
-        rr = gain_usd / risk_usd if risk_usd else 0.0
-        if rr < MIN_RR:
-            return None
-        return {"direction": direction, "entry": live, "stop": stop,
-                "target": tgt, "rr": rr, "risk_usd": risk_usd,
-                "risk_pts": risk_usd / POINT_VALUE, "gain_usd": gain_usd,
-                "up": up, "dn": dn,
-                "strong": (up if direction == "long" else dn) >= STRONG_FRAMES}
+        p = _sized(live, direction, level)
+        p["up"], p["dn"] = up, dn
+        p["strong"] = (up if direction == "long" else dn) >= STRONG_FRAMES
+        return p
     if up >= CONFIRM_FRAMES:
         return sized("long")
     if dn >= CONFIRM_FRAMES:
