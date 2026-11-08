@@ -975,9 +975,19 @@ def poll_forever(tg: Telegram, stop: threading.Event | None = None) -> None:
     allow = load_allow()
     off = load_offset()
     while not (stop and stop.is_set()):
-        ups = tg.updates(off, timeout=30)
+        try:
+            ups = tg.updates(off, timeout=30)
+        except Exception:  # noqa: BLE001 - a network hiccup must not end the loop
+            time.sleep(2)
+            continue
         for u in ups:
-            handle(tg, u, allow)
+            # One malformed update must never take the whole poller down: that
+            # is the difference between a bot that misses one tap and a bot
+            # that is silent until the next deploy.
+            try:
+                handle(tg, u, allow)
+            except Exception as exc:  # noqa: BLE001
+                print("handle failed:", exc, flush=True)
             off = max(off or 0, int(u["update_id"]) + 1)
         if ups:
             save_offset(off)
