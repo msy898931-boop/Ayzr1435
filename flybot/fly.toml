@@ -1,0 +1,24 @@
+# MarketDesk bot on Fly.io — a single always-on machine that long-polls
+# Telegram. No HTTP service: the process is the app, and Fly keeps it running
+# as long as it stays up.
+app = "xauusd14355"
+primary_region = "ams"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DESK_SYMBOL = "XAUUSD"
+
+# The journal (data/journal.db), the allow-list and the update offset must
+# outlive a redeploy, so they live on a volume, not in the image.
+[mounts]
+  source = "marketdesk_data"
+  destination = "/app/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[deploy]
+  strategy = "immediate"

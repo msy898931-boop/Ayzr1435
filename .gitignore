@@ -1,0 +1,8 @@
+.tg_token
+token.txt
+*.log
+__pycache__/
+*.pyc
+data/
+flybot/data/
+render-backup.json
