@@ -1,0 +1,42 @@
+# MarketDesk on Render -- ONE free web service, nothing else.
+#
+# The 750 free instance-hours are per *workspace*, not per service: every free
+# service that is up eats from the same pot, and when the pot is empty Render
+# suspends them ALL. That is what happened to the previous workspace (11
+# suspended services, "Monthly Quota Exceeded"). So this blueprint declares
+# exactly one service. Do not add a second free service to "back it up".
+#
+# A free web service spins down after 15 minutes with no inbound traffic, so
+# /health exists to be pinged from outside (see keepalive.py and README).
+services:
+  - type: web
+    name: marketdesk
+    runtime: python
+    plan: free
+    region: oregon
+    branch: main
+    autoDeploy: true
+    buildCommand: python3 -m compileall -q bot.py app.py keepalive.py
+    startCommand: python3 app.py
+    healthCheckPath: /health
+    envVars:
+      # Set the real token in the Render dashboard (Environment -> TG_TOKEN).
+      # Never commit it. `sync: false` asks Render for the value at deploy time.
+      - key: TG_TOKEN
+        sync: false
+      - key: DESK_SYMBOL
+        value: XAUUSD
+
+# Keep-alive as a Render Cron Job would also work, but a cron job is a PAID
+# service type and a second service of any kind is a second way to trip the
+# quota. Prefer the free external pinger (GitHub Actions or an uptime monitor);
+# see README-render.md. Uncomment only if you accept the charge.
+#
+#   - type: cron
+#     name: marketdesk-keepalive
+#     runtime: python
+#     plan: starter
+#     region: oregon
+#     schedule: "*/5 * * * *"
+#     buildCommand: echo no build
+#     startCommand: python3 keepalive.py https://marketdesk.onrender.com
