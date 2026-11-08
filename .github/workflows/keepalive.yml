@@ -26,7 +26,9 @@ jobs:
     steps:
       - name: ping /health
         run: |
-          url="${SERVICE_URL:-https://marketdesk.onrender.com}/health"
+          # Default is the real service URL, so this works with no setup.
+          # Set the RENDER_SERVICE_URL repository variable to override it.
+          url="${SERVICE_URL:-https://marketdesk-1o4g.onrender.com}/health"
           echo "pinging $url"
           curl -fsS --max-time 60 "$url"
         env:
