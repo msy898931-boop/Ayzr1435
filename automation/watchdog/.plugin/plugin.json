@@ -1,0 +1,28 @@
+{
+  "name": "marketdesk-watchdog",
+  "version": "0.1.0",
+  "description": "Watch the MarketDesk Render bot from outside and alert on a state change",
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "command": "python3 scripts/main.py"
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "health_url": {
+          "type": "string",
+          "default": "https://marketdesk-1o4g.onrender.com/health",
+          "description": "The /health URL of the Render service to watch"
+        }
+      }
+    },
+    "suggested_trigger": {
+      "type": "cron",
+      "schedule": "*/5 * * * *",
+      "timezone": "UTC"
+    }
+  }
+}
