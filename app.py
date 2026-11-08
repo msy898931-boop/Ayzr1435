@@ -34,8 +34,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bot as desk  # noqa: E402
 
 STARTED = time.time()
-SELF_PING_S = 600   # 10 minutes, inside the 15-minute idle window
-FIRST_PING_S = 60   # ping soon after boot, then settle into the 10-minute beat
+SELF_PING_S = 480   # 8 minutes: two beats fit inside Render's 15-minute idle window
+FIRST_PING_S = 60   # ping soon after boot, then settle into the 8-minute beat
+PING_RETRY_S = 45   # a failed beat is retried quickly, not after a full interval
+PING_TRIES = 3
 RESTORE_WAIT_S = 60  # never let a slow Telegram delay the bot for longer than this
 
 
@@ -73,11 +75,15 @@ def self_ping_loop(stop: threading.Event) -> None:
 
     Render spins a free web service down after 15 minutes with no *inbound*
     traffic. An outbound request to the service's own public URL is inbound by
-    the time it arrives, so pinging ourselves every 10 minutes keeps it awake --
-    with no second host, no GitHub cron, and no uptime-monitor account.
+    the time it arrives, so pinging ourselves keeps it awake -- with no second
+    host, no GitHub cron, and no uptime-monitor account.
 
     It cannot report an outage (a dead service cannot ping itself); it exists
     only so the bot is always there to answer a tap.
+
+    A missed beat is the one thing that can let the service sleep, so a failed
+    ping is retried at once rather than after a whole interval: one lost beat
+    must not open a gap wider than Render's idle window.
     """
     url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
     while not url and not stop.is_set():
@@ -92,12 +98,16 @@ def self_ping_loop(stop: threading.Event) -> None:
         # Render's own health check already covers the first minutes.
         if stop.wait(delay):
             break
+        for attempt in range(PING_TRIES):
+            try:
+                with urllib.request.urlopen(target, timeout=30) as r:
+                    r.read()
+                break
+            except Exception as exc:  # noqa: BLE001 - a failed ping must not stop the loop
+                print(f"self-ping failed ({attempt + 1}/{PING_TRIES}): {exc}", flush=True)
+                if attempt + 1 < PING_TRIES and stop.wait(PING_RETRY_S):
+                    return
         delay = SELF_PING_S
-        try:
-            with urllib.request.urlopen(target, timeout=30) as r:
-                r.read()
-        except Exception as exc:  # noqa: BLE001 - a failed ping must not stop the loop
-            print("self-ping failed:", exc, flush=True)
 
 
 def _restore(tg) -> None:
