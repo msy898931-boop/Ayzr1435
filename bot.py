@@ -320,6 +320,10 @@ def frame_trend(b: list[dict]) -> int:
 
 
 FRAMES = ("1d", "4h", "1h", "30m", "15m", "5m")
+# The reading may lean on the big frames; a TRADE still needs CONFIRM_FRAMES of
+# all six. Big frames weigh more because a daily/4h tilt outlives a 5m wiggle.
+BIG_FRAMES = ("1d", "4h", "1h")
+SMALL_FRAMES = ("30m", "15m", "5m")
 
 
 def read_market() -> dict:
@@ -345,6 +349,38 @@ def market_open(q: dict) -> bool:
 # ========================================================================
 # the reading cards
 # ========================================================================
+def _bias(trends: dict) -> tuple[str, str]:
+    """The reading's lean when no trade is confirmed.
+
+    A trade still needs CONFIRM_FRAMES of all six frames -- that bar does not
+    move. But "the desk has no opinion" is unhelpful when the tape is merely
+    mixed, so the reading states a lean, and it takes that lean from the BIG
+    frames: a daily/4h/1h tilt outlives a 5m wiggle. Two of the three big
+    frames agreeing is a lean; all three is a direction. Only when the big
+    frames are split do the small ones get a vote, and a split with no small
+    agreement is simply range.
+
+    This is a reading, not an order -- it never invents a plan.
+    """
+    big_up = sum(1 for tf in BIG_FRAMES if trends.get(tf) == 1)
+    big_dn = sum(1 for tf in BIG_FRAMES if trends.get(tf) == -1)
+    if big_up == len(BIG_FRAMES):
+        return "صاعد", "🟢"
+    if big_dn == len(BIG_FRAMES):
+        return "هابط", "🔴"
+    if big_up == 2:
+        return "مائل للصعود", "🟡"
+    if big_dn == 2:
+        return "مائل للهبوط", "🟡"
+    small_up = sum(1 for tf in SMALL_FRAMES if trends.get(tf) == 1)
+    small_dn = sum(1 for tf in SMALL_FRAMES if trends.get(tf) == -1)
+    if small_up >= 2 and small_up > small_dn:
+        return "مائل للصعود", "🟡"
+    if small_dn >= 2 and small_dn > small_up:
+        return "مائل للهبوط", "🟡"
+    return "عرضي", "⚪"
+
+
 def card_analysis() -> str:
     m = read_market()
     q, live, trends = m["q"], m["live"], m["trends"]
@@ -364,12 +400,16 @@ def card_analysis() -> str:
     lines.append(row)
     up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
-    if up >= 4:
+    lean, mark = _bias(trends)
+    if up >= CONFIRM_FRAMES:
         lines.append(f"\nالميل العام: <b>صاعد</b> ({up}/6 فريمات)")
-    elif dn >= 4:
+    elif dn >= CONFIRM_FRAMES:
         lines.append(f"\nالميل العام: <b>هابط</b> ({dn}/6 فريمات)")
     else:
-        lines.append(f"\nالميل العام: <b>عرضي</b> (صاعد {up} · هابط {dn})")
+        lines.append(f"\nالميل العام: {mark} <b>{lean}</b> "
+                     f"(صاعد {up} · هابط {dn})")
+        lines.append("<i>ميل بالقراءة — مو صفقة. الصفقة بتحتاج "
+                     f"{CONFIRM_FRAMES}/6 فريمات متوافقة.</i>")
     lines.append("\n<i>قراءة تحليلية، مو وعد ربح.</i>")
     return "\n".join(lines)
 
@@ -500,8 +540,11 @@ def card_recommend() -> str:
         if not market_open(m["q"]):
             return ("🎯 <b>التوصية</b> — XAUUSD\n<b>لا صفقة</b> — السوق مسكّر.\n\n"
                     "<i>المكتب ما يعطي إشارة على سعر ميت.</i>")
+        lean, mark = _bias(m["trends"])
         return ("🎯 <b>التوصية</b> — XAUUSD\n"
-                "<b>لا صفقة</b> — الفريمات متضاربة (عرضي).\n\n"
+                f"<b>لا صفقة</b> — الفريمات ما اتفقت "
+                f"({CONFIRM_FRAMES}/6 مطلوبة).\n"
+                f"ميل القراءة: {mark} <b>{lean}</b>\n\n"
                 "<i>المكتب ما يعطي إشارة لما السوق محتار.</i>")
     return ("🎯 <b>التوصية</b> — " + SYMBOL + "\n" +
             "\n".join(_plan_lines(p)) + "\n\n"
