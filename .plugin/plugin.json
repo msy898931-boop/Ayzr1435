@@ -6,7 +6,7 @@
     "schema_version": "openhands.automation.plugin.v1",
     "entrypoint": {
       "runner": "script",
-      "command": "python3 scripts/main.py"
+      "command": "python3 automation/watchdog/scripts/main.py"
     },
     "config_schema": {
       "type": "object",
