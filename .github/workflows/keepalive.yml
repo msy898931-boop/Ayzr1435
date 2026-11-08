@@ -1,0 +1,33 @@
+name: keep-alive
+
+# Keeps the Render free web service from spinning down on idle.
+#
+# Render spins a free web service down after 15 minutes with no inbound
+# traffic, and a spun-down bot answers nothing. This workflow pings /health
+# every 5 minutes, which is inside that window.
+#
+# Why here and not a Render Cron Job: a Render cron job is a PAID service type,
+# and every extra service is another way to hit the 750-hour cap. GitHub Actions
+# is free for public repositories and needs no extra host.
+#
+# Note: GitHub disables scheduled workflows after 60 days of repository
+# inactivity, and a scheduled run can be delayed a few minutes under load. If
+# the bot must never miss a tap, use an uptime monitor instead (UptimeRobot,
+# cron-job.org) -- it also tells you when the service is down, which a ping
+# from inside can never do.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ping /health
+        run: |
+          url="${SERVICE_URL:-https://marketdesk.onrender.com}/health"
+          echo "pinging $url"
+          curl -fsS --max-time 60 "$url"
+        env:
+          SERVICE_URL: ${{ vars.RENDER_SERVICE_URL }}
