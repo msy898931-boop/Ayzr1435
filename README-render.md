@@ -23,45 +23,63 @@ Budget: one always-on service ≈ 720 h/month, under the 750 h cap.
 
 | File | Role |
 |---|---|
-| `app.py` | The Render web service: serves `/health` on `$PORT`, runs `bot.py`'s poller and monitor in threads |
-| `bot.py` | The bot itself (unchanged) |
+| `app.py` | The Render web service: serves `/health` on `$PORT`, runs the bot's poller, monitor, backup and self-ping in threads |
+| `bot.py` | The bot itself, plus the pinned-Telegram journal backup |
 | `render.yaml` | Blueprint: one free web service, `healthCheckPath: /health`, `TG_TOKEN` from the dashboard |
-| `keepalive.py` | Pings `/health` every 14 min (for a VPS or a cron host) |
+| `keepalive.py` | Standalone pinger every 14 min (for a VPS or a cron host) |
 | `.github/workflows/keepalive.yml` | Free keep-alive: pings `/health` every 5 min |
 
 ## Deploy
 
-1. Push this repository to GitHub (`main`).
-2. Render Dashboard → **New → Blueprint** → pick the repo. Render reads
-   `render.yaml` and creates one free web service.
-3. When asked for `TG_TOKEN`, paste the bot token. It is stored as a secret and
-   never enters git.
-4. Wait for the first deploy, then open `https://<service>.onrender.com/health`.
-   It must answer `{"status":"ok", ...}`.
-5. Set the keep-alive target: repository **Settings → Variables → Actions** →
-   `RENDER_SERVICE_URL = https://<service>.onrender.com`.
+The service is already created on the account (`marketdesk`,
+`https://marketdesk-1o4g.onrender.com`), so this is the repeatable path:
 
-## Keep-alive: GitHub Actions or an uptime monitor
+1. Push to `main`; auto-deploy rebuilds the service.
+2. Set the token once: Render Dashboard → the service → **Environment** →
+   `TG_TOKEN`. It is a secret and never enters git.
+3. Open `https://<service>.onrender.com/health`; it must answer
+   `{"status":"ok", ...}`.
+4. If the URL ever changes, set the repository variable
+   `RENDER_SERVICE_URL` (Settings → Variables → Actions) — the workflow falls
+   back to the known URL otherwise.
 
-The workflow pings every 5 minutes, inside the 15-minute window. Two caveats:
-
-- GitHub disables scheduled workflows after 60 days of repository inactivity,
-  and a scheduled run can be delayed a few minutes under load.
-- If the bot must never miss a tap, use an uptime monitor (UptimeRobot,
-  cron-job.org) instead. It also alerts you when the service is down, which a
-  ping from inside can never do.
+Do **not** create a second service from `render.yaml` to "back it up": the
+blueprint is kept as documentation, and a second free service is exactly what
+trips the quota.
 
 ## What is not durable
 
-The free plan has **no persistent disk**, so `data/journal.db`, `data/allow.json`
-and `data/offset.json` live on an ephemeral filesystem: a redeploy or a spin-down
-resets them. The bot survives a restart (the offset is re-fetched from Telegram),
-but the trade journal does not.
+The free plan has **no persistent disk** (a disk requires a paid instance), so
+`data/journal.db` is ephemeral: a redeploy or a spin-down resets it.
 
-Two ways to fix it, in order of preference:
+That is fixed without paying, by using Telegram as the store:
 
-1. **A paid instance with a persistent disk** mounted at `/app/data` — one
-   line in `render.yaml`, and the journal is truly durable.
-2. **Back the journal up to Telegram** — the bot already talks to Telegram and
-   a pinned message is free and permanent. Not implemented here; it is the
-   next step if the journal must outlive a redeploy on the free plan.
+- `bot.py` uploads the journal as `marketdesk-backup.json` and **pins** it, every
+  time the journal file changes (checked once a minute).
+- At startup it **restores** from that pin, and only into an empty journal, so a
+  restart can never double-count a trade.
+- `data/allow.json` is carried in the same file, so the people the bot serves
+  survive a restart too.
+- `python3 bot.py --backup` does one restore + backup by hand.
+
+The backup chat is the first allowed chat. Override it with `DESK_BACKUP_CHAT`.
+
+A paid instance with a disk mounted at `/app/data` remains the cleaner option if
+the journal ever outgrows a Telegram document.
+
+## Keep-alive
+
+Two layers, both free:
+
+1. **`app.py` pings itself** every 10 minutes (`RENDER_EXTERNAL_URL`, which
+   Render sets automatically). An outbound request to its own public URL is
+   inbound when it arrives, so the service stays awake with no second host.
+2. **`.github/workflows/keepalive.yml`** pings `/health` every 5 minutes. It
+   survives a change that breaks the self-ping, and a failure shows as a red run
+   in the repository.
+
+Neither can tell you the service is down — a dead service cannot ping itself,
+and GitHub will not email you about a red scheduled run by default. For that,
+point an uptime monitor (UptimeRobot, cron-job.org) at `/health`; it alerts you
+and doubles as a third keep-alive. Note GitHub disables scheduled workflows after
+60 days of repository inactivity.

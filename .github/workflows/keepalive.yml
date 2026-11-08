@@ -3,8 +3,10 @@ name: keep-alive
 # Keeps the Render free web service from spinning down on idle.
 #
 # Render spins a free web service down after 15 minutes with no inbound
-# traffic, and a spun-down bot answers nothing. This workflow pings /health
-# every 5 minutes, which is inside that window.
+# traffic, and a spun-down bot answers nothing. app.py already pings itself
+# every 10 minutes, so this workflow is a second layer: it survives a change to
+# app.py that breaks the self-ping, and its failures show up as a red run in
+# this repository.
 #
 # Why here and not a Render Cron Job: a Render cron job is a PAID service type,
 # and every extra service is another way to hit the 750-hour cap. GitHub Actions
@@ -13,7 +15,7 @@ name: keep-alive
 # Note: GitHub disables scheduled workflows after 60 days of repository
 # inactivity, and a scheduled run can be delayed a few minutes under load. If
 # the bot must never miss a tap, use an uptime monitor instead (UptimeRobot,
-# cron-job.org) -- it also tells you when the service is down, which a ping
+# cron-job.org) -- it also alerts you when the service is down, which a ping
 # from inside can never do.
 on:
   schedule:

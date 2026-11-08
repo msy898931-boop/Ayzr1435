@@ -24,6 +24,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -40,6 +41,13 @@ API = "https://api.telegram.org"
 BIQUOTE = "https://biquote.io"
 UA = "Mozilla/5.0 (compatible; MarketDeskBot/1.0)"
 SYMBOL = os.environ.get("DESK_SYMBOL", "XAUUSD")
+
+# On a free host the filesystem is ephemeral, so the journal would die with the
+# container. Telegram is the free, permanent store already in reach: the journal
+# is uploaded as a document and pinned, and restored from that pin at startup.
+# DESK_BACKUP_CHAT overrides the chat; by default it is the first allowed chat.
+BACKUP_FILE = "marketdesk-backup.json"
+BACKUP_CHAT = os.environ.get("DESK_BACKUP_CHAT", "")
 
 # The two people the bot serves from the start. Anyone else who sends /start is
 # added to allow.json -- the bot is private, but adding a friend must not need a
@@ -154,6 +162,56 @@ class Telegram:
                 TimeoutError):
             return []
         return body.get("result") or []
+
+    def send_document(self, chat, name: str, data: bytes, caption: str = "") -> dict | None:
+        """Upload a document. multipart/form-data by hand -- pure stdlib."""
+        boundary = "----desk" + uuid.uuid4().hex
+        parts: list[bytes] = []
+
+        def field(k: str, v: str) -> None:
+            parts.append(f"--{boundary}\r\nContent-Disposition: form-data; "
+                         f'name="{k}"\r\n\r\n{v}\r\n'.encode())
+
+        field("chat_id", str(chat))
+        if caption:
+            field("caption", caption)
+        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; "
+                     f'name="document"; filename="{name}"\r\n'
+                     "Content-Type: application/octet-stream\r\n\r\n".encode())
+        parts.append(data)
+        parts.append(f"\r\n--{boundary}--\r\n".encode())
+        body = b"".join(parts)
+        req = urllib.request.Request(
+            f"{API}/bot{self.tok}/sendDocument", data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.loads(r.read().decode()).get("result")
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError,
+                TimeoutError):
+            return None
+
+    def file_bytes(self, file_id: str) -> bytes | None:
+        try:
+            info = self.call("getFile", {"file_id": file_id}, timeout=30).get("result") or {}
+            path = info.get("file_path")
+            if not path:
+                return None
+            url = f"{API}/file/bot{self.tok}/{path}"
+            with urllib.request.urlopen(url, timeout=60) as r:
+                return r.read()
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError,
+                TimeoutError):
+            return None
+
+    def pin(self, chat, message_id: int) -> None:
+        try:
+            self.call("pinChatMessage",
+                      {"chat_id": str(chat), "message_id": message_id,
+                       "disable_notification": True})
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError,
+                TimeoutError):
+            pass
 
 
 def kb(rows) -> dict:
@@ -793,6 +851,86 @@ def save_offset(off: int) -> None:
     OFFSET_PATH.write_text(json.dumps({"offset": off}))
 
 
+# ========================================================================
+# journal backup -- Telegram is the durable store on an ephemeral host
+# ========================================================================
+def _backup_chat() -> str:
+    return BACKUP_CHAT or (sorted(load_allow()) or SEED_CHATS)[0]
+
+
+def _dump_journal() -> dict:
+    return {"version": 1, "symbol": SYMBOL, "saved_at": _utcnow(),
+            "trades": [dict(t) for t in all_trades()],
+            "allow": sorted(load_allow())}
+
+
+def backup_journal(tg: Telegram) -> bool:
+    """Upload the journal as a document and pin it. The pin is the pointer a
+    fresh container reads at startup, so the journal outlives the filesystem."""
+    chat = _backup_chat()
+    data = json.dumps(_dump_journal(), ensure_ascii=False, indent=1).encode()
+    res = tg.send_document(chat, BACKUP_FILE, data,
+                           caption=f"📒 نسخة السجل — {len(all_trades())} صفقة")
+    if not res:
+        return False
+    tg.pin(chat, int(res["message_id"]))
+    return True
+
+
+def restore_journal(tg: Telegram) -> int:
+    """Restore from the pinned backup. Never touches a non-empty journal."""
+    if all_trades():
+        return 0
+    try:
+        res = tg.call("getChat", {"chat_id": str(_backup_chat())}).get("result") or {}
+    except Exception:  # noqa: BLE001
+        return 0
+    doc = ((res.get("pinned_message") or {}).get("document")) or {}
+    if doc.get("file_name") != BACKUP_FILE:
+        return 0
+    raw = tg.file_bytes(doc.get("file_id") or "")
+    if not raw:
+        return 0
+    try:
+        blob = json.loads(raw.decode())
+    except ValueError:
+        return 0
+    n = 0
+    with closing(_conn()) as c:
+        for t in blob.get("trades") or []:
+            c.execute(
+                "INSERT INTO trades (symbol,direction,entry,stop,target,size,"
+                "opened_at,note,status,result,exit_price,r_multiple,closed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (t.get("symbol") or SYMBOL, t.get("direction"), t.get("entry"),
+                 t.get("stop"), t.get("target"), t.get("size"),
+                 t.get("opened_at") or _utcnow(), t.get("note"),
+                 t.get("status") or "open", t.get("result"),
+                 t.get("exit_price"), t.get("r_multiple"), t.get("closed_at")))
+            n += 1
+        c.commit()
+    allow = blob.get("allow") or []
+    if allow and not ALLOW_PATH.exists():
+        save_allow(set(allow) | set(SEED_CHATS))
+    return n
+
+
+def backup_loop(tg: Telegram, poll_s: int = 60,
+                stop: threading.Event | None = None) -> None:
+    """Upload only when the journal file changed: a stat every minute is cheap,
+    and an idle bot never re-uploads, so the chat stays quiet."""
+    last = -1.0
+    while not (stop and stop.is_set()):
+        try:
+            stamp = DB_PATH.stat().st_mtime if DB_PATH.exists() else 0.0
+            if stamp != last:
+                if backup_journal(tg):
+                    last = stamp
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(max(30, poll_s))
+
+
 def action_for(text: str | None) -> str:
     first = (text or "").strip().split()[0] if (text or "").strip() else ""
     if first in TRADE_VERBS:
@@ -899,6 +1037,11 @@ def main() -> int:
         print("لا يوجد توكن — ضع التوكن في .tg_token", file=sys.stderr)
         return 2
     tg = Telegram(tok)
+    if "--backup" in args:
+        n = restore_journal(tg)
+        ok = backup_journal(tg)
+        print(f"restored {n}, backed up: {ok}, trades: {len(all_trades())}")
+        return 0 if ok else 1
     if "--menu" in args:
         ok = tg.send(SEED_CHATS[0], dispatch("menu"), kb(MENU))
         print("menu published:", ok)
@@ -909,8 +1052,12 @@ def main() -> int:
             print(c, tg.send(c, dispatch("menu"), kb(MENU)))
         return 0
     print("polling @Ayzr1324_bot …")
+    restored = restore_journal(tg)
+    if restored:
+        print(f"restored {restored} trades from the Telegram backup")
     stop = threading.Event()
-    threading.Thread(target=monitor_loop, args=(tg, load_allow()), daemon=True).start()
+    threading.Thread(target=monitor_loop, args=(tg, load_allow(), 2, stop), daemon=True).start()
+    threading.Thread(target=backup_loop, args=(tg, 60, stop), daemon=True).start()
     try:
         poll_forever(tg, stop)
     except KeyboardInterrupt:

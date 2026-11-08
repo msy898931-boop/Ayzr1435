@@ -26,6 +26,10 @@ services:
         sync: false
       - key: DESK_SYMBOL
         value: XAUUSD
+      # Optional: the chat that holds the pinned journal backup. Defaults to the
+      # first allowed chat, so it normally needs no value.
+      # - key: DESK_BACKUP_CHAT
+      #   value: "123456789"
 
 # Keep-alive as a Render Cron Job would also work, but a cron job is a PAID
 # service type and a second service of any kind is a second way to trip the
