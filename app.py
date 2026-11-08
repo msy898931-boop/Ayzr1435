@@ -80,9 +80,10 @@ def self_ping_loop(stop: threading.Event) -> None:
     only so the bot is always there to answer a tap.
     """
     url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-    if not url:
+    while not url and not stop.is_set():
         print("self-ping off: RENDER_EXTERNAL_URL is not set", flush=True)
-        return
+        if stop.wait(3600):
+            return
     target = url + "/health"
     print(f"self-ping on: {target} every {SELF_PING_S}s", flush=True)
     delay = FIRST_PING_S
@@ -148,14 +149,15 @@ def main() -> int:
         print("restore is slow; starting the bot anyway", flush=True)
 
     allow = desk.load_allow()
+    auto = "off" if desk.desk_is_silenced() else "on"
     for name, fn, args in (
             ("poller", desk.poll_forever, (tg, stop)),
-            ("monitor", desk.monitor_loop, (tg, allow, 2, stop)),
+            ("desk", desk.desk_loop, (tg, allow, 2, stop)),
             ("backup", desk.backup_loop, (tg, 60, stop)),
             ("self-ping", self_ping_loop, (stop,))):
         threading.Thread(target=_supervise, args=(name, fn, args, stop),
                          daemon=True).start()
-    print("marketdesk: polling @Ayzr1324_bot", flush=True)
+    print(f"marketdesk: polling @Ayzr1324_bot (auto-trade {auto})", flush=True)
     try:
         stop.wait()
     except KeyboardInterrupt:

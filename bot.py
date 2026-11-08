@@ -55,9 +55,24 @@ PIN_PATH = DATA / "pin.json"
 # redeploy.
 SEED_CHATS = ["933571066", "8545528489"]
 
-# The smallest reward-to-risk a stated plan may carry. Below this the plan is a
-# losing proposition even when the direction is right, so it is not stated.
-MIN_RR = 1.5
+# ---- the desk's plan, sized to the owner's account ----------------------
+# The owner trades gold with $200 and 0.01 lots. On XAUUSD 1 lot is 100 oz, so
+# 0.01 lot moves $1 per $1 of gold -- a stop of 9 points is $9 of risk. Every
+# number below is in DOLLARS, which is what the account actually feels; the
+# point form (points = dollars / POINT_VALUE) is only for the stop line.
+ACCOUNT_USD = 200.0
+LOT = 0.01
+POINT_VALUE = LOT * 100.0        # $ per point at this lot
+STOP_MIN_USD = 8.0               # the owner's window: lose $8-10 at worst
+STOP_MAX_USD = 10.0
+TARGET_MIN_USD = 15.0            # ...and take $15-20
+TARGET_MAX_USD = 20.0
+STOP_PICK_USD = 9.0              # aim mid-window; the nearest level may move it
+TARGET_RR = 2.0                  # 9 * 2 = $18, inside the window
+MIN_RR = 1.5                     # below this a plan is not worth stating
+CONFIRM_FRAMES = 4               # a direction needs this many of 6 frames
+STRONG_FRAMES = 5                # ...and this many to add a SECOND trade
+MAX_OPEN = 2                     # never carry more than two at once
 
 # ---- menus --------------------------------------------------------------
 MENU = [
@@ -415,43 +430,82 @@ def card_scenarios() -> str:
     return "\n".join(lines)
 
 
-def card_recommend() -> str:
-    m = read_market()
+def plan(m: dict | None = None) -> dict | None:
+    """The desk's one decision engine: a sized, valid plan or None.
+
+    One source for both the button and the auto-desk -- two copies of this logic
+    would drift, and a card that disagreed with the trade it opened would be the
+    worst kind of bug.
+
+    Returns a dict with direction, entry, stop, target, rr, risk_usd, risk_pts,
+    gain_usd, up/dn frame counts, and whether the direction is merely confirmed
+    (CONFIRM_FRAMES) or strong (STRONG_FRAMES) -- the auto-desk needs that last
+    bit to decide whether a second trade is allowed.
+    """
+    m = m or read_market()
     q, live, trends = m["q"], m["live"], m["trends"]
-    if not market_open(q):
-        reason = "السوق مسكّر" if str(q.get("marketState")) != "open" else "التسعيرة قديمة"
-        return ("🎯 <b>التوصية</b> — XAUUSD\n"
-                f"<b>لا صفقة</b> — {reason}.\n\n"
-                "<i>المكتب ما يعطي إشارة على سعر ميت.</i>")
+    if not market_open(q) or live <= 0:
+        return None
     up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
-    a = m["atrs"].get("15m") or 8.0
     res, sup = _levels(live)
-    if up >= 4 and res:
-        d = "long"
-        stop = live - a * 1.5
-        tgt = res[0] if res and res[0] > live else live + a * 3
-    elif dn >= 4 and sup:
-        d = "short"
-        stop = live + a * 1.5
-        tgt = sup[0] if sup and sup[0] < live else live - a * 3
-    else:
+
+    def sized(direction: str) -> dict | None:
+        d = 1 if direction == "long" else -1
+        # A long's stop belongs just BELOW the nearest support; a short's just
+        # ABOVE the nearest resistance. Aim mid-window, then let that level
+        # tighten it -- but never past the window's edge.
+        level = (max(sup) if sup else None) if direction == "long" \
+            else (min(res) if res else None)
+        pts = STOP_PICK_USD / POINT_VALUE
+        if level is not None:
+            room = (live - level) * d / POINT_VALUE
+            if room > 0:
+                pts = min(room + 1.0, STOP_MAX_USD / POINT_VALUE)
+        pts = max(STOP_MIN_USD / POINT_VALUE,
+                  min(pts, STOP_MAX_USD / POINT_VALUE))
+        stop = live - d * pts * POINT_VALUE
+        tgt = live + d * pts * POINT_VALUE * TARGET_RR
+        risk_usd = abs(live - stop) * POINT_VALUE
+        gain_usd = abs(tgt - live) * POINT_VALUE
+        rr = gain_usd / risk_usd if risk_usd else 0.0
+        if rr < MIN_RR:
+            return None
+        return {"direction": direction, "entry": live, "stop": stop,
+                "target": tgt, "rr": rr, "risk_usd": risk_usd,
+                "risk_pts": risk_usd / POINT_VALUE, "gain_usd": gain_usd,
+                "up": up, "dn": dn,
+                "strong": (up if direction == "long" else dn) >= STRONG_FRAMES}
+    if up >= CONFIRM_FRAMES:
+        return sized("long")
+    if dn >= CONFIRM_FRAMES:
+        return sized("short")
+    return None
+
+
+def _plan_lines(p: dict) -> list[str]:
+    d = "شراء 🟢" if p["direction"] == "long" else "بيع 🔴"
+    return [f"{d} · دخول {num(p['entry'])}",
+            f"🛡 الوقف {num(p['stop'])} "
+            f"(−{p['risk_pts']:.1f} نقطة = −${p['risk_usd']:.0f})",
+            f"🎯 الهدف {num(p['target'])} "
+            f"(+{p['gain_usd']/POINT_VALUE:.1f} نقطة = +${p['gain_usd']:.0f})",
+            f"📊 R:R {p['rr']:.2f} · لوت {LOT} · حساب ${ACCOUNT_USD:.0f}"]
+
+
+def card_recommend() -> str:
+    p = plan()
+    if p is None:
+        m = read_market()
+        if not market_open(m["q"]):
+            return ("🎯 <b>التوصية</b> — XAUUSD\n<b>لا صفقة</b> — السوق مسكّر.\n\n"
+                    "<i>المكتب ما يعطي إشارة على سعر ميت.</i>")
         return ("🎯 <b>التوصية</b> — XAUUSD\n"
                 "<b>لا صفقة</b> — الفريمات متضاربة (عرضي).\n\n"
                 "<i>المكتب ما يعطي إشارة لما السوق محتار.</i>")
-    risk = abs(live - stop)
-    rr = abs(tgt - live) / risk if risk else 0
-    side = "شراء 🟢" if d == "long" else "بيع 🔴"
-    if rr < MIN_RR:
-        return (f"🎯 <b>التوصية</b> — XAUUSD\n"
-                f"الاتجاه المحتمل: {side} بس <b>مرفوض</b> — "
-                f"R:R {rr:.2f} أقل من الحد ({MIN_RR}).\n\n"
-                "<i>ما نعطي صفقة مكسبها أقل من مخاطرتها.</i>")
-    return (f"🎯 <b>التوصية</b> — {SYMBOL}\n"
-            f"{side} على السعر الحالي <b>{num(live)}</b>\n"
-            f"الوقف: <b>{num(stop)}</b> · الهدف: <b>{num(tgt)}</b>\n"
-            f"R:R ≈ <b>{rr:.2f}</b> · المخاطرة {num(risk)} نقطة\n\n"
-            f"<i>التزام بالمخاطرة — ما تدخل بأكثر من 1-2% من حسابك.</i>")
+    return ("🎯 <b>التوصية</b> — " + SYMBOL + "\n" +
+            "\n".join(_plan_lines(p)) + "\n\n"
+            "<i>التزام بالمخاطرة — كل صفقة على حسابك.</i>")
 
 
 # ========================================================================
@@ -794,13 +848,19 @@ def record_trade(text: str) -> str:
 
 def help_text() -> str:
     return ("❓ <b>مساعدة</b>\n"
-            "أنا مكتب تحليل للذهب (XAUUSD). أقرأ السوق وأبعتلك قراءة، توصية، "
-            "سيناريوهات ومستويات.\n\n"
-            "<b>لتسجيل صفقة</b> اكتب مباشرة:\n"
-            "<code>سجل شراء 4075 وقف 4069 هدف 4085 حجم 0.01</code>\n"
-            "أو: <code>سجل بيع 4073 وقف 4077 هدف 4064</code>\n\n"
-            "بعدها اضغط «📂 الصفقات المفتوحة» أو «📒 السجل» "
-            "(يومي/أسبوعي/شهري) لتشوف النتائج.\n\n"
+            "أنا مكتب تحليل للذهب (XAUUSD). أقرأ السوق، وأبعتلك <b>صفقة "
+            "مناسبة لحسابك</b> (لوت 0.01، $200): ربح $15-20 وخسارة $8-10، "
+            "مع الوقف والهدف. المكتب <b>يسجّلها ويسجّل نتيجتها لحاله</b> — "
+            "ما في داعي تسجّل شي.\n\n"
+            "<b>قواعد الصفقات:</b>\n"
+            "• صفقة أولى لمّا يتأكد الاتجاه (4/6 فريمات).\n"
+            "• صفقة ثانية بس إذا كانت إشارة <b>قوية</b> (5/6) — وبتتسجّل "
+            "وتتابع مع الأولى.\n"
+            "• ما في صفقتين بنفس الاتجاه بثقة ضعيفة، ولو الأولى ماشية عالربح "
+            "ما في داعي للتانية.\n\n"
+            "<b>كمان بتقدر تسجّل صفقتك بنفسك</b> (اختياري):\n"
+            "<code>سجل شراء 4075 وقف 4069 هدف 4085 حجم 0.01</code>\n\n"
+            "تابع: «📂 الصفقات المفتوحة» و«📒 السجل» (يومي/أسبوعي/شهري).\n\n"
             "<i>قراءة تحليلية، مو وعد ربح.</i>")
 
 
@@ -1055,6 +1115,119 @@ def monitor_loop(tg: Telegram, allow: set[str], every_min: int = 2,
                             tg.send(c, body)
         except Exception:  # noqa: BLE001
             pass
+        time.sleep(max(30, every_min * 60))
+
+
+def _write_plan(p: dict) -> int:
+    return add_trade(p["direction"], p["entry"], p["stop"], p["target"],
+                     LOT, note="desk")
+
+
+def _winning(t) -> bool:
+    """Is the trade far enough along that the desk should stop adding?
+
+    Half-way to the target is late enough not to want a second position in the
+    same move -- the owner's rule: the first is enough.
+    """
+    span = (t["target"] - t["entry"]) if t["target"] is not None else 0
+    if not span:
+        return False
+    d = 1 if t["direction"] == "long" else -1
+    try:
+        live = float(quote().get("mid") or 0)
+    except Exception:  # noqa: BLE001
+        return False
+    # Progress is signed; the goal is a distance, so compare against |span|.
+    # (Against the signed span, a short at a small LOSS scored as winning.)
+    return (live - t["entry"]) * d >= abs(span) * 0.5
+
+
+def _open_card(p: dict, t=None) -> str:
+    e = ("⚡ صفقة قوية" if p.get("strong") else "🎯 المكتب لقط صفقة")
+    head = f"{e} — {SYMBOL}" + (f"  ·  #{t['id']}" if t is not None else "")
+    return "\n".join([head] + _plan_lines(p) +
+                     ["", "<i>المكتب سجّلها ورح يتابعها لحالها.</i>"])
+
+
+def _close_card(t) -> str:
+    d = "شراء 🟢" if t["direction"] == "long" else "بيع 🔴"
+    won = t["result"] == "target"
+    m = _money(t)
+    verdict = ("✅ <b>الهدف</b> — صفقة رابحة" if won else "❌ <b>الوقف</b> — صفقة خاسرة")
+    lines = [f"{'🏁' if won else '🛑'} <b>انحسمت الصفقة #{t['id']}</b>",
+             f"{d} — {verdict}",
+             f"دخل {num(t['entry'])} · خرج {num(t['exit_price'])}"]
+    if t["r_multiple"] is not None:
+        lines.append(f"النتيجة {t['r_multiple']:+.2f}R")
+    if m is not None:
+        lines.append(f"{m:+,.2f}$ · الحساب ≈ ${ACCOUNT_USD + m:,.0f}")
+    return "\n".join(lines)
+
+
+def _no_second(p: dict, w) -> str:
+    d = "شراء" if p["direction"] == "long" else "بيع"
+    frm = "شراء 🟢" if w["direction"] == "long" else "بيع 🔴"
+    return ("\n".join([
+        f"⚠️ <b>إشارة {d} ثانية</b> — بس الأولى #" + str(w["id"]) + " " + frm +
+        " ماشية عالربح",
+        "🛑 <b>الأولى كافية</b> — ما دخلنا تانية حتى تنحسم الأولى.",
+        "<i>قاعدة: ما نكدّس بنفس الاتجاه بثقة.</i>"]))
+
+
+def desk_is_silenced() -> bool:
+    """The kill switch. DESK_AUTO=0 (or off/no/false) stops the desk from
+    opening trades and narrating, without touching anything else -- the owner
+    can silence the desk from the Render dashboard in seconds."""
+    return os.environ.get("DESK_AUTO", "1").strip().lower() in \
+        ("0", "off", "no", "false")
+
+
+def desk_tick(tg: Telegram, allow: set[str], seen: dict[int, str]) -> None:
+    """One cycle: settle, announce, and maybe open. Split from the loop so it
+    can be tested without a network or a live clock."""
+    grade()
+    for t in all_trades():
+        st = t["status"]
+        if st != seen.get(t["id"], "open"):
+            seen[t["id"]] = st
+            if st != "open":
+                for c in allow:
+                    tg.send(c, _close_card(t))
+    if desk_is_silenced():
+        return
+    p = plan()
+    if p is None:
+        return
+    op = open_trades()
+    w = next((t for t in op if _winning(t)), None)
+    conflicts = [t for t in op if t["direction"] == p["direction"]]
+    if w is not None and conflicts:
+        for c in allow:
+            tg.send(c, _no_second(p, w))
+    elif len(op) < MAX_OPEN and (not conflicts or p["strong"]):
+        tid = _write_plan(p)
+        row = next(x for x in all_trades() if x["id"] == tid)
+        seen[tid] = "open"
+        for c in allow:
+            tg.send(c, _open_card(p, row))
+
+
+def desk_loop(tg: Telegram, allow: set[str], every_min: int = 2,
+              stop: threading.Event | None = None) -> None:
+    """The desk that trades its own book, then narrates.
+
+    Every cycle runs desk_tick: settle first, so a book that just cleared a
+    trade may open a fresh one the same minute; then decide and, if a plan is
+    valid, open it and tell the owner. The loop speaks only on an event -- an
+    opened or closed trade -- so a quiet market stays quiet. Every auto-opened
+    trade carries a stop, so it is graded exactly like the owner's own.
+    """
+    seen: dict[int, str] = {}
+    while not (stop and stop.is_set()):
+        try:
+            desk_tick(tg, allow, seen)
+        except Exception as exc:  # noqa: BLE001 - the desk must not die mid-cycle
+            print("desk_loop:", exc, flush=True)
         time.sleep(max(30, every_min * 60))
 
 
