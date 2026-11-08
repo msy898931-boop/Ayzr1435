@@ -48,6 +48,7 @@ SYMBOL = os.environ.get("DESK_SYMBOL", "XAUUSD")
 # DESK_BACKUP_CHAT overrides the chat; by default it is the first allowed chat.
 BACKUP_FILE = "marketdesk-backup.json"
 BACKUP_CHAT = os.environ.get("DESK_BACKUP_CHAT", "")
+PIN_PATH = DATA / "pin.json"
 
 # The two people the bot serves from the start. Anyone else who sends /start is
 # added to allow.json -- the bot is private, but adding a friend must not need a
@@ -855,7 +856,14 @@ def save_offset(off: int) -> None:
 # journal backup -- Telegram is the durable store on an ephemeral host
 # ========================================================================
 def _backup_chat() -> str:
-    return BACKUP_CHAT or (sorted(load_allow()) or SEED_CHATS)[0]
+    """The owner's own chat with the bot.
+
+    The durable copy must live where the owner can see it, so this is
+    SEED_CHATS[0] (the owner) and never `sorted(load_allow())[0]` -- that sorted
+    the chat ids as strings and picked whichever guest happened to sort first,
+    which quietly filed the journal in someone else's conversation.
+    """
+    return BACKUP_CHAT or SEED_CHATS[0]
 
 
 def _dump_journal() -> dict:
@@ -869,26 +877,56 @@ def backup_journal(tg: Telegram) -> bool:
     fresh container reads at startup, so the journal outlives the filesystem."""
     chat = _backup_chat()
     data = json.dumps(_dump_journal(), ensure_ascii=False, indent=1).encode()
-    res = tg.send_document(chat, BACKUP_FILE, data,
-                           caption=f"📒 نسخة السجل — {len(all_trades())} صفقة")
+    res = tg.send_document(
+        chat, BACKUP_FILE, data,
+        caption=("📒 <b>نسخة احتياطية من السجل</b>\n"
+                 f"عدد الصفقات: {len(all_trades())}\n"
+                 "<i>لا تحذف هالرسالة — البوت يرجّع منها السجل إذا انعاد تشغيله.</i>"))
     if not res:
         return False
-    tg.pin(chat, int(res["message_id"]))
+    mid = int(res["message_id"])
+    tg.pin(chat, mid)
+    # Remember where the pin is, so a restore reads the copy we actually wrote
+    # even if the default chat ever changes.
+    try:
+        PIN_PATH.write_text(json.dumps({"chat": str(chat), "message_id": mid}))
+    except OSError:
+        pass
     return True
+
+
+def _pinned_chats() -> list[str]:
+    """Chats to look in for the backup, most specific first."""
+    chats: list[str] = []
+    if PIN_PATH.exists():
+        try:
+            rec = json.loads(PIN_PATH.read_text())
+            if rec.get("chat"):
+                chats.append(str(rec["chat"]))
+        except (ValueError, OSError):
+            pass
+    default = _backup_chat()
+    if default not in chats:
+        chats.append(default)
+    return chats
 
 
 def restore_journal(tg: Telegram) -> int:
     """Restore from the pinned backup. Never touches a non-empty journal."""
     if all_trades():
         return 0
-    try:
-        res = tg.call("getChat", {"chat_id": str(_backup_chat())}).get("result") or {}
-    except Exception:  # noqa: BLE001
-        return 0
-    doc = ((res.get("pinned_message") or {}).get("document")) or {}
-    if doc.get("file_name") != BACKUP_FILE:
-        return 0
-    raw = tg.file_bytes(doc.get("file_id") or "")
+    raw = None
+    for chat in _pinned_chats():
+        try:
+            res = tg.call("getChat", {"chat_id": chat}).get("result") or {}
+        except Exception:  # noqa: BLE001
+            continue
+        doc = ((res.get("pinned_message") or {}).get("document")) or {}
+        if doc.get("file_name") != BACKUP_FILE:
+            continue
+        raw = tg.file_bytes(doc.get("file_id") or "")
+        if raw:
+            break
     if not raw:
         return 0
     try:
