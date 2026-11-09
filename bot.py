@@ -74,6 +74,12 @@ MIN_RR = 1.5                     # below this a plan is not worth stating
 CONFIRM_FRAMES = 4               # a direction needs this many of 6 frames
 STRONG_FRAMES = 5                # ...and this many to allow a SECOND trade
 MAX_OPEN = 1                     # one trade at a time (raise to 2 to stack)
+# The entry must agree with the 15m candle, not just the frame tilt: a long
+# taken while price sits UNDER the 15m EMA20 is buying into a falling tape.
+# On the owner's own journal this filter allowed every winner (#1-6) and
+# blocked every loser (#7-9); the 30m version let a loser through, so the
+# filter is pinned to 15m. Set to False to disable and take raw frame tilt.
+TREND_FILTER_TF = "15m"          # the frame whose EMA20 the entry must respect
 # ---- menus --------------------------------------------------------------
 MENU = [
     [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
@@ -411,8 +417,14 @@ def card_analysis() -> str:
     lean, mark = _bias(trends)
     if up >= CONFIRM_FRAMES:
         lines.append(f"\nالميل العام: <b>صاعد</b> ({up}/6 فريمات)")
+        if not frame_agrees("long", live):
+            lines.append(f"<i>⚠️ بس السعر تحت EMA20 ({TREND_FILTER_TF}) — "
+                         "المكتب ما يشتري والزخم هابط.</i>")
     elif dn >= CONFIRM_FRAMES:
         lines.append(f"\nالميل العام: <b>هابط</b> ({dn}/6 فريمات)")
+        if not frame_agrees("short", live):
+            lines.append(f"<i>⚠️ بس السعر فوق EMA20 ({TREND_FILTER_TF}) — "
+                         "المكتب ما يبيع والزخم صاعد.</i>")
     else:
         lines.append(f"\nالميل العام: {mark} <b>{lean}</b> "
                      f"(صاعد {up} · هابط {dn})")
@@ -519,6 +531,25 @@ def _sized(entry: float, direction: str, stop_level: float | None) -> dict:
             "risk_pts": risk_usd / POINT_VALUE, "gain_usd": gain_usd}
 
 
+def frame_agrees(direction: str, live: float) -> bool:
+    """Does the live price agree with `direction` on the filter frame?
+
+    A long wants price ABOVE the frame's EMA20, a short BELOW it. A missing
+    frame or an unreadable EMA20 returns True: the filter is a guard, and it
+    must never be the reason the desk stops trading entirely.
+    """
+    if not TREND_FILTER_TF:
+        return True
+    try:
+        b = bars(TREND_FILTER_TF, 300)
+        e = ema([x["close"] for x in b], 20)
+        if e is None:
+            return True
+        return live > e if direction == "long" else live < e
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def plan(m: dict | None = None) -> dict | None:
     """The desk's one decision engine: a sized, valid plan or None.
 
@@ -548,9 +579,9 @@ def plan(m: dict | None = None) -> dict | None:
         p["up"], p["dn"] = up, dn
         p["strong"] = (up if direction == "long" else dn) >= STRONG_FRAMES
         return p
-    if up >= CONFIRM_FRAMES:
+    if up >= CONFIRM_FRAMES and frame_agrees("long", live):
         return sized("long")
-    if dn >= CONFIRM_FRAMES:
+    if dn >= CONFIRM_FRAMES and frame_agrees("short", live):
         return sized("short")
     return None
 
@@ -573,6 +604,18 @@ def card_recommend() -> str:
             return ("🎯 <b>التوصية</b> — XAUUSD\n<b>لا صفقة</b> — السوق مسكّر.\n\n"
                     "<i>المكتب ما يعطي إشارة على سعر ميت.</i>")
         lean, mark = _bias(m["trends"])
+        up = sum(1 for tf in FRAMES if m["trends"].get(tf) == 1)
+        dn = sum(1 for tf in FRAMES if m["trends"].get(tf) == -1)
+        if up >= CONFIRM_FRAMES and not frame_agrees("long", m["live"]):
+            return ("🎯 <b>التوصية</b> — XAUUSD\n"
+                    "<b>لا صفقة</b> — الاتجاه صاعد بس السعر تحت "
+                    f"EMA20 ({TREND_FILTER_TF}).\n"
+                    "<i>المكتب ما يشتري والزخم القصير هابط — استنى يرجع فوق.</i>")
+        if dn >= CONFIRM_FRAMES and not frame_agrees("short", m["live"]):
+            return ("🎯 <b>التوصية</b> — XAUUSD\n"
+                    "<b>لا صفقة</b> — الاتجاه هابط بس السعر فوق "
+                    f"EMA20 ({TREND_FILTER_TF}).\n"
+                    "<i>المكتب ما يبيع والزخم القصير صاعد — استنى يرجع تحت.</i>")
         return ("🎯 <b>التوصية</b> — XAUUSD\n"
                 f"<b>لا صفقة</b> — الفريمات ما اتفقت "
                 f"({CONFIRM_FRAMES}/6 مطلوبة).\n"
