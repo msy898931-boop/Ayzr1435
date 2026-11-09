@@ -657,3 +657,27 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   signed span, so a short at a LOSS counted as winning. Compare `abs(span)`.
 - `desk_tick()` split from `desk_loop()` for offline testing; `DESK_AUTO=0` is
   the kill switch.
+
+## MarketDesk — one engine, many entry points (2026-11-07, post-review)
+
+- ⭐⭐ **A review that reads FILES, not memory, is what finds entry-point bugs.**
+  `bot.py`'s `main()` ran `monitor_loop` (watch-only) while `app.py` ran
+  `desk_loop` (the auto-trader) — so the README's "permanent bot for a VPS"
+  would have *silently never traded*. Fixed: `bot.py` now has ONE
+  `start_desk()` (the only place the desk's threads are listed) + `_supervise()`;
+  both `bot.py main()` and `app.py` call it. The poller is NOT in `start_desk`
+  (a VPS wants it in the main thread for Ctrl+C; Render wants it supervised).
+  `monitor_loop` deleted — `desk_tick` already sends the closure card.
+- ⭐ **Prove a no-behaviour-change refactor with `git diff` on the decision
+  functions, not with hope.** After the change,
+  `git diff HEAD -- bot.py | grep -E 'card_analysis|card_action|_verdict|_sized|plan|frame_agrees'`
+  was empty and Render health stayed `ok` — that is the acceptance test.
+- **Remove a fork without breaking a deploy:** keep the deployment dir, delete
+  the *committed copy*, and have the deploy script `cp` the real engine in at
+  build time (`.gitignore` the generated path). `flybot/` now does this.
+  `automation/main.py` stays — a genuinely separate scheduled runner — but its
+  docstring says "not the engine; change `bot.py` first".
+- **Tests now exist:** `tests/test_engine.py`, 21 stdlib `unittest`, offline
+  (stubs `quote`/`bars`). Run `python3 -m unittest discover -s tests`. Baselines:
+  ruff `bot.py` 16, mypy 2. Gotcha: `grade()` reads bars at/after `opened_at`,
+  so tests backdate `opened_at` before grading.
