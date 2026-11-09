@@ -85,6 +85,13 @@ TREND_FILTER_TF = "15m"          # the frame whose EMA20 the entry must respect
 # about the level he cares about, not only when a whole plan appears.
 SUPPORT_NEAR_PTS = 6.0           # "approaching" band around the level, points
 SUPPORT_BREAK_PTS = 3.0          # a 15m close this far under = broken
+# The green-light watch: the desk's own entry filter is "a long needs price
+# above the 15m EMA20". So rather than hard-code the number 4103 (which the
+# EMA moves away from within the hour), watch the EMA itself -- the owner hears
+# when the desk's OWN gate opens, not when an arbitrary price is touched.
+GATE_ARM_PTS = 1.5               # close this far above/below the EMA = a signal
+
+
 # ---- menus --------------------------------------------------------------
 MENU = [
     [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
@@ -1546,6 +1553,57 @@ def support_watch(seen: dict) -> str | None:
         return None
 
 
+def gate_watch(seen: dict) -> str | None:
+    """The green light: tell the owner when the desk's own entry gate opens.
+
+    The desk only goes long with price above the 15m EMA20 (frame_agrees). So
+    the interesting event is not "price touched 4103" but "a 15m candle CLOSED
+    on the other side of the EMA the desk itself reads". This watches the EMA,
+    not a frozen number, so the alert stays true as the EMA drifts.
+
+    Fires once per crossing (up or down), keyed in `seen`; a repeat of the same
+    side is silent. Returns None on any read error -- a watch never kills the
+    loop.
+    """
+    try:
+        b = bars(TREND_FILTER_TF, 300)
+        closed = [x for x in b if not x.get("isOpen")]
+        if not closed:
+            return None
+        e = ema([x["close"] for x in closed], 20)
+        if e is None:
+            return None
+        close = float(closed[-1]["close"])
+        live = read_market()["live"]
+        side = "above" if close > e + GATE_ARM_PTS else (
+            "below" if close < e - GATE_ARM_PTS else "inside")
+        if side == "inside":
+            return None
+        prev = seen.get("gate")
+        if prev is None:
+            # First look after boot is an observation, not an event: seed the
+            # state silently so the owner is not told the gate "opened" when the
+            # bot merely restarted on the same side it was already on.
+            seen["gate"] = side
+            return None
+        if prev == side:
+            return None
+        seen["gate"] = side
+        if side == "above":
+            return ("🟢 <b>باب الشراء انفتح</b> — XAUUSD\n"
+                    f"شمعة {TREND_FILTER_TF} أغلقت <b>{num(close)}</b> فوق "
+                    f"EMA20 (<b>{num(e)}</b>).\nالسعر {num(live)} · "
+                    "<i>الفلتر صار يوافق الشراء — إذا الاتجاه العام صاعد، "
+                    "هي فرصة الدخول.</i>")
+        return ("🔴 <b>باب البيع انفتح</b> — XAUUSD\n"
+                f"شمعة {TREND_FILTER_TF} أغلقت <b>{num(close)}</b> تحت "
+                f"EMA20 (<b>{num(e)}</b>).\nالسعر {num(live)} · "
+                "<i>الفلتر صار يوافق البيع — إذا الاتجاه العام هابط، "
+                "هي فرصة الدخول.</i>")
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return None
+
+
 def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     """One cycle: settle, announce, and maybe open. Split from the loop so it
     can be tested without a network or a live clock."""
@@ -1559,6 +1617,10 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     # fact about the market, not a trade decision, so the owner still hears it
     # when auto-trading is off.
     note = support_watch(seen)
+    if note:
+        for c in allow:
+            tg.send(c, note)
+    note = gate_watch(seen)
     if note:
         for c in allow:
             tg.send(c, note)
@@ -1641,6 +1703,7 @@ def selftest() -> int:
     print("== open ==", card_open()[:80].replace("\n", " "))
     sw = support_watch({})
     print("== support ==", (sw or "silent").replace("\n", " ")[:120])
+    print("== gate ==", (gate_watch({}) or "silent").replace("\n", " ")[:120])
     print("== trade parse ==", str(parse_trade("سجل شراء 4075 وقف 4069 هدف 4085"))
           .replace("\n", " ")[:120])
     return 0
