@@ -85,6 +85,13 @@ TREND_FILTER_TF = "15m"          # the frame whose EMA20 the entry must respect
 # about the level he cares about, not only when a whole plan appears.
 SUPPORT_NEAR_PTS = 6.0           # "approaching" band around the level, points
 SUPPORT_BREAK_PTS = 3.0          # a 15m close this far under = broken
+
+# The key levels the desk announces a crossing of, beyond its single latched
+# support. Taken from pivot clusters across 15m..1d (refresh when the market
+# moves well away from them). A crossing of ANY of these speaks once.
+WATCH_LEVELS = (4055.0, 4070.0, 4084.0, 4096.0,
+                4119.0, 4132.0, 4147.0, 4168.0, 4192.0)
+LEVEL_BAND = 1.0                 # hysteresis: a crossing needs this much clearance
 # The green-light watch: the desk's own entry filter is "a long needs price
 # above the 15m EMA20". So rather than hard-code the number 4103 (which the
 # EMA moves away from within the hour), watch the EMA itself -- the owner hears
@@ -1871,6 +1878,64 @@ def support_watch(seen: dict) -> str | None:
         return None
 
 
+def levels_watch(seen: dict) -> str | None:
+    """Announce a crossing of ANY key level in WATCH_LEVELS.
+
+    Returns one message the first time price clears a level by LEVEL_BAND in
+    either direction, and None otherwise. The side of each level is kept in
+    `seen['levels']` so a level that keeps holding never repeats, and a price
+    hovering on a level (inside the band) does not flicker. The first call
+    records the starting sides silently -- a break that already happened is not
+    a new event.
+
+    This is the multi-level sibling of support_watch: that one follows the
+    desk's own latched support, this one follows a fixed set of pivots so the
+    owner hears about every level he asked to watch, not only the nearest.
+    """
+    try:
+        live = float(read_market()["live"])
+        sides: dict = seen.get("levels")
+        first = sides is None
+        if first:
+            sides = {}
+        # support_watch (run just before this one) already narrates the desk's
+        # own latched support with richer states (near / bounce / 15m break).
+        # A fixed level that lands on it would deliver the same break twice, so
+        # its side is still tracked but its event is left to support_watch.
+        latched = seen.get("support_level")
+        crossed: list[tuple[float, str]] = []
+        for lvl in WATCH_LEVELS:
+            k = f"{lvl:.2f}"
+            prev = sides.get(k, "above" if live > lvl else "below")
+            if live >= lvl + LEVEL_BAND:
+                now = "above"
+            elif live <= lvl - LEVEL_BAND:
+                now = "below"
+            else:
+                now = prev
+            sides[k] = now
+            if not first and now != prev:
+                if latched is not None and abs(lvl - latched) <= SUPPORT_NEAR_PTS:
+                    continue
+                crossed.append((lvl, now))
+        seen["levels"] = sides
+        if not crossed:
+            return None
+        return "\n\n".join(_level_cross_msg(lvl, side, live) for lvl, side in crossed)
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return None
+
+
+def _level_cross_msg(level: float, side: str, live: float) -> str:
+    if side == "above":
+        return ("🚀 <b>اختراق مستوى</b> — XAUUSD\n"
+                f"السعر <b>{num(live)}</b> طلع فوق <b>{num(level)}</b>.\n"
+                "<i>مقاومة اتكسرت — راقب التأكيد قبل الدخول.</i>")
+    return ("⚠️ <b>كسر مستوى</b> — XAUUSD\n"
+            f"السعر <b>{num(live)}</b> نزل تحت <b>{num(level)}</b>.\n"
+            "<i>دعم انكسر — احذر، راقب التأكيد.</i>")
+
+
 def gate_watch(seen: dict) -> str | None:
     """The green light: tell the owner when the desk's own entry gate opens.
 
@@ -1999,6 +2064,10 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     # fact about the market, not a trade decision, so the owner still hears it
     # when auto-trading is off.
     note = support_watch(seen)
+    if note:
+        for c in allow:
+            tg.send(c, note)
+    note = levels_watch(seen)
     if note:
         for c in allow:
             tg.send(c, note)

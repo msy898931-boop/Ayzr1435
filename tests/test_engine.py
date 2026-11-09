@@ -319,5 +319,83 @@ class EntryPointTest(unittest.TestCase):
         self.assertNotIn("poller", names)
 
 
+class LevelsWatchTest(unittest.TestCase):
+    """The multi-level crossing watch: speaks once per crossing, never spams."""
+
+    def test_first_call_records_sides_silently(self):
+        with FakeFeed(mid=4120.0):
+            seen: dict = {}
+            self.assertIsNone(bot.levels_watch(seen))
+        # 4120 is above 4096/4084/4070/4055 and below 4119? no: above 4119.
+        self.assertEqual(seen["levels"]["4119.00"], "above")
+        self.assertEqual(seen["levels"]["4132.00"], "below")
+
+    def test_a_break_speaks_once_then_stays_quiet(self):
+        with FakeFeed(mid=4120.0):
+            seen: dict = {}
+            bot.levels_watch(seen)  # record baseline
+            # price rises through 4132 (needs >= 4133 to clear the band)
+            with FakeFeed(mid=4135.0):
+                note = bot.levels_watch(seen)
+            self.assertIsNotNone(note)
+            self.assertIn("4,132", note)
+            self.assertIn("اختراق", note)
+            # still above: no repeat
+            with FakeFeed(mid=4140.0):
+                self.assertIsNone(bot.levels_watch(seen))
+
+    def test_a_fall_speaks_and_names_the_level(self):
+        with FakeFeed(mid=4120.0):
+            seen: dict = {}
+            bot.levels_watch(seen)
+            with FakeFeed(mid=4090.0):  # drops under 4096 (needs <= 4095)
+                note = bot.levels_watch(seen)
+            self.assertIsNotNone(note)
+            self.assertIn("4,096", note)
+            self.assertIn("كسر", note)
+
+    def test_hovering_on_a_level_does_not_flicker(self):
+        with FakeFeed(mid=4132.0):
+            seen: dict = {}
+            bot.levels_watch(seen)  # baseline sits exactly on the level
+            # a nudge of half a point stays inside the band: no event
+            with FakeFeed(mid=4132.4):
+                self.assertIsNone(bot.levels_watch(seen))
+            with FakeFeed(mid=4131.6):
+                self.assertIsNone(bot.levels_watch(seen))
+
+    def test_two_levels_broken_together_speak_in_one_message(self):
+        with FakeFeed(mid=4100.0):
+            seen: dict = {}
+            bot.levels_watch(seen)
+            with FakeFeed(mid=4060.0):  # under 4096, 4084, 4070 -- not yet 4055
+                note = bot.levels_watch(seen)
+            self.assertIsNotNone(note)
+            for lvl in ("4,096", "4,084", "4,070"):
+                self.assertIn(lvl, note)
+
+    def test_a_missing_feed_returns_none_and_does_not_raise(self):
+        saved = bot.read_market
+        bot.read_market = lambda: (_ for _ in ()).throw(RuntimeError("no feed"))
+        try:
+            self.assertIsNone(bot.levels_watch({}))
+        finally:
+            bot.read_market = saved
+
+    def test_a_level_that_lands_on_the_latched_support_stays_quiet(self):
+        """support_watch owns the latched support; levels_watch must not echo it."""
+        with FakeFeed(mid=4090.0):
+            seen: dict = {"support_level": 4096.0}
+            bot.levels_watch(seen)          # baseline, both sides recorded
+            with FakeFeed(mid=4080.0):      # drops under the fixed 4096 and 4084
+                note = bot.levels_watch(seen)
+            # 4096 is the latched support -> left to support_watch, so it is
+            # absent; 4084 is a separate level and still speaks.
+            self.assertIsNotNone(note)
+            self.assertNotIn("4,096", note)
+            self.assertIn("4,084", note)
+            self.assertEqual(seen["levels"]["4096.00"], "below")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
