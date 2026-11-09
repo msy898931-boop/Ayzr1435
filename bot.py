@@ -71,9 +71,8 @@ STOP_PICK_USD = 9.0              # aim mid-window; the nearest level may move it
 TARGET_RR = 2.0                  # 9 * 2 = $18, inside the window
 MIN_RR = 1.5                     # below this a plan is not worth stating
 CONFIRM_FRAMES = 4               # a direction needs this many of 6 frames
-STRONG_FRAMES = 5                # ...and this many to add a SECOND trade
+STRONG_FRAMES = 5                # ...and this many to allow a SECOND trade
 MAX_OPEN = 2                     # never carry more than two at once
-
 # ---- menus --------------------------------------------------------------
 MENU = [
     [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
@@ -1190,11 +1189,26 @@ def _write_plan(p: dict) -> int:
                      LOT, note="desk")
 
 
-def _winning(t) -> bool:
-    """Is the trade far enough along that the desk should stop adding?
+def _in_profit(t) -> bool:
+    """Is the trade past its entry, in its own direction?
 
-    Half-way to the target is late enough not to want a second position in the
-    same move -- the owner's rule: the first is enough.
+    The cushion that licenses a second trade in the same direction: stacking on
+    a position that has not moved would just double the same bet at the same
+    price, which is exactly the risk this gate exists to stop.
+    """
+    d = 1 if t["direction"] == "long" else -1
+    try:
+        live = float(quote().get("mid") or 0)
+    except Exception:  # noqa: BLE001
+        return False
+    return (live - t["entry"]) * d > 0
+
+
+def _winning(t) -> bool:
+    """Has the trade travelled half-way to its target?
+
+    Past that the move is mature: a fresh entry only chases it, so one position
+    is enough and a second same-direction trade is refused.
     """
     span = (t["target"] - t["entry"]) if t["target"] is not None else 0
     if not span:
@@ -1231,14 +1245,19 @@ def _close_card(t) -> str:
     return "\n".join(lines)
 
 
-def _no_second(p: dict, w) -> str:
+def _no_second(p: dict, t, why: str) -> str:
     d = "شراء" if p["direction"] == "long" else "بيع"
-    frm = "شراء 🟢" if w["direction"] == "long" else "بيع 🔴"
-    return ("\n".join([
-        f"⚠️ <b>إشارة {d} ثانية</b> — بس الأولى #" + str(w["id"]) + " " + frm +
-        " ماشية عالربح",
-        "🛑 <b>الأولى كافية</b> — ما دخلنا تانية حتى تنحسم الأولى.",
-        "<i>قاعدة: ما نكدّس بنفس الاتجاه بثقة.</i>"]))
+    frm = "شراء 🟢" if t["direction"] == "long" else "بيع 🔴"
+    tail = {
+        "flat": (f"الأولى #{t['id']} {frm} لسا عند الدخول — "
+                 "التانية بتضاعف نفس الرهان بنفس السعر."),
+        "mature": (f"الأولى #{t['id']} {frm} مشت نص الطريق — "
+                   "التانية بتلحق السعر بس."),
+    }[why]
+    return "\n".join([
+        f"⚠️ <b>إشارة {d} ثانية</b> — بس {tail}",
+        "🛑 <b>ما دخلنا تانية</b> — التكديس بس فوق صفقة كسبانة ولسا فيها مجال.",
+        "<i>قاعدة: زد على رابح، مو على متعادل ولا على سعر راح.</i>"])
 
 
 def desk_is_silenced() -> bool:
@@ -1266,11 +1285,22 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict[int, str]) -> None:
     if p is None:
         return
     op = open_trades()
-    w = next((t for t in op if _winning(t)), None)
     conflicts = [t for t in op if t["direction"] == p["direction"]]
-    if w is not None and conflicts:
+    if conflicts:
+        # A second same-direction trade is only allowed while the first is
+        # ahead AND still has room. Both gates use the FIRST conflicting trade.
+        t0 = conflicts[0]
+        if not _in_profit(t0):
+            why = "flat"
+        elif _winning(t0):
+            why = "mature"
+        else:
+            why = None
+    else:
+        t0, why = None, None
+    if why is not None:
         for c in allow:
-            tg.send(c, _no_second(p, w))
+            tg.send(c, _no_second(p, t0, why))
     elif len(op) < MAX_OPEN and (not conflicts or p["strong"]):
         tid = _write_plan(p)
         row = next(x for x in all_trades() if x["id"] == tid)
