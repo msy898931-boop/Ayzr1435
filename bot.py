@@ -90,15 +90,22 @@ SUPPORT_BREAK_PTS = 3.0          # a 15m close this far under = broken
 # EMA moves away from within the hour), watch the EMA itself -- the owner hears
 # when the desk's OWN gate opens, not when an arbitrary price is touched.
 GATE_ARM_PTS = 1.5               # close this far above/below the EMA = a signal
+# In-trade monitoring: an open trade must not be silent between entry and exit.
+# These fire ONE message each, per trade, when the price gets close to a
+# boundary -- so the owner is warned before the stop, and told before the
+# target, without a running commentary on every tick.
+NEAR_TARGET_FRAC = 0.25          # within this fraction of the entry->target span
+NEAR_STOP_FRAC = 0.30            # within this fraction of the entry->stop span
 
 
 # ---- menus --------------------------------------------------------------
 MENU = [
+    [("🧭 شو تعمل هلّق", "action")],
     [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
     [("🎬 السيناريوهات", "scenarios"), ("🔔 المستويات", "levels")],
     [("📂 الصفقات المفتوحة", "open"), ("📒 السجل", "journal_menu")],
     [("👥 المشتركين", "who"), ("➕ سجّل صفقة", "howto")],
-    [("❓ مساعدة", "help")],
+    [("🔔 دليل التنبيهات", "alerts"), ("❓ مساعدة", "help")],
 ]
 
 JOURNAL_MENU = [
@@ -114,6 +121,7 @@ TEXT_ACTIONS = {
     "الصفقات": "open", "سجل": "journal_menu", "السجل": "journal_menu",
     "يومي": "j_day", "اليوم": "j_day", "أسبوعي": "j_week", "اسبوعي": "j_week",
     "شهري": "j_month", "الشهر": "j_month", "متابعة": "monitor",
+    "اعمل": "action", "تنبيهات": "alerts", "التنبيهات": "alerts", "دليل": "alerts",
     "مساعدة": "help", "قائمة": "menu",
     "مين": "who", "المشتركين": "who", "المشتركين؟": "who",
 }
@@ -1053,9 +1061,114 @@ def help_text() -> str:
             "<i>قراءة تحليلية، مو وعد ربح.</i>")
 
 
+def card_action() -> str:
+    """The one thing to do right now -- the card the owner asked for.
+
+    It reads the same engine as everything else and answers in one line: open a
+    trade (with its exact numbers), wait for the gate, stand aside, or manage
+    the trade that is already open. It never invents a plan -- if plan() is
+    None it says so and gives the single condition that would change the answer.
+    """
+    m = read_market()
+    live = m["live"]
+    trends = m["trends"]
+    if not market_open(m["q"]):
+        return ("🧭 <b>شو تعمل هلّق</b> — " + SYMBOL + "\n"
+                "⛔ السوق مسكّر — ما في شي تعمله.\n"
+                "<i>استنى يفتح السوق.</i>")
+    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
+    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
+
+    op = open_trades()
+    if op:
+        t = op[0]
+        d = 1 if t["direction"] == "long" else -1
+        r_now = ((live - float(t["entry"])) * d / abs(float(t["entry"]) - float(t["stop"]))
+                 if abs(float(t["entry"]) - float(t["stop"])) else 0)
+        dir_txt = "شراء 🟢" if d == 1 else "بيع 🔴"
+        return ("🧭 <b>شو تعمل هلّق</b> — " + SYMBOL + "\n"
+                f"📂 عندك صفقة مفتوحة #{t['id']} ({dir_txt}).\n"
+                f"دخل {num(t['entry'])} · وقف {num(t['stop'])} · "
+                f"هدف {num(t['target'])}\n"
+                f"حالياً <b>{r_now:+.2f}R</b> · السعر {num(live)}\n\n"
+                "<b>شو تعمل:</b> خلّيها — الوقف والهدف بيشتغلوا لحالهم.\n"
+                "<i>لا تزيد على نفس الاتجاه إلا لما تسكّرها.</i>")
+
+    p = plan()
+    if p is not None:
+        return ("🧭 <b>شو تعمل هلّق</b> — " + SYMBOL + "\n"
+                "🟢 <b>ادخل صفقة الآن</b> — الشروط مكتملة:\n" +
+                "\n".join(_plan_lines(p)) + "\n\n"
+                "<i>سجّلها بالبوت أو بمنصتك — الوقف إلزامي.</i>")
+
+    # No plan: say why, and the single condition that flips it.
+    try:
+        b = bars(TREND_FILTER_TF, 300)
+        e = ema([x["close"] for x in b], 20)
+    except Exception:  # noqa: BLE001
+        e = None
+    if up >= CONFIRM_FRAMES:
+        why = ("الاتجاه صاعد، بس السعر تحت EMA20 "
+               f"({TREND_FILTER_TF}) — الدخول عكس الزخم.")
+        todo = (f"⏸️ <b>استنى</b> شمعة {TREND_FILTER_TF} تسكّر فوق "
+                f"<b>{num(e)}</b>." if e else "⏸️ <b>استنى</b> تأكيد الزخم.")
+    elif dn >= CONFIRM_FRAMES:
+        why = ("الاتجاه هابط، بس السعر فوق EMA20 "
+               f"({TREND_FILTER_TF}) — الدخول عكس الزخم.")
+        todo = (f"⏸️ <b>استنى</b> شمعة {TREND_FILTER_TF} تسكّر تحت "
+                f"<b>{num(e)}</b>." if e else "⏸️ <b>استنى</b> تأكيد الزخم.")
+    else:
+        why = f"الفريمات ما اتفقت ({up}ص · {dn}هـ) — السوق محتار."
+        todo = "⏸️ <b>استنى</b> يتفق 4 من 6 فريمات على اتجاه."
+    return ("🧭 <b>شو تعمل هلّق</b> — " + SYMBOL + "\n"
+            "⏸️ <b>لا تدخل الآن.</b>\n"
+            f"<i>{why}</i>\n\n"
+            f"<b>شو تعمل:</b> {todo}\n"
+            "<i>الواقف بأمان أحسن من الداخل غلط.</i>")
+
+
+def alerts_guide() -> str:
+    """The map of every alert the desk sends and what to do about each."""
+    return ("🔔 <b>دليل التنبيهات</b> — " + SYMBOL + "\n"
+            "هاي كل رسالة رح يبعتها المكتب، وشو تعمل معها 👇\n\n"
+            "<b>1️⃣ صفقة جديدة</b> — «المكتب لقط صفقة»\n"
+            "  يعني: الشروط اكتملت وفتح صفقة.\n"
+            "  👉 <i>ما تعمل شي — المكتب بيديرها. لو بدك، سجّلها بمنصتك.</i>\n\n"
+            "<b>2️⃣ انحسمت صفقة</b> — هدف / وقف / يدوي\n"
+            "  يعني: الصفقة سكّرت والنتيجة محسوبة بالـR.\n"
+            "  👉 <i>راجع النتيجة، والمكتب رح يفتح جديدة إذا تجددت الشروط.</i>\n\n"
+            "<b>3️⃣ قرب الهدف</b> 🎯\n"
+            "  يعني: السعر قرّب من هدف صفقة مفتوحة.\n"
+            "  👉 <i>لك الخيار: خذ الربح الآن، أو خلّي الهدف يشتغل.</i>\n\n"
+            "<b>4️⃣ قرب الوقف</b> ⚠️\n"
+            "  يعني: السوق ضد صفقتك.\n"
+            "  👉 <i>قرّر: اخرج يدوي بجزء من الخسارة، أو خلّي الوقف يشتغل.</i>\n\n"
+            "<b>5️⃣ قرب الدعم</b> 👀\n"
+            "  يعني: السعر قرب دعم قوي.\n"
+            "  👉 <i>لا تدخل؛ استنى — إذا ارتد = فرصة شراء، إذا كسر = خطر.</i>\n\n"
+            "<b>6️⃣ كسر الدعم</b> 🚨\n"
+            "  يعني: شمعة 15د سكّرت تحت الدعم.\n"
+            "  👉 <i>لا تشتري؛ السوق ضعف. استنى يرجع فوقه.</i>\n\n"
+            "<b>7️⃣ رجع فوق الدعم</b> ✅\n"
+            "  يعني: السعر رجع فوق الدعم بعد كسره.\n"
+            "  👉 <i>ارتداد محتمل — راقب تأكيد الصعود.</i>\n\n"
+            "<b>8️⃣ باب الشراء / البيع انفتح</b> 🟢🔴\n"
+            "  يعني: شمعة 15د سكّرت فوق/تحت EMA20 (فلتر المكتب).\n"
+            "  👉 <i>إذا الاتجاه العام بنفس الجهة = فرصة دخول.</i>\n\n"
+            "<b>9️⃣ رفض صفقة</b> ⚠️\n"
+            "  يعني: إشارة جديدة بس المكتب ما دخل (الكتاب ممتلئ، أو "
+            "الصفقة الحالية متقدمة/رابحة).\n"
+            "  👉 <i>ما تعمل شي — حماية من المخاطرة، مو خطأ.</i>\n\n"
+            "📌 <b>القاعدة الذهبية:</b> كل تنبيه بيقوللك «شو تعمل» بسطر — "
+            "اقرأ آخر سطر دايماً.\n\n"
+            "<i>قراءة تحليلية، مو وعد ربح.</i>")
+
+
 def dispatch(action: str) -> str:
     return {
         "analysis": card_analysis,
+        "action": card_action,
+        "alerts": alerts_guide,
         "recommend": card_recommend,
         "scenarios": card_scenarios,
         "levels": card_levels,
@@ -1604,6 +1717,68 @@ def gate_watch(seen: dict) -> str | None:
         return None
 
 
+def trade_watch(seen: dict) -> str | None:
+    """Narrate an open trade as it approaches its stop or its target.
+
+    The desk already speaks when a trade OPENS and when it CLOSES, but a trade
+    can sit for hours and the owner hears nothing. This closes that gap with at
+    most two messages per trade:
+
+      * "قرب الهدف" once, when price is within NEAR_TARGET_FRAC of the
+        entry->target span -- so the owner can decide to take it or let it run.
+      * "قرب الوقف" once, when price is within NEAR_STOP_FRAC of the
+        entry->stop span -- so the owner is warned before it hits.
+
+    Keyed per trade id in `seen`, so each message fires once per trade and a
+    quiet trade stays quiet. Returns None when there is nothing to say or on any
+    read error (a watch never kills the loop).
+    """
+    try:
+        op = open_trades()
+        if not op:
+            return None
+        live = float(quote().get("mid") or 0)
+        for t in op:
+            if not live or t["target"] is None:
+                continue
+            d = 1 if t["direction"] == "long" else -1
+            entry = float(t["entry"])
+            stop = float(t["stop"])
+            tgt = float(t["target"])
+            span_gain = abs(tgt - entry)
+            span_risk = abs(entry - stop)
+            if span_gain <= 0 or span_risk <= 0:
+                continue
+            # Distance still to travel, in the trade's own direction.
+            to_tgt = (tgt - live) * d
+            to_stop = (live - stop) * d
+            dir_txt = "شراء 🟢" if d == 1 else "بيع 🔴"
+            if to_tgt <= span_gain * NEAR_TARGET_FRAC:
+                key = f"tgt:{t['id']}"
+                if seen.get(key) != "said":
+                    seen[key] = "said"
+                    r_now = (live - entry) * d / span_risk
+                    return (f"🎯 <b>قرب الهدف — صفقة #{t['id']}</b>\n"
+                            f"{dir_txt} · السعر {num(live)} · الهدف {num(tgt)} "
+                            f"(باقي {abs(to_tgt):.1f} نقطة)\n"
+                            f"حالياً {r_now:+.2f}R · "
+                            "<i>لك الخيار: خذ الربح الآن، أو خلّي الهدف يشتغل.</i>")
+            if to_stop <= span_risk * NEAR_STOP_FRAC:
+                key = f"stop:{t['id']}"
+                if seen.get(key) != "said":
+                    seen[key] = "said"
+                    r_now = (live - entry) * d / span_risk
+                    return (f"⚠️ <b>قرب الوقف — صفقة #{t['id']}</b>\n"
+                            f"{dir_txt} · السعر {num(live)} · الوقف {num(stop)} "
+                            f"(باقي {abs(to_stop):.1f} نقطة)\n"
+                            f"حالياً {r_now:+.2f}R · "
+                            "<i>السوق ضد الصفقة. قرّر: تخرج يدوي بجزء من الخسارة، "
+                            "أو تخلّي الوقف يشتغل.</i>")
+        return None
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return None
+
+
 def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     """One cycle: settle, announce, and maybe open. Split from the loop so it
     can be tested without a network or a live clock."""
@@ -1633,6 +1808,12 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
             if st != "open" and t["result"] != "manual":
                 for c in allow:
                     tg.send(c, _close_card(t))
+    # In-trade monitoring runs AFTER settle, so it never narrates a trade that
+    # this same cycle just closed.
+    note = trade_watch(seen)
+    if note:
+        for c in allow:
+            tg.send(c, note)
     if desk_is_silenced():
         return
     p = plan()
@@ -1701,6 +1882,8 @@ def selftest() -> int:
     print("== scenarios ==", card_scenarios()[:120].replace("\n", " "))
     print("== journal ==", journal_menu_text().replace("\n", " | "))
     print("== open ==", card_open()[:80].replace("\n", " "))
+    print("== action ==", card_action().replace("\n", " | ")[:160])
+    print("== alerts ==", alerts_guide().replace("\n", " | ")[:100])
     sw = support_watch({})
     print("== support ==", (sw or "silent").replace("\n", " ")[:120])
     print("== gate ==", (gate_watch({}) or "silent").replace("\n", " ")[:120])
