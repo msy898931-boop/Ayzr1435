@@ -4,12 +4,17 @@
 # token in ../.tg_token (or $TG_TOKEN).
 set -euo pipefail
 cd "$(dirname "$0")"
+REPO_ROOT="$(cd .. && pwd)"
 export FLYCTL_INSTALL="/home/openhands/.fly"
 export PATH="$FLYCTL_INSTALL/bin:$PATH"
 
 : "${FLY_API_TOKEN:?set FLY_API_TOKEN first}"
 BOT_TOKEN="${TG_TOKEN:-$(cat ../.tg_token 2>/dev/null || true)}"
 : "${BOT_TOKEN:?no bot token found in ../.tg_token}"
+
+# The one engine lives at the repo root. Copy it in for the build instead of
+# keeping a second, drift-prone copy under version control.
+cp -f "$REPO_ROOT/bot.py" ./bot.py
 
 APP="$(sed -nE 's/^app = "(.*)"/\1/p' fly.toml | head -1)"
 REGION="$(sed -nE 's/^primary_region = "(.*)"/\1/p' fly.toml | head -1)"

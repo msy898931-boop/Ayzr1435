@@ -1618,32 +1618,6 @@ def poll_forever(tg: Telegram, stop: threading.Event | None = None) -> None:
         time.sleep(0.5)
 
 
-def monitor_loop(tg: Telegram, allow: set[str], every_min: int = 2,
-                 stop: threading.Event | None = None) -> None:
-    """Watch open trades and push a follow-up on every status change."""
-    last: dict[int, str] = {}
-    while not (stop and stop.is_set()):
-        try:
-            grade()
-            live = float(quote().get("mid") or 0)
-            for t in open_trades():
-                d = 1 if t["direction"] == "long" else -1
-                status = "open"
-                if t["target"] is not None and (live - t["target"]) * d >= 0:
-                    status = "target"
-                elif (live - t["stop"]) * d <= 0:
-                    status = "stop"
-                if last.get(t["id"]) != status:
-                    last[t["id"]] = status
-                    if status in ("target", "stop"):
-                        body = card_monitor()
-                        for c in allow:
-                            tg.send(c, body)
-        except Exception:  # noqa: BLE001
-            pass
-        time.sleep(max(30, every_min * 60))
-
-
 def _write_plan(p: dict) -> int:
     return add_trade(p["direction"], p["entry"], p["stop"], p["target"],
                      LOT, note="desk")
@@ -2071,6 +2045,59 @@ def desk_loop(tg: Telegram, allow: set[str], every_min: int = 2,
 # ========================================================================
 # entry points
 # ========================================================================
+def _supervise(name: str, fn, args: tuple,
+               stop: threading.Event | None) -> None:
+    """Run a loop and restart it if it ever dies.
+
+    A host that gives no shell (Render) cannot restart a dead thread itself, so
+    each loop is wrapped here: a thread that exits silently turns "the bot
+    ignored me" into a mystery. Hosts that restart the process (Fly, a VPS) do
+    not need this and start the loops directly.
+    """
+    while not (stop and stop.is_set()):
+        try:
+            fn(*args)
+            print(f"{name} returned; restarting in 5s", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{name} crashed: {exc!r}; restarting in 5s", flush=True)
+        if stop is not None:
+            stop.wait(5)
+        else:
+            time.sleep(5)
+
+
+def start_desk(tg: Telegram, stop: threading.Event | None = None,
+               supervise: bool = False) -> list[threading.Thread]:
+    """Start the desk's background threads. THE one place they are listed.
+
+    Every way of running the desk -- a VPS, Fly, or Render's web wrapper -- goes
+    through here, so no entry point can forget a thread and quietly run a
+    different bot. That bug already existed: `bot.py`'s own main() started only
+    the trade monitor and never the auto-desk, so the "permanent bot for a VPS"
+    in the README would watch trades and never open one.
+
+    The desk trades its own book and narrates (this is the auto-trader, and it
+    also does the trade monitoring); the backup keeps the journal in its pinned
+    Telegram message. The POLLER is deliberately NOT here: the host starts it
+    itself, because a VPS wants it in the main thread so Ctrl+C stops the bot,
+    while Render wants it supervised like the rest. `supervise` wraps each loop
+    in a restarter for a host that gives no shell (Render); a host that can
+    restart the process itself (Fly, a VPS) leaves it off.
+    """
+    allow = load_allow()
+    jobs = (("desk", desk_loop, (tg, allow, 2, stop)),
+            ("backup", backup_loop, (tg, 60, stop)))
+    threads: list[threading.Thread] = []
+    for name, fn, args in jobs:
+        target = (lambda n=name, f=fn, a=args: _supervise(n, f, a, stop)) \
+            if supervise else fn
+        t = threading.Thread(target=target, args=() if supervise else args,
+                             name=name, daemon=True)
+        t.start()
+        threads.append(t)
+    return threads
+
+
 def selftest() -> int:
     print("== token ==", "ok" if token() else "MISSING")
     print("== quote ==", quote().get("mid"), quote().get("marketState"))
@@ -2120,9 +2147,12 @@ def main() -> int:
     if restored:
         print(f"restored {restored} trades from the Telegram backup")
     stop = threading.Event()
-    threading.Thread(target=monitor_loop, args=(tg, load_allow(), 2, stop), daemon=True).start()
-    threading.Thread(target=backup_loop, args=(tg, 60, stop), daemon=True).start()
+    start_desk(tg, stop)
+    auto = "off" if desk_is_silenced() else "on"
+    print(f"marketdesk: auto-trade {auto}", flush=True)
     try:
+        # The poller runs in the main thread so Ctrl+C stops the bot; the desk
+        # and the backup were started as daemons by start_desk above.
         poll_forever(tg, stop)
     except KeyboardInterrupt:
         stop.set()

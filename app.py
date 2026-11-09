@@ -115,23 +115,6 @@ def _restore(tg) -> None:
     print(f"restored {n} trades from the Telegram backup", flush=True)
 
 
-def _supervise(name: str, fn, args: tuple, stop: threading.Event) -> None:
-    """Run a loop and restart it if it ever dies.
-
-    A long-polling bot on a host that gives no shell must heal itself: a thread
-    that exits silently turns "the bot ignored me" into a mystery. Every loop
-    here is written to keep running, and this is the backstop for the day one
-    is not.
-    """
-    while not stop.is_set():
-        try:
-            fn(*args)
-            print(f"{name} returned; restarting in 5s", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"{name} crashed: {exc!r}; restarting in 5s", flush=True)
-        stop.wait(5)
-
-
 def main() -> int:
     desk._init_db()
     tok = desk.token()
@@ -158,15 +141,17 @@ def main() -> int:
     if restore.is_alive():
         print("restore is slow; starting the bot anyway", flush=True)
 
-    allow = desk.load_allow()
     auto = "off" if desk.desk_is_silenced() else "on"
-    for name, fn, args in (
-            ("poller", desk.poll_forever, (tg, stop)),
-            ("desk", desk.desk_loop, (tg, allow, 2, stop)),
-            ("backup", desk.backup_loop, (tg, 60, stop)),
-            ("self-ping", self_ping_loop, (stop,))):
-        threading.Thread(target=_supervise, args=(name, fn, args, stop),
-                         daemon=True).start()
+    # The desk, the backup and the poller all come from bot.py's one start_desk,
+    # so this wrapper cannot run a different bot than a VPS would: the only
+    # difference is `supervise=True` (this host gives no shell) and the self-ping.
+    desk.start_desk(tg, stop, supervise=True)
+    threading.Thread(target=desk._supervise,
+                     args=("poller", desk.poll_forever, (tg, stop), stop),
+                     daemon=True).start()
+    threading.Thread(target=desk._supervise,
+                     args=("self-ping", self_ping_loop, (stop,), stop),
+                     daemon=True).start()
     print(f"marketdesk: polling @Ayzr1324_bot (auto-trade {auto})", flush=True)
     try:
         stop.wait()

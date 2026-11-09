@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 """MarketDesk bot as a SCHEDULED automation — a near-continuous listener.
 
+>>> STATUS: a SEPARATE, SCHEDULED target — NOT the engine, and not on the same
+>>> release cadence as it. The engine is the repo-root `bot.py` (what Render and
+>>> Fly run); this file is an older self-contained variant for the OpenHands
+>>> cron automation, with its own decision math copied out of that engine. It is
+>>> kept only because the scheduled target may still be in use. If you change a
+>>> rule, change it in `bot.py` first — this copy does not follow automatically,
+>>> and a rule fixed only here would leave the live bot wrong.
+
 Why this shape: an always-on process needs a host, and the owner has none. An
 OpenHands cron automation *is* the host: it wakes every minute and, instead of
 reading once and exiting, long-polls Telegram for most of that minute, so a tap

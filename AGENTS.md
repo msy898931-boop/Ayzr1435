@@ -36,17 +36,31 @@ curl -s https://marketdesk-1o4g.onrender.com/health
 
 ## Verifying a change
 
-There is no test suite. The checks that exist, and that must stay green:
+The checks that exist, and that must stay green:
 
 ```bash
-python3 -m py_compile bot.py          # syntax
-python3 bot.py --selftest             # token, quote, every frame, every card
-python3 -m ruff check bot.py          # baseline: 17 findings, no new ones
-python3 -m mypy bot.py                # baseline: 2 findings, no new ones
+python3 -m unittest discover -s tests    # 21 tests, offline, no network
+python3 -m py_compile bot.py             # syntax
+python3 bot.py --selftest                # token, quote, every frame, every card (needs network)
+python3 -m ruff check bot.py             # baseline: 16 findings, no new ones
+python3 -m mypy bot.py                   # baseline: 2 findings, no new ones
 ```
 
-`--selftest` must leave the journal empty. The lint counts are baselines, not
-targets: a change that adds a finding is a change that added a finding.
+`tests/` stubs `quote`/`bars`, so it runs anywhere and pins the rules that
+decide money (sizing window, the plan gate, the 15m filter, grading). Run it
+before every push. `--selftest` must leave the journal empty. The lint counts
+are baselines, not targets: a change that adds a finding is a change that added
+a finding.
+
+## One engine, many entry points
+
+`bot.py` holds the only copy of the decision logic AND the only place the desk's
+threads are listed (`start_desk()`). `app.py` (Render), `bot.py` (VPS/Fly) and
+`automation/main.py` (the separate scheduled variant) are entry points, not
+forks. When adding a background loop, add it to `start_desk()` — never to one
+entry point alone. That exact bug shipped once: `bot.py`'s `main()` started only
+the trade monitor and never the auto-desk, so the documented "permanent bot for
+a VPS" would watch trades and never open one.
 
 ## Style
 
