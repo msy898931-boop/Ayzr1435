@@ -6,3 +6,7 @@ __pycache__/
 data/
 flybot/data/
 render-backup.json
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
