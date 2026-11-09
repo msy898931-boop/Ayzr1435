@@ -328,6 +328,25 @@ def atr(b: list[dict], n: int = 14):
     return a
 
 
+def rsi(vals: list[float], n: int = 14):
+    """Wilder's RSI. >50 momentum up, <50 down; >70 stretched, <30 washed."""
+    if len(vals) < n + 1:
+        return None
+    gains = losses = 0.0
+    for i in range(1, n + 1):
+        d = vals[i] - vals[i - 1]
+        gains += d if d > 0 else 0.0
+        losses += -d if d < 0 else 0.0
+    ag, al = gains / n, losses / n
+    for i in range(n + 1, len(vals)):
+        d = vals[i] - vals[i - 1]
+        ag = (ag * (n - 1) + (d if d > 0 else 0.0)) / n
+        al = (al * (n - 1) + (-d if d < 0 else 0.0)) / n
+    if al == 0:
+        return 100.0
+    return 100.0 - 100.0 / (1.0 + ag / al)
+
+
 def pivots(b: list[dict], left: int = 3, right: int = 3):
     highs, lows = [], []
     for i in range(left, len(b) - right):
@@ -339,6 +358,20 @@ def pivots(b: list[dict], left: int = 3, right: int = 3):
            all(low <= b[i + j]["low"] for j in range(1, right + 1)):
             lows.append(low)
     return highs, lows
+
+
+def _touches(level: float, b: list[dict], tol: float) -> int:
+    """How many bars came within `tol` of `level` -- a level's strength.
+
+    A pivot price is a single bar's extreme; what makes it a LEVEL the owner
+    cares about is how often price returned to it. Counting touches on the
+    frame the level came from is the honest measure of that.
+    """
+    n = 0
+    for x in b:
+        if x["low"] - tol <= level <= x["high"] + tol:
+            n += 1
+    return n
 
 
 def frame_trend(b: list[dict]) -> int:
@@ -361,19 +394,21 @@ SMALL_FRAMES = ("30m", "15m", "5m")
 
 
 def read_market() -> dict:
-    """One read of the tape: quote plus every frame's trend and ATR."""
+    """One read of the tape: quote plus every frame's trend, ATR and RSI."""
     q = quote()
     live = float(q.get("mid") or q.get("last") or 0)
-    trends, atrs = {}, {}
+    trends, atrs, rsis = {}, {}, {}
     for tf in FRAMES:
         try:
             b = bars(tf, 300)
             trends[tf] = frame_trend(b)
             atrs[tf] = atr(b)
+            rsis[tf] = rsi([x["close"] for x in b])
         except Exception:  # noqa: BLE001 - one missing frame must not kill the read
             trends[tf] = 0
             atrs[tf] = None
-    return {"q": q, "live": live, "trends": trends, "atrs": atrs}
+            rsis[tf] = None
+    return {"q": q, "live": live, "trends": trends, "atrs": atrs, "rsis": rsis}
 
 
 def market_open(q: dict) -> bool:
@@ -416,41 +451,129 @@ def _bias(trends: dict) -> tuple[str, str]:
 
 
 def card_analysis() -> str:
+    """A live, detailed read of the tape -- the deep analysis card.
+
+    Everything here is computed at the instant of the tap from the same engine
+    the desk trades on: per-frame trend/RSI/ATR, the EMA20 gate, structure
+    (higher-highs/lower-lows), the nearest levels with their touch counts, the
+    day range, spread and volatility, and finally the desk's own verdict. It
+    never invents a trade -- the verdict section says what the desk would do.
+    """
     m = read_market()
-    q, live, trends = m["q"], m["live"], m["trends"]
+    q, live, trends, atrs, rsis = (m["q"], m["live"], m["trends"],
+                                   m["atrs"], m["rsis"])
     state = "مفتوح ✅" if market_open(q) else "مسكّر ⛔"
     age = q.get("quoteAgeSeconds")
-    age_s = f"{int(age)//60} دقيقة" if isinstance(age, (int, float)) else "—"
+    age_s = f"{int(age)} ثانية" if isinstance(age, (int, float)) else "—"
     names = {"1d": "يومي", "4h": "4س", "1h": "1س", "30m": "30د",
              "15m": "15د", "5m": "5د"}
     icon = {1: "🟢", -1: "🔴", 0: "⚪"}
-    lines = [f"📊 <b>تحليل {SYMBOL}</b>",
-             f"السعر <b>{num(live)}</b> · السوق {state} · عمر التسعيرة {age_s}"]
+
+    lines = [f"📊 <b>تحليل {SYMBOL}</b> — لحظة الطلب",
+             f"السعر <b>{num(live)}</b> · السوق {state} · "
+             f"عمر التسعيرة {age_s}"]
+    if q.get("bid") and q.get("ask"):
+        lines.append(f"bid {num(q['bid'])} · ask {num(q['ask'])} · "
+                     f"سبريد {num(q.get('spread'))}")
     if q.get("dayDiffPercent") is not None:
         lines.append(f"تغيّر اليوم {q['dayDiffPercent']}%")
-    lines.append("")
-    lines.append("<b>الميل حسب الفريم:</b>")
-    row = " · ".join(f"{names[tf]}:{icon[trends.get(tf,0)]}" for tf in FRAMES)
-    lines.append(row)
+
+    # ---- per frame: trend, RSI, ATR -------------------------------------
     up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
+    lines.append("")
+    lines.append("<b>الفريمات (ميل · RSI · تقلب):</b>")
+    for tf in FRAMES:
+        r = rsis.get(tf)
+        r_txt = f"RSI {r:.0f}" if isinstance(r, (int, float)) else "RSI —"
+        a = atrs.get(tf)
+        a_txt = f"ATR {a:.1f}" if isinstance(a, (int, float)) else "ATR —"
+        lines.append(f"  {names[tf]}: {icon[trends.get(tf,0)]} {r_txt} · {a_txt}")
+
+    # ---- momentum read ---------------------------------------------------
+    r15 = rsis.get("15m")
+    if isinstance(r15, (int, float)):
+        if r15 >= 70:
+            mom = "متشبّع شراء — احتمال تصحيح"
+        elif r15 >= 55:
+            mom = "زخم صاعد"
+        elif r15 <= 30:
+            mom = "متشبّع بيع — احتمال ارتداد"
+        elif r15 <= 45:
+            mom = "زخم هابط"
+        else:
+            mom = "زخم محايد"
+        lines.append(f"\nزخم 15د: <b>{mom}</b> (RSI {r15:.0f})")
+
+    # ---- the desk's own gate --------------------------------------------
+    try:
+        bf = bars(TREND_FILTER_TF, 300)
+        ef = ema([x["close"] for x in bf], 20)
+    except Exception:  # noqa: BLE001
+        ef = None
+    if ef is not None:
+        pos = "فوق ✅" if live > ef else "تحت ⬇️"
+        lines.append(f"فلتر EMA20 ({names[TREND_FILTER_TF]}): السعر {pos} "
+                     f"({num(ef)})")
+
+    # ---- structure: are the swings making higher highs / lower lows? -----
+    try:
+        bh = bars("1h", 200)
+        highs, lows = pivots(bh, 3, 3)
+        hh = len(highs) >= 2 and highs[-1] > highs[-2]
+        hl = len(lows) >= 2 and lows[-1] > lows[-2]
+        if hh and hl:
+            struct = "قمم وقيعان صاعدة 🟢 (بنية صاعدة)"
+        elif not hh and not hl and len(highs) >= 2 and len(lows) >= 2:
+            struct = "قمم وقيعان هابطة 🔴 (بنية هابطة)"
+        else:
+            struct = "مختلطة ⚪ (بلا بنية واضحة)"
+        lines.append(f"البنية (1س): {struct}")
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ---- day range position ---------------------------------------------
+    hi, lo = q.get("high"), q.get("low")
+    if isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
+        pos = (live - lo) / (hi - lo) * 100
+        lines.append(f"نطاق اليوم: {num(lo)}–{num(hi)} · السعر عند "
+                     f"<b>{pos:.0f}%</b> منه")
+
+    # ---- levels with strength -------------------------------------------
+    try:
+        b1 = bars("1h", 300)
+        atr1 = atr(b1) or 1.0
+        tol = max(1.0, atr1 * 0.25)
+        res, sup = _levels(live)
+        if res:
+            parts = [f"{num(x)} ({_touches(x, b1, tol)} لمسة)" for x in res[:3]]
+            lines.append("مقاومات: " + " · ".join(parts))
+        if sup:
+            parts = [f"{num(x)} ({_touches(x, b1, tol)} لمسة)" for x in sup[:3]]
+            lines.append("دعوم: " + " · ".join(parts))
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ---- verdict: the desk's own conclusion -----------------------------
     lean, mark = _bias(trends)
-    if up >= CONFIRM_FRAMES:
-        lines.append(f"\nالميل العام: <b>صاعد</b> ({up}/6 فريمات)")
-        if not frame_agrees("long", live):
-            lines.append(f"<i>⚠️ بس السعر تحت EMA20 ({TREND_FILTER_TF}) — "
-                         "المكتب ما يشتري والزخم هابط.</i>")
+    lines.append("")
+    lines.append("<b>حكم المكتب:</b>")
+    p = plan(m)
+    if p is not None:
+        d = "شراء 🟢" if p["direction"] == "long" else "بيع 🔴"
+        lines.append(f"✅ صفقة جاهزة — {d} · دخول {num(p['entry'])} · "
+                     f"وقف {num(p['stop'])} · هدف {num(p['target'])} · "
+                     f"R:R {p['rr']:.2f}")
+    elif up >= CONFIRM_FRAMES:
+        lines.append(f"⏸️ الاتجاه <b>صاعد</b> ({up}/6) بس الفلتر مو موافق — "
+                     "استنى التأكيد.")
     elif dn >= CONFIRM_FRAMES:
-        lines.append(f"\nالميل العام: <b>هابط</b> ({dn}/6 فريمات)")
-        if not frame_agrees("short", live):
-            lines.append(f"<i>⚠️ بس السعر فوق EMA20 ({TREND_FILTER_TF}) — "
-                         "المكتب ما يبيع والزخم صاعد.</i>")
+        lines.append(f"⏸️ الاتجاه <b>هابط</b> ({dn}/6) بس الفلتر مو موافق — "
+                     "استنى التأكيد.")
     else:
-        lines.append(f"\nالميل العام: {mark} <b>{lean}</b> "
-                     f"(صاعد {up} · هابط {dn})")
-        lines.append("<i>ميل بالقراءة — مو صفقة. الصفقة بتحتاج "
-                     f"{CONFIRM_FRAMES}/6 فريمات متوافقة.</i>")
-    lines.append("\n<i>قراءة تحليلية، مو وعد ربح.</i>")
+        lines.append(f"⏸️ ما في صفقة — الفريمات ما اتفقت ({up}ص · {dn}هـ). "
+                     f"الميل: {mark} <b>{lean}</b>")
+    lines.append("\n<i>قراءة تحليلية لحظية — مو وعد ربح.</i>")
     return "\n".join(lines)
 
 
