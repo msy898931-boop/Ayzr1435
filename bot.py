@@ -80,6 +80,11 @@ MAX_OPEN = 1                     # one trade at a time (raise to 2 to stack)
 # blocked every loser (#7-9); the 30m version let a loser through, so the
 # filter is pinned to 15m. Set to False to disable and take raw frame tilt.
 TREND_FILTER_TF = "15m"          # the frame whose EMA20 the entry must respect
+# The support watch: the desk's own nearest support (from _levels) gets a
+# dedicated heads-up -- approaching, bounced, or broken -- so the owner hears
+# about the level he cares about, not only when a whole plan appears.
+SUPPORT_NEAR_PTS = 6.0           # "approaching" band around the level, points
+SUPPORT_BREAK_PTS = 3.0          # a 15m close this far under = broken
 # ---- menus --------------------------------------------------------------
 MENU = [
     [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
@@ -1453,7 +1458,81 @@ def desk_is_silenced() -> bool:
         ("0", "off", "no", "false")
 
 
-def desk_tick(tg: Telegram, allow: set[str], seen: dict[int, str]) -> None:
+def support_watch(seen: dict) -> str | None:
+    """The dedicated heads-up for the desk's watched support.
+
+    Returns one message on a STATE CHANGE -- approaching, bounced away, or a
+    confirmed break (a 15m close under the level) -- and None otherwise. The
+    state lives in `seen` so the same fact is never repeated; a standing "you
+    are near 4076" every two minutes is exactly the spam the desk must avoid.
+
+    The watched level is LATCHED in seen['support_level']. That matters: the
+    desk's nearest support is recomputed from live price, so the moment price
+    drops under 4076 the "nearest support" silently becomes 4054 -- and a break
+    of 4076 would never be seen. Latching keeps the alert aimed at the level the
+    owner is actually watching until it resolves (bounce, or break + move on).
+    """
+    try:
+        m = read_market()
+        live = m["live"]
+        res, sup = _levels(live)
+        level = seen.get("support_level")
+        if level is None:
+            if not sup:
+                return None
+            level = sup[0]
+            seen["support_level"] = level
+        b = bars("15m", 60)
+        closed = [x for x in b if not x.get("isOpen")]
+        close = float((closed[-1] if closed else b[-1])["close"])
+        prev = seen.get("support")
+
+        if close < level - SUPPORT_BREAK_PTS:
+            if prev != "broken":
+                seen["support"] = "broken"
+                return ("🚨 <b>كسر الدعم</b> — XAUUSD\n"
+                        f"شمعة 15د أغلقت <b>{num(close)}</b> تحت الدعم "
+                        f"<b>{num(level)}</b>.\nالسعر {num(live)} · "
+                        "<i>الدعم انكسر — احتمال استمرار الهبوط. "
+                        "لا تشتري هنا؛ استنى يرجع فوقه.</i>")
+            # already reported: move the watch to the next support below
+            if sup and sup[0] < level:
+                seen["support_level"] = sup[0]
+                seen["support"] = None
+            return None
+
+        if prev == "broken" and close > level:
+            seen["support"] = "bounced"
+            return ("✅ <b>رجع فوق الدعم</b> — XAUUSD\n"
+                    f"إغلاق 15د <b>{num(close)}</b> فوق الدعم "
+                    f"<b>{num(level)}</b>.\n<i>ارتداد محتمل — "
+                    "راقب تأكيد الصعود.</i>")
+
+        if abs(live - level) <= SUPPORT_NEAR_PTS:
+            if prev != "near":
+                seen["support"] = "near"
+                return ("👀 <b>السعر قرب الدعم</b> — XAUUSD\n"
+                        f"السعر <b>{num(live)}</b> · الدعم <b>{num(level)}</b> "
+                        f"(باقي {live - level:+.1f} نقطة).\n"
+                        "<i>لو ارتد من هنا = فرصة شراء. لو كسر بإغلاق = خطر.</i>")
+            return None
+
+        if live > level + SUPPORT_NEAR_PTS and prev == "near":
+            seen["support"] = "far"
+            return ("↗️ <b>ابتعاد عن الدعم</b> — XAUUSD\n"
+                    f"السعر <b>{num(live)}</b> رجع فوق الدعم "
+                    f"<b>{num(level)}</b>.\n<i>ارتداد ✅</i>")
+
+        # price has moved well above a stale watch: aim at the nearest support
+        if live > level + SUPPORT_NEAR_PTS * 4 and sup and sup[0] != level:
+            seen["support_level"] = sup[0]
+            seen["support"] = None
+        return None
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return None
+
+
+def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     """One cycle: settle, announce, and maybe open. Split from the loop so it
     can be tested without a network or a live clock."""
     # Re-read the allow list every cycle: a chat added by the poller (someone
@@ -1462,6 +1541,13 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict[int, str]) -> None:
     # then silence forever.
     allow |= load_allow()
     grade()
+    # The support watch runs before the silence switch: a level breaking is a
+    # fact about the market, not a trade decision, so the owner still hears it
+    # when auto-trading is off.
+    note = support_watch(seen)
+    if note:
+        for c in allow:
+            tg.send(c, note)
     for t in all_trades():
         st = t["status"]
         if st != seen.get(t["id"], "open"):
@@ -1517,7 +1603,7 @@ def desk_loop(tg: Telegram, allow: set[str], every_min: int = 2,
     opened or closed trade -- so a quiet market stays quiet. Every auto-opened
     trade carries a stop, so it is graded exactly like the owner's own.
     """
-    seen: dict[int, str] = {}
+    seen: dict = {}
     while not (stop and stop.is_set()):
         try:
             desk_tick(tg, allow, seen)
@@ -1539,6 +1625,8 @@ def selftest() -> int:
     print("== scenarios ==", card_scenarios()[:120].replace("\n", " "))
     print("== journal ==", journal_menu_text().replace("\n", " | "))
     print("== open ==", card_open()[:80].replace("\n", " "))
+    sw = support_watch({})
+    print("== support ==", (sw or "silent").replace("\n", " ")[:120])
     print("== trade parse ==", record_trade("سجل شراء 4075 وقف 4069 هدف 4085").replace("\n", " | "))
     return 0
 
