@@ -1154,7 +1154,16 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
         allow.add(chat)
         save_allow(allow)
         tg.send(chat, "👋 أهلاً بك في مكتب التحليل — تمت إضافتك.\n"
-                      "اضغط «❓ مساعدة» لتعرف كيف تسجّل صفقة.")
+                      "رح يوصلك كل شي: الصفقات، الإغلاقات، والتوصيات.\n"
+                      "اضغط «❓ مساعدة» لتعرف أكثر.")
+        # Bring the newcomer up to date at once: the desk only speaks on an
+        # event, so without this a new chat would wait for the next trade to
+        # see anything at all.
+        try:
+            if open_trades():
+                tg.send(chat, card_open(), keyboard_for("open"))
+        except Exception:  # noqa: BLE001
+            pass
         action = "menu"
     if cid:
         tg.answer(cid, "جارٍ التنفيذ…")
@@ -1369,6 +1378,11 @@ def desk_is_silenced() -> bool:
 def desk_tick(tg: Telegram, allow: set[str], seen: dict[int, str]) -> None:
     """One cycle: settle, announce, and maybe open. Split from the loop so it
     can be tested without a network or a live clock."""
+    # Re-read the allow list every cycle: a chat added by the poller (someone
+    # new typing /start) must receive the desk's trades, and this set is a
+    # snapshot taken at boot -- without this the new chat gets a greeting and
+    # then silence forever.
+    allow |= load_allow()
     grade()
     for t in all_trades():
         st = t["status"]
