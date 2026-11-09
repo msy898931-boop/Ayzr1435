@@ -73,7 +73,7 @@ TARGET_RR = 2.0                  # 9 * 2 = $18, inside the window
 MIN_RR = 1.5                     # below this a plan is not worth stating
 CONFIRM_FRAMES = 4               # a direction needs this many of 6 frames
 STRONG_FRAMES = 5                # ...and this many to allow a SECOND trade
-MAX_OPEN = 2                     # never carry more than two at once
+MAX_OPEN = 1                     # one trade at a time (raise to 2 to stack)
 # ---- menus --------------------------------------------------------------
 MENU = [
     [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
@@ -943,10 +943,9 @@ def help_text() -> str:
             "ما في داعي تسجّل شي.\n\n"
             "<b>قواعد الصفقات:</b>\n"
             "• صفقة أولى لمّا يتأكد الاتجاه (4/6 فريمات).\n"
-            "• صفقة ثانية بنفس الاتجاه بس إذا الإشارة <b>قوية</b> (5/6) "
-            "<b>وكانت الأولى كسبانة ولسا فيها مجال</b> — يعني زد على رابح، "
-            "مو على متعادل.\n"
-            "• أقصى صفقتين مفتوحتين مع بعض.\n\n"
+            "• <b>صفقة وحدة بأي وقت</b> — المكتب ما بيفتح تانية إلا لما "
+            "تنسكّر الأولى (وقف أو هدف).\n"
+            "• إذا كانت الإشارة قوية وبدك تزيد، سكّر الأولى بيدك أولاً.\n\n"
             "<b>بتقدر تسكّر صفقة بيدك</b> (لما تشوف السوق انقلب):\n"
             "«📂 الصفقات المفتوحة» ← اضغط <b>🔒 سكّر #</b>، أو ابعت "
             "<code>سكر 4</code>.\n\n"
@@ -1338,15 +1337,25 @@ def _no_second(p: dict, t, why: str) -> str:
     d = "شراء" if p["direction"] == "long" else "بيع"
     frm = "شراء 🟢" if t["direction"] == "long" else "بيع 🔴"
     tail = {
+        "full": (f"المكتب بيحمل <b>صفقة وحدة</b> بأي وقت — "
+                 f"#{t['id']} {frm} لسا مفتوحة."),
+        "weak": (f"الإشارة مو قوية كفاية للتانية (بدها 5/6) — "
+                 f"#{t['id']} {frm} لسا مفتوحة."),
         "flat": (f"الأولى #{t['id']} {frm} لسا عند الدخول — "
                  "التانية بتضاعف نفس الرهان بنفس السعر."),
         "mature": (f"الأولى #{t['id']} {frm} مشت نص الطريق — "
                    "التانية بتلحق السعر بس."),
     }[why]
+    rule = {
+        "full": "قاعدة: صفقة وحدة بأي وقت — سكّر الأولى قبل ما تفتح تانية.",
+        "weak": "قاعدة: التانية بدها إشارة قوية (5/6 فريمات).",
+        "flat": "قاعدة: زد على رابح، مو على متعادل.",
+        "mature": "قاعدة: زد على رابح، مو على سعر راح.",
+    }[why]
     return "\n".join([
-        f"⚠️ <b>إشارة {d} ثانية</b> — بس {tail}",
-        "🛑 <b>ما دخلنا تانية</b> — التكديس بس فوق صفقة كسبانة ولسا فيها مجال.",
-        "<i>قاعدة: زد على رابح، مو على متعادل ولا على سعر راح.</i>"])
+        f"⚠️ <b>إشارة {d} جديدة</b> — بس {tail}",
+        "🛑 <b>ما دخلنا.</b>",
+        f"<i>{rule}</i>"])
 
 
 def desk_is_silenced() -> bool:
@@ -1377,22 +1386,28 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict[int, str]) -> None:
         return
     op = open_trades()
     conflicts = [t for t in op if t["direction"] == p["direction"]]
-    if conflicts:
-        # A second same-direction trade is only allowed while the first is
-        # ahead AND still has room. Both gates use the FIRST conflicting trade.
-        t0 = conflicts[0]
+    t0 = conflicts[0] if conflicts else (op[0] if op else None)
+    why = None
+    if len(op) >= MAX_OPEN:
+        # The book is full: that is the whole reason, and it does not drift as
+        # the price moves, so one message stands until a trade closes.
+        why = "full"
+    elif conflicts:
         if not _in_profit(t0):
             why = "flat"
         elif _winning(t0):
             why = "mature"
-        else:
-            why = None
-    else:
-        t0, why = None, None
+        elif not p["strong"]:
+            why = "weak"
     if why is not None:
-        for c in allow:
-            tg.send(c, _no_second(p, t0, why))
-    elif len(op) < MAX_OPEN and (not conflicts or p["strong"]):
+        # Speak once per open trade per reason: a standing refusal is not a
+        # change, and repeating it every cycle is the spam the desk must avoid.
+        key = f"refuse:{t0['id']}"
+        if seen.get(key) != why:
+            seen[key] = why
+            for c in allow:
+                tg.send(c, _no_second(p, t0, why))
+    else:
         tid = _write_plan(p)
         row = next(x for x in all_trades() if x["id"] == tid)
         seen[tid] = "open"
