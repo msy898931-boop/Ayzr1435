@@ -961,8 +961,13 @@ def card_monitor() -> str:
     return "\n".join(out)
 
 
-def record_trade(text: str) -> str:
-    """Parse 'سجل شراء 4075 وقف 4069 هدف 4085 حجم 0.01' and store it."""
+def parse_trade(text: str) -> dict | str:
+    """Read 'سجل شراء 4075 وقف 4069 هدف 4085 حجم 0.01' into fields.
+
+    Returns the parsed dict, or a string explaining what is missing. Pure: it
+    touches no storage, so a diagnostic (--selftest) can exercise the parser
+    without writing a trade into the owner's journal.
+    """
     toks = text.split()
     if not toks:
         return "اكتب الصفقة هيك: <code>سجل شراء 4075 وقف 4069 هدف 4085</code>"
@@ -996,14 +1001,23 @@ def record_trade(text: str) -> str:
         return "الوقف مطلوب — بلا وقف ما في قياس بالـR."
     if "entry" not in nums:
         return "لازم تحدد سعر الدخول."
-    tid = add_trade(direction, nums["entry"], nums["stop"],
-                    nums.get("target"), nums.get("size"))
+    return {"direction": direction, "entry": nums["entry"], "stop": nums["stop"],
+            "target": nums.get("target"), "size": nums.get("size")}
+
+
+def record_trade(text: str) -> str:
+    """Parse a trade line and store it in the journal."""
+    got = parse_trade(text)
+    if isinstance(got, str):
+        return got
+    tid = add_trade(got["direction"], got["entry"], got["stop"],
+                    got["target"], got["size"])
     t = [x for x in all_trades() if x["id"] == tid][0]
-    d = "شراء 🟢" if direction == "long" else "بيع 🔴"
-    out = [f"✅ انسجّلت الصفقة #{tid}", f"{d} · دخل {num(nums['entry'])} · "
-           f"وقف {num(nums['stop'])}"]
-    if nums.get("target"):
-        out.append(f"هدف {num(nums['target'])}")
+    d = "شراء 🟢" if got["direction"] == "long" else "بيع 🔴"
+    out = [f"✅ انسجّلت الصفقة #{tid}", f"{d} · دخل {num(got['entry'])} · "
+           f"وقف {num(got['stop'])}"]
+    if got.get("target"):
+        out.append(f"هدف {num(got['target'])}")
     pr = _planned_r(t)
     if pr is not None and pr < 1.0:
         out.append(f"⚠️ المضاعف {pr:.2f}R أقل من 1 — خاطرة أكبر من المكسب.")
@@ -1627,7 +1641,8 @@ def selftest() -> int:
     print("== open ==", card_open()[:80].replace("\n", " "))
     sw = support_watch({})
     print("== support ==", (sw or "silent").replace("\n", " ")[:120])
-    print("== trade parse ==", record_trade("سجل شراء 4075 وقف 4069 هدف 4085").replace("\n", " | "))
+    print("== trade parse ==", str(parse_trade("سجل شراء 4075 وقف 4069 هدف 4085"))
+          .replace("\n", " ")[:120])
     return 0
 
 
