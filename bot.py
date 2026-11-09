@@ -491,6 +491,80 @@ def _levels_with_strength(live: float) -> list[str]:
     return out
 
 
+def _verdict(m: dict) -> dict:
+    """The desk's read of this tape, decided ONCE.
+
+    state is one of closed / hold / enter / wait. The 'شو تعمل' card and the
+    analysis card's top line both format from THIS dict, so the desk can never
+    tell the owner two different things in the same minute. It calls plan(),
+    the same engine the auto-desk trades on -- there is no second opinion here.
+    """
+    if not market_open(m["q"]):
+        return {"state": "closed"}
+    op = open_trades()
+    if op:
+        return {"state": "hold", "trade": op[0], "live": m["live"]}
+    p = plan(m)
+    if p is not None:
+        return {"state": "enter", "plan": p}
+    trends = m["trends"]
+    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
+    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
+    lean, mark = _bias(trends)
+    try:
+        b = bars(TREND_FILTER_TF, 300)
+        e = ema([x["close"] for x in b], 20)
+    except Exception:  # noqa: BLE001 - the filter is a guard, not a blocker
+        e = None
+    return {"state": "wait", "up": up, "dn": dn, "ema": e,
+            "lean": lean, "mark": mark}
+
+
+def _headline(v: dict) -> str:
+    """One line: what to do right now, from a verdict dict."""
+    st = v["state"]
+    if st == "closed":
+        return "⛔ السوق مسكّر — ما في شي تعمله"
+    if st == "hold":
+        t = v["trade"]
+        d = "شراء 🟢" if t["direction"] == "long" else "بيع 🔴"
+        return f"📂 عندك صفقة مفتوحة #{t['id']} ({d}) — خلّيها تشتغل"
+    if st == "enter":
+        p = v["plan"]
+        d = "شراء" if p["direction"] == "long" else "بيع"
+        return (f"🟢 ادخل {d} — دخول {num(p['entry'])} · "
+                f"وقف {num(p['stop'])} · هدف {num(p['target'])}")
+    if v["up"] >= CONFIRM_FRAMES:
+        return "⏸️ استنى — الاتجاه صاعد بس السعر تحت الفلتر"
+    if v["dn"] >= CONFIRM_FRAMES:
+        return "⏸️ استنى — الاتجاه هابط بس السعر فوق الفلتر"
+    return f"⏸️ استنى — السوق محتار ({v['up']}ص · {v['dn']}هـ)"
+
+
+def _verdict_detail(v: dict) -> str:
+    """The full sentence behind the headline, for the analysis card's verdict."""
+    st = v["state"]
+    if st == "closed":
+        return "⛔ السوق مسكّر — ما في قراءة حيّة."
+    if st == "hold":
+        return (f"📂 صفقة مفتوحة #{v['trade']['id']} — المكتب يديرها، "
+                "ما يفتح جديدة الآن.")
+    if st == "enter":
+        p = v["plan"]
+        d = "شراء 🟢" if p["direction"] == "long" else "بيع 🔴"
+        return (f"✅ صفقة جاهزة — {d} · دخول {num(p['entry'])} · "
+                f"وقف {num(p['stop'])} · هدف {num(p['target'])} · "
+                f"R:R {p['rr']:.2f}")
+    if v["up"] >= CONFIRM_FRAMES:
+        return (f"⏸️ الاتجاه <b>صاعد</b> ({v['up']}/6) بس الفلتر مو موافق — "
+                "استنى التأكيد.")
+    if v["dn"] >= CONFIRM_FRAMES:
+        return (f"⏸️ الاتجاه <b>هابط</b> ({v['dn']}/6) بس الفلتر مو موافق — "
+                "استنى التأكيد.")
+    return (f"⏸️ ما في صفقة — الفريمات ما اتفقت ({v['up']}ص · {v['dn']}هـ). "
+            f"الميل: {v['mark']} <b>{v['lean']}</b>")
+
+
 def card_analysis() -> str:
     """A live, detailed read of the tape -- the deep analysis card.
 
@@ -511,6 +585,9 @@ def card_analysis() -> str:
     icon = {1: "🟢", -1: "🔴", 0: "⚪"}
 
     lines = [f"📊 <b>تحليل {SYMBOL}</b> — لحظة الطلب"]
+    v = _verdict(m)
+    lines.append(f"<b>الخلاصة:</b> {_headline(v)}")
+    lines.append("")
     lines.append(f"السعر <b>{num(live)}</b> · السوق {state} · "
                  f"عمر التسعيرة {age_s}")
     if q.get("bid") and q.get("ask"):
@@ -520,8 +597,6 @@ def card_analysis() -> str:
         lines.append(f"تغيّر اليوم {q['dayDiffPercent']}%")
 
     # ---- per frame: trend, RSI, ATR -------------------------------------
-    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
-    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
     lines.append("")
     lines.append("<b>الفريمات (ميل · RSI · تقلب):</b>")
     for tf in FRAMES:
@@ -573,24 +648,9 @@ def card_analysis() -> str:
     lines += _levels_with_strength(live)
 
     # ---- verdict: the desk's own conclusion -----------------------------
-    lean, mark = _bias(trends)
     lines.append("")
     lines.append("<b>حكم المكتب:</b>")
-    p = plan(m)
-    if p is not None:
-        d = "شراء 🟢" if p["direction"] == "long" else "بيع 🔴"
-        lines.append(f"✅ صفقة جاهزة — {d} · دخول {num(p['entry'])} · "
-                     f"وقف {num(p['stop'])} · هدف {num(p['target'])} · "
-                     f"R:R {p['rr']:.2f}")
-    elif up >= CONFIRM_FRAMES:
-        lines.append(f"⏸️ الاتجاه <b>صاعد</b> ({up}/6) بس الفلتر مو موافق — "
-                     "استنى التأكيد.")
-    elif dn >= CONFIRM_FRAMES:
-        lines.append(f"⏸️ الاتجاه <b>هابط</b> ({dn}/6) بس الفلتر مو موافق — "
-                     "استنى التأكيد.")
-    else:
-        lines.append(f"⏸️ ما في صفقة — الفريمات ما اتفقت ({up}ص · {dn}هـ). "
-                     f"الميل: {mark} <b>{lean}</b>")
+    lines.append(_verdict_detail(v))
     lines.append("\n<i>قراءة تحليلية لحظية — مو وعد ربح.</i>")
     return "\n".join(lines)
 
@@ -1209,62 +1269,56 @@ def card_action() -> str:
     trade (with its exact numbers), wait for the gate, stand aside, or manage
     the trade that is already open. It never invents a plan -- if plan() is
     None it says so and gives the single condition that would change the answer.
+
+    It formats from the shared _verdict() dict, the same one the analysis card's
+    top line uses, so the two cards cannot contradict each other.
     """
     m = read_market()
     live = m["live"]
-    trends = m["trends"]
-    if not market_open(m["q"]):
-        return ("🧭 <b>شو تعمل هلّق</b> — " + SYMBOL + "\n"
-                "⛔ السوق مسكّر — ما في شي تعمله.\n"
-                "<i>استنى يفتح السوق.</i>")
-    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
-    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
+    v = _verdict(m)
+    head = "🧭 <b>شو تعمل هلّق</b> — " + SYMBOL + "\n"
 
-    op = open_trades()
-    if op:
-        t = op[0]
+    if v["state"] == "closed":
+        return (head + "⛔ السوق مسكّر — ما في شي تعمله.\n"
+                "<i>استنى يفتح السوق.</i>")
+
+    if v["state"] == "hold":
+        t = v["trade"]
         d = 1 if t["direction"] == "long" else -1
-        r_now = ((live - float(t["entry"])) * d / abs(float(t["entry"]) - float(t["stop"]))
+        r_now = ((live - float(t["entry"])) * d /
+                 abs(float(t["entry"]) - float(t["stop"]))
                  if abs(float(t["entry"]) - float(t["stop"])) else 0)
         dir_txt = "شراء 🟢" if d == 1 else "بيع 🔴"
-        return ("🧭 <b>شو تعمل هلّق</b> — " + SYMBOL + "\n"
-                f"📂 عندك صفقة مفتوحة #{t['id']} ({dir_txt}).\n"
+        return (head + f"📂 عندك صفقة مفتوحة #{t['id']} ({dir_txt}).\n"
                 f"دخل {num(t['entry'])} · وقف {num(t['stop'])} · "
                 f"هدف {num(t['target'])}\n"
                 f"حالياً <b>{r_now:+.2f}R</b> · السعر {num(live)}\n\n"
                 "<b>شو تعمل:</b> خلّيها — الوقف والهدف بيشتغلوا لحالهم.\n"
                 "<i>لا تزيد على نفس الاتجاه إلا لما تسكّرها.</i>")
 
-    p = plan()
-    if p is not None:
-        return ("🧭 <b>شو تعمل هلّق</b> — " + SYMBOL + "\n"
-                "🟢 <b>ادخل صفقة الآن</b> — الشروط مكتملة:\n" +
-                "\n".join(_plan_lines(p)) + "\n\n"
+    if v["state"] == "enter":
+        return (head + "🟢 <b>ادخل صفقة الآن</b> — الشروط مكتملة:\n" +
+                "\n".join(_plan_lines(v["plan"])) + "\n\n"
                 "<i>سجّلها بالبوت أو بمنصتك — الوقف إلزامي.</i>")
 
-    # No plan: say why, and the single condition that flips it.
-    try:
-        b = bars(TREND_FILTER_TF, 300)
-        e = ema([x["close"] for x in b], 20)
-    except Exception:  # noqa: BLE001
-        e = None
+    # wait: say why, and the single condition that flips it.
     tf_ar = {"1d": "يومي", "4h": "4س", "1h": "1س", "30m": "30د",
              "15m": "15د", "5m": "5د"}.get(TREND_FILTER_TF, TREND_FILTER_TF)
-    if up >= CONFIRM_FRAMES:
+    e = v["ema"]
+    if v["up"] >= CONFIRM_FRAMES:
         why = ("الاتجاه صاعد، بس السعر تحت EMA20 "
                f"({tf_ar}) — الدخول عكس الزخم.")
         todo = (f"⏸️ <b>استنى</b> شمعة {tf_ar} تسكّر فوق "
                 f"<b>{num(e)}</b>." if e else "⏸️ <b>استنى</b> تأكيد الزخم.")
-    elif dn >= CONFIRM_FRAMES:
+    elif v["dn"] >= CONFIRM_FRAMES:
         why = ("الاتجاه هابط، بس السعر فوق EMA20 "
                f"({tf_ar}) — الدخول عكس الزخم.")
         todo = (f"⏸️ <b>استنى</b> شمعة {tf_ar} تسكّر تحت "
                 f"<b>{num(e)}</b>." if e else "⏸️ <b>استنى</b> تأكيد الزخم.")
     else:
-        why = f"الفريمات ما اتفقت ({up}ص · {dn}هـ) — السوق محتار."
+        why = f"الفريمات ما اتفقت ({v['up']}ص · {v['dn']}هـ) — السوق محتار."
         todo = "⏸️ <b>استنى</b> يتفق 4 من 6 فريمات على اتجاه."
-    return ("🧭 <b>شو تعمل هلّق</b> — " + SYMBOL + "\n"
-            "⏸️ <b>لا تدخل الآن.</b>\n"
+    return (head + "⏸️ <b>لا تدخل الآن.</b>\n"
             f"<i>{why}</i>\n\n"
             f"<b>شو تعمل:</b> {todo}\n"
             "<i>الواقف بأمان أحسن من الداخل غلط.</i>")
