@@ -450,6 +450,47 @@ def _bias(trends: dict) -> tuple[str, str]:
     return "عرضي", "⚪"
 
 
+def _structure_read() -> str | None:
+    """Higher-highs/higher-lows on 1h, or None when the tape is unreadable."""
+    try:
+        bh = bars("1h", 200)
+        highs, lows = pivots(bh, 3, 3)
+    except Exception:  # noqa: BLE001 - a missing frame must not kill the card
+        return None
+    if len(highs) < 2 or len(lows) < 2:
+        return None
+    hh = highs[-1] > highs[-2]
+    hl = lows[-1] > lows[-2]
+    if hh and hl:
+        return "البنية (1س): قمم وقيعان صاعدة 🟢 (بنية صاعدة)"
+    if not hh and not hl:
+        return "البنية (1س): قمم وقيعان هابطة 🔴 (بنية هابطة)"
+    return "البنية (1س): مختلطة ⚪ (بلا بنية واضحة)"
+
+
+def _levels_with_strength(live: float) -> list[str]:
+    """Nearest resistances/supports, each tagged with how often price touched it.
+
+    A pivot price is one bar's extreme; the touch count on the 1h frame is what
+    turns it into a level worth watching. Tolerance is a quarter of the 1h ATR,
+    so a quiet market does not count noise and a wild one still groups a cluster.
+    """
+    try:
+        b1 = bars("1h", 300)
+        tol = max(1.0, (atr(b1) or 1.0) * 0.25)
+        res, sup = _levels(live)
+    except Exception:  # noqa: BLE001 - a missing frame must not kill the card
+        return []
+    out = []
+    if res:
+        out.append("مقاومات: " + " · ".join(
+            f"{num(x)} ({_touches(x, b1, tol)} لمسة)" for x in res[:3]))
+    if sup:
+        out.append("دعوم: " + " · ".join(
+            f"{num(x)} ({_touches(x, b1, tol)} لمسة)" for x in sup[:3]))
+    return out
+
+
 def card_analysis() -> str:
     """A live, detailed read of the tape -- the deep analysis card.
 
@@ -469,9 +510,9 @@ def card_analysis() -> str:
              "15m": "15د", "5m": "5د"}
     icon = {1: "🟢", -1: "🔴", 0: "⚪"}
 
-    lines = [f"📊 <b>تحليل {SYMBOL}</b> — لحظة الطلب",
-             f"السعر <b>{num(live)}</b> · السوق {state} · "
-             f"عمر التسعيرة {age_s}"]
+    lines = [f"📊 <b>تحليل {SYMBOL}</b> — لحظة الطلب"]
+    lines.append(f"السعر <b>{num(live)}</b> · السوق {state} · "
+                 f"عمر التسعيرة {age_s}")
     if q.get("bid") and q.get("ask"):
         lines.append(f"bid {num(q['bid'])} · ask {num(q['ask'])} · "
                      f"سبريد {num(q.get('spread'))}")
@@ -517,20 +558,9 @@ def card_analysis() -> str:
                      f"({num(ef)})")
 
     # ---- structure: are the swings making higher highs / lower lows? -----
-    try:
-        bh = bars("1h", 200)
-        highs, lows = pivots(bh, 3, 3)
-        hh = len(highs) >= 2 and highs[-1] > highs[-2]
-        hl = len(lows) >= 2 and lows[-1] > lows[-2]
-        if hh and hl:
-            struct = "قمم وقيعان صاعدة 🟢 (بنية صاعدة)"
-        elif not hh and not hl and len(highs) >= 2 and len(lows) >= 2:
-            struct = "قمم وقيعان هابطة 🔴 (بنية هابطة)"
-        else:
-            struct = "مختلطة ⚪ (بلا بنية واضحة)"
-        lines.append(f"البنية (1س): {struct}")
-    except Exception:  # noqa: BLE001
-        pass
+    struct = _structure_read()
+    if struct:
+        lines.append(struct)
 
     # ---- day range position ---------------------------------------------
     hi, lo = q.get("high"), q.get("low")
@@ -540,19 +570,7 @@ def card_analysis() -> str:
                      f"<b>{pos:.0f}%</b> منه")
 
     # ---- levels with strength -------------------------------------------
-    try:
-        b1 = bars("1h", 300)
-        atr1 = atr(b1) or 1.0
-        tol = max(1.0, atr1 * 0.25)
-        res, sup = _levels(live)
-        if res:
-            parts = [f"{num(x)} ({_touches(x, b1, tol)} لمسة)" for x in res[:3]]
-            lines.append("مقاومات: " + " · ".join(parts))
-        if sup:
-            parts = [f"{num(x)} ({_touches(x, b1, tol)} لمسة)" for x in sup[:3]]
-            lines.append("دعوم: " + " · ".join(parts))
-    except Exception:  # noqa: BLE001
-        pass
+    lines += _levels_with_strength(live)
 
     # ---- verdict: the desk's own conclusion -----------------------------
     lean, mark = _bias(trends)
