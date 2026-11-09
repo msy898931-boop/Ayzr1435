@@ -79,7 +79,8 @@ MENU = [
     [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
     [("🎬 السيناريوهات", "scenarios"), ("🔔 المستويات", "levels")],
     [("📂 الصفقات المفتوحة", "open"), ("📒 السجل", "journal_menu")],
-    [("➕ سجّل صفقة", "howto"), ("❓ مساعدة", "help")],
+    [("👥 المشتركين", "who"), ("➕ سجّل صفقة", "howto")],
+    [("❓ مساعدة", "help")],
 ]
 
 JOURNAL_MENU = [
@@ -96,6 +97,7 @@ TEXT_ACTIONS = {
     "يومي": "j_day", "اليوم": "j_day", "أسبوعي": "j_week", "اسبوعي": "j_week",
     "شهري": "j_month", "الشهر": "j_month", "متابعة": "monitor",
     "مساعدة": "help", "قائمة": "menu",
+    "مين": "who", "المشتركين": "who", "المشتركين؟": "who",
 }
 TRADE_VERBS = {"سجل", "سجّل", "صفقة", "/trade", "trade"}
 CLOSE_VERBS = {"سكر", "سكّر", "أغلق", "اغلق", "اقفل", "أقفل", "/close", "close"}
@@ -852,6 +854,32 @@ def close_keyboard() -> dict | None:
              for t in rows]}
 
 
+def card_who(tg: "Telegram") -> str:
+    """Who receives everything: the live allow list, with each name resolved.
+
+    The name is read live from Telegram (first_name/username), so a new chat
+    shows up here the moment it is added -- this is the answer to 'who is on
+    the bot?', not a stale list.
+    """
+    chats = sorted(load_allow())
+    L = [f"👥 <b>مين موجود بالبوت</b> — العدد <b>{len(chats)}</b>", ""]
+    for cid in chats:
+        role = "👑 المالك" if cid == _backup_chat() else "👤 مشترك"
+        try:
+            u = (tg.call("getChat", {"chat_id": cid}) or {}).get("result") or {}
+            nm = (str(u.get("first_name") or "") + " " +
+                  str(u.get("last_name") or "")).strip() or "—"
+            un = f"  @{u['username']}" if u.get("username") else ""
+            L.append(f"  {role}  {esc(nm)}{un}")
+            L.append(f"       <code>{cid}</code>")
+        except Exception:  # noqa: BLE001 - a dead id must not hide the rest
+            L.append(f"  {role}  <i>تعذّر الجلب</i>")
+            L.append(f"       <code>{cid}</code>")
+    L.append("")
+    L.append("<i>كل هدول بيوصلهم نفس الشي: الصفقات والإغلاقات.</i>")
+    return "\n".join(L)
+
+
 def card_monitor() -> str:
     """A follow-up for every open trade: progress, floating, break-even hint."""
     grade()
@@ -951,7 +979,8 @@ def help_text() -> str:
             "<code>سكر 4</code>.\n\n"
             "<b>وكمان بتقدر تسجّل صفقتك بنفسك</b> (اختياري):\n"
             "<code>سجل شراء 4075 وقف 4069 هدف 4085 حجم 0.01</code>\n\n"
-            "تابع: «📂 الصفقات المفتوحة» و«📒 السجل» (يومي/أسبوعي/شهري).\n\n"
+            "تابع: «📂 الصفقات المفتوحة» و«📒 السجل» (يومي/أسبوعي/شهري).\n"
+            "«👥 المشتركين» بيوريك مين بيوصلو كل شي.\n\n"
             "<i>قراءة تحليلية، مو وعد ربح.</i>")
 
 
@@ -1108,10 +1137,14 @@ def backup_loop(tg: Telegram, poll_s: int = 60,
                 stop: threading.Event | None = None) -> None:
     """Upload only when the journal file changed: a stat every minute is cheap,
     and an idle bot never re-uploads, so the chat stays quiet."""
-    last = -1.0
+    last = None
     while not (stop and stop.is_set()):
         try:
-            stamp = DB_PATH.stat().st_mtime if DB_PATH.exists() else 0.0
+            # Watch the allow list too: a new subscriber must reach the durable
+            # copy even if no trade has happened since -- otherwise the pinned
+            # snapshot quietly lags behind who actually gets the messages.
+            stamp = (DB_PATH.stat().st_mtime if DB_PATH.exists() else 0.0,
+                     ALLOW_PATH.stat().st_mtime if ALLOW_PATH.exists() else 0.0)
             if stamp != last:
                 if backup_journal(tg):
                     last = stamp
@@ -1173,6 +1206,8 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
         elif action == "close":
             sel = _close_id_or_hint(text)
             out = sel if isinstance(sel, str) else close_trade(sel)
+        elif action == "who":
+            out = card_who(tg)
         else:
             out = dispatch(action)
     except Exception as exc:  # noqa: BLE001 - one bad action must not kill the loop
