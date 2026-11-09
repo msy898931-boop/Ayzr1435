@@ -1107,15 +1107,17 @@ def card_action() -> str:
         e = ema([x["close"] for x in b], 20)
     except Exception:  # noqa: BLE001
         e = None
+    tf_ar = {"1d": "يومي", "4h": "4س", "1h": "1س", "30m": "30د",
+             "15m": "15د", "5m": "5د"}.get(TREND_FILTER_TF, TREND_FILTER_TF)
     if up >= CONFIRM_FRAMES:
         why = ("الاتجاه صاعد، بس السعر تحت EMA20 "
-               f"({TREND_FILTER_TF}) — الدخول عكس الزخم.")
-        todo = (f"⏸️ <b>استنى</b> شمعة {TREND_FILTER_TF} تسكّر فوق "
+               f"({tf_ar}) — الدخول عكس الزخم.")
+        todo = (f"⏸️ <b>استنى</b> شمعة {tf_ar} تسكّر فوق "
                 f"<b>{num(e)}</b>." if e else "⏸️ <b>استنى</b> تأكيد الزخم.")
     elif dn >= CONFIRM_FRAMES:
         why = ("الاتجاه هابط، بس السعر فوق EMA20 "
-               f"({TREND_FILTER_TF}) — الدخول عكس الزخم.")
-        todo = (f"⏸️ <b>استنى</b> شمعة {TREND_FILTER_TF} تسكّر تحت "
+               f"({tf_ar}) — الدخول عكس الزخم.")
+        todo = (f"⏸️ <b>استنى</b> شمعة {tf_ar} تسكّر تحت "
                 f"<b>{num(e)}</b>." if e else "⏸️ <b>استنى</b> تأكيد الزخم.")
     else:
         why = f"الفريمات ما اتفقت ({up}ص · {dn}هـ) — السوق محتار."
@@ -1702,14 +1704,16 @@ def gate_watch(seen: dict) -> str | None:
         if prev == side:
             return None
         seen["gate"] = side
+        tf_ar = {"1d": "يومي", "4h": "4س", "1h": "1س", "30m": "30د",
+                 "15m": "15د", "5m": "5د"}.get(TREND_FILTER_TF, TREND_FILTER_TF)
         if side == "above":
             return ("🟢 <b>باب الشراء انفتح</b> — XAUUSD\n"
-                    f"شمعة {TREND_FILTER_TF} أغلقت <b>{num(close)}</b> فوق "
+                    f"شمعة {tf_ar} أغلقت <b>{num(close)}</b> فوق "
                     f"EMA20 (<b>{num(e)}</b>).\nالسعر {num(live)} · "
                     "<i>الفلتر صار يوافق الشراء — إذا الاتجاه العام صاعد، "
                     "هي فرصة الدخول.</i>")
         return ("🔴 <b>باب البيع انفتح</b> — XAUUSD\n"
-                f"شمعة {TREND_FILTER_TF} أغلقت <b>{num(close)}</b> تحت "
+                f"شمعة {tf_ar} أغلقت <b>{num(close)}</b> تحت "
                 f"EMA20 (<b>{num(e)}</b>).\nالسعر {num(live)} · "
                 "<i>الفلتر صار يوافق البيع — إذا الاتجاه العام هابط، "
                 "هي فرصة الدخول.</i>")
