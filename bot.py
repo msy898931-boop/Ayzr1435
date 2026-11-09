@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -97,6 +98,7 @@ TEXT_ACTIONS = {
     "مساعدة": "help", "قائمة": "menu",
 }
 TRADE_VERBS = {"سجل", "سجّل", "صفقة", "/trade", "trade"}
+CLOSE_VERBS = {"سكر", "سكّر", "أغلق", "اغلق", "اقفل", "أقفل", "/close", "close"}
 
 
 # ========================================================================
@@ -249,6 +251,11 @@ def keyboard_for(action: str) -> dict:
         return kb(JOURNAL_MENU)
     if action in ("menu", "help"):
         return kb(MENU)
+    if action == "open":
+        ck = close_keyboard()
+        if ck:
+            ck["inline_keyboard"] += nav("open")["inline_keyboard"]
+            return ck
     return nav(action)
 
 
@@ -745,6 +752,9 @@ def _line(t) -> str:
         tail = f"  ✅ الهدف — {t['r_multiple']:+.2f}R"
     elif t["result"] == "stop":
         tail = f"  ❌ الوقف — {t['r_multiple']:+.2f}R"
+    elif t["result"] == "manual":
+        r = f" — {t['r_multiple']:+.2f}R" if t["r_multiple"] is not None else ""
+        tail = f"  🔒 أُغلقت يدوياً{r}"
     else:
         tail = f"  ⚪ {t['result'] or 'مغلقة'}"
     m = _money(t)
@@ -826,7 +836,20 @@ def card_open() -> str:
                 "ما في صفقة مفتوحة هلّق — المكتب ما بحمل شي حالياً.")
     L = [f"📂 <b>الصفقات المفتوحة</b> — العدد <b>{len(rows)}</b>", ""]
     L += ["  " + _line(t) for t in rows]
+    L.append("")
+    L.append("<i>لسكّر صفقة بيدك، اضغط زرها أو ابعت: "
+             "<code>سكر 4</code></i>")
     return "\n".join(L)
+
+
+def close_keyboard() -> dict | None:
+    """One button per open trade, so closing is a tap, not a typed id."""
+    rows = open_trades()
+    if not rows:
+        return None
+    return {"inline_keyboard":
+            [[{"text": f"🔒 سكّر #{t['id']}", "callback_data": f"close:{t['id']}"}]
+             for t in rows]}
 
 
 def card_monitor() -> str:
@@ -920,11 +943,14 @@ def help_text() -> str:
             "ما في داعي تسجّل شي.\n\n"
             "<b>قواعد الصفقات:</b>\n"
             "• صفقة أولى لمّا يتأكد الاتجاه (4/6 فريمات).\n"
-            "• صفقة ثانية بس إذا كانت إشارة <b>قوية</b> (5/6) — وبتتسجّل "
-            "وتتابع مع الأولى.\n"
-            "• ما في صفقتين بنفس الاتجاه بثقة ضعيفة، ولو الأولى ماشية عالربح "
-            "ما في داعي للتانية.\n\n"
-            "<b>كمان بتقدر تسجّل صفقتك بنفسك</b> (اختياري):\n"
+            "• صفقة ثانية بنفس الاتجاه بس إذا الإشارة <b>قوية</b> (5/6) "
+            "<b>وكانت الأولى كسبانة ولسا فيها مجال</b> — يعني زد على رابح، "
+            "مو على متعادل.\n"
+            "• أقصى صفقتين مفتوحتين مع بعض.\n\n"
+            "<b>بتقدر تسكّر صفقة بيدك</b> (لما تشوف السوق انقلب):\n"
+            "«📂 الصفقات المفتوحة» ← اضغط <b>🔒 سكّر #</b>، أو ابعت "
+            "<code>سكر 4</code>.\n\n"
+            "<b>وكمان بتقدر تسجّل صفقتك بنفسك</b> (اختياري):\n"
             "<code>سجل شراء 4075 وقف 4069 هدف 4085 حجم 0.01</code>\n\n"
             "تابع: «📂 الصفقات المفتوحة» و«📒 السجل» (يومي/أسبوعي/شهري).\n\n"
             "<i>قراءة تحليلية، مو وعد ربح.</i>")
@@ -1099,6 +1125,8 @@ def action_for(text: str | None) -> str:
     first = (text or "").strip().split()[0] if (text or "").strip() else ""
     if first in TRADE_VERBS:
         return "trade"
+    if first in CLOSE_VERBS:
+        return "close"
     return TEXT_ACTIONS.get(first.lower()) or TEXT_ACTIONS.get(first) or "menu"
 
 
@@ -1106,10 +1134,14 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
     cq = upd.get("callback_query")
     msg = upd.get("message")
     if cq is not None:
-        action = cq.get("data") or ""
+        data = cq.get("data") or ""
         chat = str(((cq.get("message") or {}).get("chat") or {}).get("id") or "")
         cid = cq.get("id", "")
-        text = None
+        # A close button carries its trade id ("close:4"); a nav button is a
+        # plain action name. Both flow through `text` so the close parser sees
+        # the id the same way it sees a typed "سكر 4".
+        action = "close" if data.startswith("close:") else data
+        text = data
     elif msg is not None:
         chat = str((msg.get("chat") or {}).get("id") or "")
         text = msg.get("text")
@@ -1128,7 +1160,13 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
     if cid:
         tg.answer(cid, "جارٍ التنفيذ…")
     try:
-        out = record_trade(text) if action == "trade" else dispatch(action)
+        if action == "trade":
+            out = record_trade(text)
+        elif action == "close":
+            sel = _close_id_or_hint(text)
+            out = sel if isinstance(sel, str) else close_trade(sel)
+        else:
+            out = dispatch(action)
     except Exception as exc:  # noqa: BLE001 - one bad action must not kill the loop
         out = f"⚠️ تعذّر التنفيذ ({esc(exc.__class__.__name__)})."
     tg.send(chat, out, keyboard_for(action))
@@ -1232,10 +1270,13 @@ def _open_card(p: dict, t=None) -> str:
 
 def _close_card(t) -> str:
     d = "شراء 🟢" if t["direction"] == "long" else "بيع 🔴"
-    won = t["result"] == "target"
+    icon, verdict = {
+        "target": ("🏁", "✅ <b>الهدف</b> — صفقة رابحة"),
+        "stop": ("🛑", "❌ <b>الوقف</b> — صفقة خاسرة"),
+        "manual": ("🔒", "🔒 <b>أُغلقت يدوياً</b>"),
+    }.get(t["result"], ("⚪", f"⚪ <b>{t['result'] or 'مغلقة'}</b>"))
     m = _money(t)
-    verdict = ("✅ <b>الهدف</b> — صفقة رابحة" if won else "❌ <b>الوقف</b> — صفقة خاسرة")
-    lines = [f"{'🏁' if won else '🛑'} <b>انحسمت الصفقة #{t['id']}</b>",
+    lines = [f"{icon} <b>انحسمت الصفقة #{t['id']}</b>",
              f"{d} — {verdict}",
              f"دخل {num(t['entry'])} · خرج {num(t['exit_price'])}"]
     if t["r_multiple"] is not None:
@@ -1243,6 +1284,54 @@ def _close_card(t) -> str:
     if m is not None:
         lines.append(f"{m:+,.2f}$ · الحساب ≈ ${ACCOUNT_USD + m:,.0f}")
     return "\n".join(lines)
+
+
+def close_trade(tid: int, price: float | None = None) -> str:
+    """Close an open trade by hand at the live price.
+
+    The desk closes its own trades at the stop or the target; this is the
+    owner's override -- the way to cut a doubled position. It is priced the
+    desk's way (R against the planned risk) and recorded as 'manual', so the
+    record never pretends a hand-close was a stop or a target.
+    """
+    rows = [t for t in all_trades() if t["id"] == tid]
+    if not rows:
+        return f"ما في صفقة رقم #{tid}."
+    t = rows[0]
+    if t["status"] != "open":
+        return f"الصفقة #{tid} مسكّرة أصلاً."
+    if price is None:
+        try:
+            price = float(quote().get("mid") or 0)
+        except Exception:  # noqa: BLE001
+            price = 0.0
+    if price <= 0:
+        return "ما قدرت أقرأ السعر — جرّب كمان شوي."
+    risk = _risk(t)
+    d = 1 if t["direction"] == "long" else -1
+    r = ((price - t["entry"]) * d / risk) if risk else None
+    _settle(tid, "manual", price, r)
+    return _close_card(next(x for x in all_trades() if x["id"] == tid))
+
+
+def _close_id_or_hint(text: str) -> int | str:
+    """The trade id in a close command, or a hint naming the open trades.
+
+    The id may come from a typed command ("سكر 4") or a button ("close:4"), so
+    it is read as the first number anywhere in the text. With one open trade
+    the id may be omitted; with several it must be given, and the hint lists
+    them so the owner can just send the number back.
+    """
+    m = re.search(r"\d+", text or "")
+    if m:
+        return int(m.group())
+    op = open_trades()
+    if not op:
+        return "ما في صفقة مفتوحة لسكّرها."
+    if len(op) == 1:
+        return op[0]["id"]
+    return ("في أكثر من صفقة مفتوحة — حدّد الرقم: "
+            + " · ".join(f"#{t['id']}" for t in op))
 
 
 def _no_second(p: dict, t, why: str) -> str:
@@ -1276,7 +1365,9 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict[int, str]) -> None:
         st = t["status"]
         if st != seen.get(t["id"], "open"):
             seen[t["id"]] = st
-            if st != "open":
+            # A manual close already sent its card from the button handler;
+            # announcing it here too would deliver the same closure twice.
+            if st != "open" and t["result"] != "manual":
                 for c in allow:
                     tg.send(c, _close_card(t))
     if desk_is_silenced():
