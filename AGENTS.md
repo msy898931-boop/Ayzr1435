@@ -39,7 +39,7 @@ curl -s https://marketdesk-1o4g.onrender.com/health
 The checks that exist, and that must stay green:
 
 ```bash
-python3 -m unittest discover -s tests    # 21 tests, offline, no network
+python3 -m unittest discover -s tests    # 27 tests, offline, no network
 python3 -m py_compile bot.py             # syntax
 python3 bot.py --selftest                # token, quote, every frame, every card (needs network)
 python3 -m ruff check bot.py             # baseline: 16 findings, no new ones
@@ -47,10 +47,16 @@ python3 -m mypy bot.py                   # baseline: 2 findings, no new ones
 ```
 
 `tests/` stubs `quote`/`bars`, so it runs anywhere and pins the rules that
-decide money (sizing window, the plan gate, the 15m filter, grading). Run it
-before every push. `--selftest` must leave the journal empty. The lint counts
-are baselines, not targets: a change that adds a finding is a change that added
-a finding.
+decide money (sizing window, the plan gate, the 15m filter, grading) plus token
+resolution. Run it before every push. `--selftest` must leave the journal empty.
+The lint counts are baselines, not targets: a change that adds a finding is a
+change that added a finding.
+
+`--selftest` prints the token as `ok (@name)`, `MISSING`, or `DEAD`. Trust only
+`ok`: a stale `TELEGRAM_BOT_TOKEN` in the environment is a non-empty string that
+404s on every send, and the old truthiness check printed `ok` for it — a
+diagnostic that could not fail. `token()` now verifies each candidate with
+`getMe` and takes the first that reaches a bot.
 
 ## One engine, many entry points
 

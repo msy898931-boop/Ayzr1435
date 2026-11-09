@@ -239,6 +239,67 @@ class ParseTradeTest(unittest.TestCase):
         self.assertIsInstance(bot.parse_trade("4075 وقف 4069"), str)
 
 
+class TokenResolutionTest(unittest.TestCase):
+    """A token is only a token if getMe reaches the bot. A stale env value is a
+    non-empty string that 404s on every send -- the exact bug that made every
+    read look fine while the bot was silent. token() must skip it."""
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        self._ident = bot.token_identity
+        self._path = bot.TOKEN_PATH
+        # No token file: force the environment path.
+        bot.TOKEN_PATH = bot.Path(os.path.join(tempfile.mkdtemp(), ".tg_token"))
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+        bot.token_identity = self._ident
+        bot.TOKEN_PATH = self._path
+
+    def test_a_dead_candidate_is_skipped_for_a_live_one(self):
+        os.environ.pop("TG_TOKEN", None)
+        os.environ["TELEGRAM_BOT_TOKEN"] = "dead-value"
+        bot.token_identity = lambda t: "Ayzr1324_bot" if t == "live-value" else ""
+        bot.TOKEN_PATH.write_text("live-value\n")
+        self.assertEqual(bot.token(), "live-value")
+
+    def test_the_dead_env_value_alone_does_not_win(self):
+        # Only the dead value exists: token() still returns it (so the bot is
+        # not left tokenless) but token_identity is what reports the truth.
+        os.environ.pop("TG_TOKEN", None)
+        os.environ["TELEGRAM_BOT_TOKEN"] = "dead-value"
+        bot.token_identity = lambda t: ""
+        self.assertEqual(bot.token(), "dead-value")
+        self.assertEqual(bot.token_identity(bot.token()), "")
+
+    def test_the_file_wins_over_the_environment(self):
+        os.environ["TG_TOKEN"] = "env-value"
+        bot.token_identity = lambda t: "Ayzr1324_bot" if t == "file-value" else ""
+        bot.TOKEN_PATH.write_text("file-value\n")
+        self.assertEqual(bot.token(), "file-value")
+
+    def test_token_state_reports_dead_not_ok(self):
+        # The bug this guards: a dead token printed "ok" because the check only
+        # asked "is there a string?". token_state must answer the real question.
+        os.environ.pop("TG_TOKEN", None)
+        os.environ["TELEGRAM_BOT_TOKEN"] = "dead-value"
+        bot.token_identity = lambda t: ""
+        self.assertEqual(bot.token_state(),
+                         "DEAD (has a value, but getMe fails)")
+
+    def test_token_state_reports_ok_with_the_identity(self):
+        os.environ["TG_TOKEN"] = "live-value"
+        bot.token_identity = lambda t: "Ayzr1324_bot"
+        self.assertEqual(bot.token_state(), "ok (@Ayzr1324_bot)")
+
+    def test_token_state_reports_missing_when_nothing_is_set(self):
+        os.environ.pop("TG_TOKEN", None)
+        os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+        bot.token_identity = lambda t: ""
+        self.assertEqual(bot.token_state(), "MISSING")
+
+
 class EntryPointTest(unittest.TestCase):
     """The regression that started this: every host must start the SAME desk.
     bot.py's main() once started only the monitor and never the auto-desk."""

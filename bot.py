@@ -149,16 +149,50 @@ def _get(url: str, timeout: int = 25):
         return json.loads(r.read().decode())
 
 
+def token_identity(t: str) -> str:
+    """The @username this token reaches, or "" if it reaches no bot.
+
+    This is the difference between a token and a *string that looks like* one:
+    a stale TELEGRAM_BOT_TOKEN in the environment is a 35-character value, so a
+    truthiness test calls it "ok" while every send 404s. Only a getMe round-trip
+    can tell them apart.
+    """
+    if not t:
+        return ""
+    try:
+        r = _get(f"{API}/bot{t}/getMe", timeout=10)
+        return (r.get("result") or {}).get("username", "") or ""
+    except Exception:  # noqa: BLE001 - unreachable/HTTP error both mean "no"
+        return ""
+
+
 def token() -> str:
-    """The bot token. The local `.tg_token` file wins over the environment: a
-    stale TELEGRAM_BOT_TOKEN injected into the environment once pointed at a
-    different, dead bot and silently shadowed the right one, so every send 404'd
-    while every read looked fine. The file is the operator's explicit choice."""
+    """The bot token, VALIDATED before use.
+
+    A stale TELEGRAM_BOT_TOKEN once pointed at a different, dead bot and
+    silently shadowed the right one: every read looked fine and every send
+    404'd. So each candidate is checked with getMe and the first one that
+    actually reaches a bot wins, whichever store holds it. The local `.tg_token`
+    file is the operator's explicit choice and is tried first.
+
+    If nothing verifies (offline, or every candidate is dead) this falls back to
+    the first non-empty candidate rather than returning nothing, so a network
+    blip at boot cannot leave the bot tokenless -- `--selftest` reports that
+    case as DEAD rather than "ok".
+    """
+    cands: list[str] = []
     if TOKEN_PATH.exists():
-        t = TOKEN_PATH.read_text().strip()
-        if t:
+        try:
+            cands.append(TOKEN_PATH.read_text().strip())
+        except OSError:
+            pass
+    cands += [os.environ.get("TG_TOKEN", ""),
+              os.environ.get("TELEGRAM_BOT_TOKEN", "")]
+    cands = [c for c in cands if c]
+    for t in cands:
+        if token_identity(t):
             return t
-    return os.environ.get("TG_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN") or ""
+    return cands[0] if cands else ""
 
 
 # ========================================================================
@@ -2098,8 +2132,23 @@ def start_desk(tg: Telegram, stop: threading.Event | None = None,
     return threads
 
 
+def token_state() -> str:
+    """One line on the token, for --selftest. Proves reachability, not presence.
+
+    A stale TELEGRAM_BOT_TOKEN is a non-empty string that 404s on every send, so
+    a truthiness check printed "ok" for a dead token -- the diagnostic hid the
+    very bug it existed to catch. MISSING / ok (@name) / DEAD are the only three
+    honest answers.
+    """
+    t = token()
+    if not t:
+        return "MISSING"
+    ident = token_identity(t)
+    return f"ok (@{ident})" if ident else "DEAD (has a value, but getMe fails)"
+
+
 def selftest() -> int:
-    print("== token ==", "ok" if token() else "MISSING")
+    print("== token ==", token_state())
     print("== quote ==", quote().get("mid"), quote().get("marketState"))
     print("== frames ==", {tf: len(bars(tf, 50)) for tf in FRAMES})
     print("== analysis ==", card_analysis()[:120].replace("\n", " "))
