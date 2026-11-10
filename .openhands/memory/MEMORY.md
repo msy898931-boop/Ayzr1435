@@ -681,3 +681,119 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   (stubs `quote`/`bars`). Run `python3 -m unittest discover -s tests`. Baselines:
   ruff `bot.py` 16, mypy 2. Gotcha: `grade()` reads bars at/after `opened_at`,
   so tests backdate `opened_at` before grading.
+
+## Ayzr1435 — the gold "professional combo", validated on all of 2026 (2026-11-07)
+
+- ⭐⭐ **The combo is a real, stable edge — verified on a full year, not a
+  lucky stretch.** Config: two-frame trend (15m + 1h) + EMA20, ADX 20–40,
+  ATR 0.08–0.25%, MACD up, RSI 35–58, **stop $10 / target $18** (R:R 1.8).
+  On **2026-01-02 → 2026-11-08** (Dukascopy XAUUSD, 26,784 15m bars, 279 days):
+  **160 trades · 43.8% win · +36.0R · +$2.25/trade · max DD −10.4R · longest
+  losing streak 8** (≈ +$72 on a $200 account at 1% risk).
+- ⭐⭐ **Every quarter was green** (Q1 +14.8R · Q2 +5.8R · Q3 +5.4R · Q4 +10.0R)
+  and it **made money in the DOWN months** (Mar −11% +0.4R · Jun −11.8% +6.2R ·
+  Sep −6.7% +8.0R · Oct −6.7% +9.2R). It is not just riding gold's uptrend — it
+  takes shorts too (long 69 / 46% / +20.6R · short 91 / 42% / +15.4R).
+- ⭐ **Sample size changes the number, not the verdict.** The same combo read
+  **60% win on a 59-day / 42-trade sample** but **43.8% on the full year** — the
+  small sample was optimistic. A small-sample win rate is a *hope*, not a fact.
+- ⭐ **Exit config on the full year:** $10/$18 = +36.0R (best) · $10/$15 = +36.5R
+  · $9/$11 = +30.3R · $12/$20 = +22.7R · $8/$14 = +20.0R.
+- ⭐ **RSI alone is NOT enough.** Layer-by-layer (59d, $9/$11): no filters 288pf
+  45% −1.3R · **RSI alone 203pf 48% +12.6R (not stable)** · RSI+MACD 134pf 47%
+  +6.0R · RSI+MACD+ADX 69pf 57% +17.7R · **full (+ATR) 62pf 58% +18.0R (stable)**.
+  **ADX is the heart of the combo** — adding it alone lifted the win rate 47%→57%.
+  Narrowing RSI to 35–55 raises the win rate but cuts trades and total profit.
+- ⭐ **The combo beats a random entry** (200-trial random baseline: +$0.06/trade
+  avg, best +$2.55; combo +$2.90) — the filters do real work, it is not chance.
+
+### Data source for a full year of gold (Yahoo cannot do it)
+- Yahoo gives 15m only for the **last 60 days**; for a full year use **Dukascopy**:
+  `https://datafeed.dukascopy.com/datafeed/XAUUSD/{Y}/{M-1:02d}/{D:02d}/BID_candles_min_1.bi5`
+  — LZMA, 24-byte records `>iiiiif` = (sec-of-day, open, close, low, high, vol),
+  **price = raw / 1000**, bucket the seconds onto the UTC day. Weekends come back
+  empty. Loader: `backtest/fetch_duka.py` (12 threads → `duka_2026.json`, aggregates
+  to 15m/30m/1h/4h/1d). `Frames("duka")` reads it. Full year ≈ 100 min serial,
+  ~8 min at 12 threads.
+- ⚠️ `bot.bars()` (the desk's own feed) serves only ~193 15m bars (~2 days) and
+  Yahoo `GC=F` is a futures *proxy* — neither is a verdict on XAUUSD spot.
+
+### ⚠️ Dukascopy gotchas + the bot-vs-combo verdict (2026-11-07)
+- ⚠️ **Dukascopy PADS the closed market with flat bars (high == low).** All of
+  Saturday, most of Sunday, and Friday after the close come back as filler at
+  one price (measured: Sat 59,040 flat bars, Sun 57,434, Fri 8,462). Those are
+  not the market — they add fake "days" and a dead stretch. Keep the session
+  only: **Sunday 22:00 UTC → Friday 21:00 UTC**, and drop any bar with h == l.
+  Script: `backtest/clean_duka.py` (421,920 min bars → 284,175). Also: the
+  parallel fetch silently lost **19 days** (Jul/Aug) — always verify day coverage.
+- ⭐ **The desk's own bot (`bot.py`) vs the combo, same 2026, same minute bars,
+  251 trading days:** bot 2702 trades / 33.9% / +49.0R / **−55R max DD** (2 of 4
+  quarters negative, Q4 −15R) vs combo 146 trades / 43.8% / +33.2R / **−9.2R DD**
+  (all 4 quarters green). On $200 at desk risk the bot drew down **−87%** (hit
+  $74) while the combo drew down only −22%. **Verdict: the bot is a raw
+  quantity machine (no ADX/ATR/MACD/RSI filters) — higher total R but far too
+  risky on a small account; the combo is the safe, stable one.** Simulator:
+  `backtest/bot2026.py`. Report: `bot-vs-combo.html`.
+
+## MarketDesk — the combo filters + the look-ahead that flattered them (2026-11-07)
+
+- ⭐⭐ **A filter that reads the forming bar is reading the future.** The combo
+  gate first backtested at **+58R** on 2026 — too good. The filter was reading
+  the **current 15m bar**, whose close repaints as it fills; the live desk did the
+  same (`bars()` returns the forming bar). Fix: `bot.closed(b, tf)` drops the bar
+  whose `now - openTime < frame seconds`; `filter_status`/`frame_agrees` and the
+  backtest (`_at(t)-1`) read the **last CLOSED bar**. Honest number: **+25R**. Any
+  surface that gates on an indicator must call `closed()`; a number too good to be
+  true is a bug to find, not a result to ship.
+- ⭐ **The filters buy SAFETY, not total profit — and they do NOT port between
+  systems.** On the bot's own 6-frame replay (2026, closed bars): raw **2686 trades
+  +86R but −51R drawdown** (hit $119 of $200 = −40%, a losing quarter); **ADX+ATR
+  → 793 trades +71R, −19R drawdown, zero losing quarters** ($/trade 2.8×). Adding
+  **MACD** (+68R/−25R) or **RSI** (**+13R!**) made it worse — the 6-frame agreement
+  is *already* a momentum filter, so a second one only cuts paying trades. The full
+  4-gate futures combo → 193 trades, +32R. **Default ships `adx,atr`**
+  (`DESK_FILTER_GATES`, `DESK_FILTERS=0` off); MACD/RSI stay available but off.
+  *A filter validated on one system must be re-measured on the next.*
+- **`plan()` is the one engine.** The gate lives inside `plan()` (returns None when
+  blocked), so the button, the alerts and auto-trade share it; `_verdict` carries a
+  `blocked` string (`_filter_line`) naming the gate that held the trade back, shown
+  by every card. Both `--selftest` and the live cards stay consistent.
+- Baselines now: **44 tests** (was 34), **ruff 16**, **mypy 3**. New indicators'
+  `float | None` arithmetic trips mypy — split into two locals and guard None.
+
+## MarketDesk — البوت المطوّر + نوافذ المالك (2026-11-07)
+
+- ⭐ **"خلي البوت يحكي كلشي قلتو" = طبقة عرض، مو محرّك جديد.** طلب المالك =
+  البوت يعطي نفس التحليل (مستويات/سيناريوهات/إيمت ولماذا). الحل: `card_map`
+  (مناطق بيع/شراء + سيولة) + `card_news` (معلومة فقط) + سيناريو عرضي بـ
+  `card_scenarios` (ADX<20)، مربوطين بالـMENU/dispatch. **الأخبار ما تدخل الصفقة
+  أبداً** — `NewsTest` يثبت `plan()` نفس الشي قبل/بعد الأخبار؛ ما في داتا أخبار
+  تاريخية، فقاعدة خبريّة ما بتنختبر → معلومة، مو إشارة.
+- ⭐ **نافذة المالك ($8-12 وقف / $15-20 هدف) بتحتاج حصر الطرفين.** `_sized`: احصر
+  الهدف بين TARGET_MIN/MAX، بعدين أرضِه على `risk × MIN_RR`. TARGET_RR=2.2.
+  ⚠️ خطر $12×1.5=$18 ≤ $20، فالترتيب يضمن R:R≥1.5 دايماً. ($12 وقف لوحده كان
+  بيطلع هدف $26.4 — خارج النافذة.)
+- ⭐ **داتا السنة: `backtest/duka_2026.json`** (251 يوم، 6 فريمات، 56841 شمعة 5د،
+  2026-01-01..11-08). `bot2026.load()` → series جاهزة؛ `fullgrid.build_signals()`
+  مرة وحدة ثم `simulate(b5,sig,stop,tgt)` لأي إعداد (apple-to-apple).
+  `duka_2026_min.json` شكله `[epoch,o,h,l,c]` — ما ينفع مع الloader.
+- ⭐ **النتيجة السنوية (تكلفة $0.5/صفقة):** $9/$18 → +26.9R · **$9/$20 → +50.3R،
+  تراجع −17.1R، صفر أرباع سالبة** · $10/$20 → +43.8R · $12/$20 → +28.5R ·
+  $8/$16 → +6.4R · $9/$15 → +12.3R. → **$9/$20 هو الأفضل** (هدف $20 يتفوّق على
+  $18 رغم صفقات أقل 743 مقابل 793 — الجودة بتغلب الكمية).
+- **تجربة أسبوع (2026-11-01..11-08، شمعة بشمعة، صفقة وحدة):** $9/$20 = 10 صفقات
+  4ر/6خ = **+$26** · $9/$18 = نفس الإشارات = **+$18**. التقارير:
+  `week-trial.html`, `bot-upgraded.html`, `market-analysis.html` بـ`/workspace/project`.
+- Baselines: **51 tests** (كانوا 44)، ruff 16، mypy 3 — **صفر خطأ جديد مني**.
+
+## ⚠️ Render: مفتاح الـAPI موقوف، والبوت الحي على حساب تاني (2026-11-07)
+
+- **`$Render_api_key` = حساب فاضي/موقوف** (`services: []`, `402 billing_suspended`).
+  ما فيني أنشئ/أعدّل خدمة منو.
+- **البوت حي:** `marketdesk-1o4g.onrender.com/health` → 200. يعني الخدمة الحية
+  على **حساب Render تاني**.
+- ⭐ **autoDeploy ما عم يوصل** — الخدمة الحية ما عملت redeploy من 2026-11-09
+  18:11 UTC، ولا commit `cb787ab` ولا `d937d24` وصلها. ما في webhook/commit-status
+  من Render. **النشر بدو تدخّل المالك من لوحة Render.**
+- ⭐ **درس:** الـ200 على `/health` **ما بيعني إنو الكود الجديد وصل**. تأكد إنو
+  `uptime_s` رجع لصفر بعد الـpush؛ uptime عالي = ما صار نشر.
