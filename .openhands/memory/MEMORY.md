@@ -797,3 +797,20 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   من Render. **النشر بدو تدخّل المالك من لوحة Render.**
 - ⭐ **درس:** الـ200 على `/health` **ما بيعني إنو الكود الجديد وصل**. تأكد إنو
   `uptime_s` رجع لصفر بعد الـpush؛ uptime عالي = ما صار نشر.
+
+## MarketDesk — Render: API service vs render.yaml, and the commit oracle (2026-11-10)
+
+- ⭐ **A service created via `POST /v1/services` (inline `envVars`) IGNORES
+  `render.yaml`.** The repo Blueprint never applies to it, so a behaviour switch
+  must be right in the CODE default. `DESK_NEWS_LIVE` defaulted to 0 → live
+  Arabic news was silently OFF in production while working locally. Fixed by
+  defaulting it ON in code (`00bd6dd`).
+- ⭐ **`/health` `commit` (+ `uptime_s` resetting) is the deployed-commit
+  oracle.** `/health` 200 does NOT mean the new code is live. After a manual
+  deploy it read `3836698` with `uptime_s` reset — proof. A push alone deploys
+  nothing here.
+- ⭐ **The new secrets never arrived.** `RENDER_DEPLOY_HOOK` / `RENDER_API_KEY_NEW`
+  read empty (`${#VAR}`=0) across a terminal reset and a ~70-name probe, while
+  TELEGRAM/GITHUB/Render_api_key inject fine. **Fastest no-secret deploy: paste
+  the Deploy Hook URL straight into a browser.** `$Render_api_key` is the OLD
+  account's key (0 services); the live service is on the new account.
