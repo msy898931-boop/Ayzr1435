@@ -17,44 +17,86 @@ import owner_plan as OP  # noqa: E402
 STOP, TGT, COST = 9.0, 20.0, 0.5
 
 
-def collect_entries(sig):
-    """The trades the CURRENT desk takes, with each bar's high/low kept."""
-    trades, op = [], None
-    for s in sig:
+def collect_entries(sig, occ_stop=30.0, occ_tgt=20.0):
+    """The desk's own entries, each with the FULL bar path to its end.
+
+    Step 1: find the entry bars exactly as the desk does ($9 stop / $20 target
+    occupancy, one trade at a time). Step 2: from each entry, scan forward and
+    record bars until the $20 target or a deliberately WIDE `occ_stop` is hit,
+    so any tighter or trailing rule can be scored on the same entry without the
+    path being truncated. Trades are scored independently, so this is the "given
+    this entry stream, what does the exit earn" counterfactual.
+    """
+    # step 1: the desk's entry bars (no re-entry on the exit bar, as day_replay)
+    entries, op = [], None
+    for i, s in enumerate(sig):
         if op is not None:
             d, e = op["d"], op["entry"]
-            sg = 1 if d == "long" else -1
-            op["bars"].append((s["hi"], s["lo"]))
-            hit_stop = (s["lo"] <= op["stop"]) if d == "long" else (s["hi"] >= op["stop"])
+            hit_stop = (s["lo"] <= e - STOP) if d == "long" else (s["hi"] >= e + STOP)
             hit_tgt = (s["hi"] >= e + TGT) if d == "long" else (s["lo"] <= e - TGT)
             if hit_stop or hit_tgt:
-                trades.append(op)
                 op = None
-        if op is None and s["d"] and s["ok"]:
-            sg = 1 if s["d"] == "long" else -1
-            op = {"d": s["d"], "entry": s["px"], "bars": [], "t": s["t"],
-                  "stop": s["px"] - sg * STOP}
+            continue
+        if s["d"] and s["ok"]:
+            op = {"d": s["d"], "entry": s["px"]}
+            entries.append(i)
+    # step 2: full path from each entry
+    trades = []
+    for i in entries:
+        s0 = sig[i]
+        d, e = s0["d"], s0["px"]
+        sg = 1 if d == "long" else -1
+        bars = []
+        for s in sig[i + 1:]:
+            bars.append((s["hi"], s["lo"], s["px"]))
+            hit_wide = (s["lo"] <= e - occ_stop) if d == "long" else (s["hi"] >= e + occ_stop)
+            hit_tgt = (s["hi"] >= e + occ_tgt) if d == "long" else (s["lo"] <= e - occ_tgt)
+            if hit_wide or hit_tgt:
+                break
+        trades.append({"d": d, "entry": e, "t": s0["t"], "bars": bars})
     return trades
 
 
-def score(trade, rule):
-    """Run one trade's bar path under an exit `rule`; return $ result."""
+def score(trade, rule, init_stop=STOP, mode="lag"):
+    """Run one trade's bar path under an exit `rule`; return $ result.
+
+    init_stop: the stop distance at entry (default the desk's $9).
+    mode: "lag"    -- the stop in force is the one from the previous bar's peak
+                      (the trail moves after the bar closes; generous).
+          "adverse"-- within each bar assume the favourable extreme came first,
+                      move the stop, THEN test the adverse extreme (pessimistic).
+    A fixed $20 target stays in force either way. If neither is hit the trade is
+    marked to the last bar's CLOSE (not its extreme).
+    """
     d, e = trade["d"], trade["entry"]
     sg = 1 if d == "long" else -1
-    stop = e - sg * STOP
+    stop = e - sg * init_stop
     tgt = e + sg * TGT
     peak = 0.0
-    for hi, lo in trade["bars"]:
+    for hi, lo, close in trade["bars"]:
         fav = (hi - e) if d == "long" else (e - lo)
-        peak = max(peak, fav)
-        hit_stop = (lo <= stop) if d == "long" else (hi >= stop)
-        hit_tgt = (hi >= tgt) if d == "long" else (lo <= tgt)
+        if mode == "adverse":
+            peak = max(peak, fav)
+            stop = rule(stop, e, peak, sg)
+            hit_stop = (lo <= stop) if d == "long" else (hi >= stop)
+            hit_tgt = (hi >= tgt) if d == "long" else (lo <= tgt)
+        else:
+            hit_stop = (lo <= stop) if d == "long" else (hi >= stop)
+            hit_tgt = (hi >= tgt) if d == "long" else (lo <= tgt)
+            peak = max(peak, fav)
+            stop = rule(stop, e, peak, sg)
         if hit_stop:
             return (stop - e) * sg
         if hit_tgt:
             return (tgt - e) * sg
-        stop = rule(stop, e, peak, sg)
-    return (trade["bars"][-1][0 if d == "long" else 1] - e) * sg
+    return (trade["bars"][-1][2] - e) * sg
+
+
+def make_fixed(dist):
+    """A plain fixed stop of `dist` dollars (no trailing)."""
+    def r(stop, e, peak, sg):
+        return e - sg * dist
+    return r
 
 
 def r_fixed(stop, e, peak, sg):
