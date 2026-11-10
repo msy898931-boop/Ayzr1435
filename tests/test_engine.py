@@ -888,6 +888,16 @@ class FullCardTest(unittest.TestCase):
         self.assertIn("انقلاب", t)
         self.assertIn("وقّف", t)
 
+    def test_b_and_c_are_told_apart(self):
+        with self._feed():
+            t = bot.card_full()
+        # B and C share the same level on purpose (a bounce dies where a close
+        # flips the trend). The card must say WHICH is which, or the two read as
+        # one: B is a touch, C is a close.
+        self.assertIn("يلمس", t)          # B: a touch
+        self.assertIn("إغلاق 1س", t)       # C: a 1h close
+        self.assertIn("مو مجرد لمس", t)    # ...and it says so
+
     def test_it_shows_the_raw_swings_split_by_the_price(self):
         with self._feed():
             t = bot.card_full()

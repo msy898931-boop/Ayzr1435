@@ -2245,30 +2245,38 @@ def card_full() -> str:
         up1 = min(above) if above else live + atr1
         L.append(f"  <b>A</b> استمرار هبوط: كسر <b>{num(lo)}</b> بإغلاق → "
                  f"هدف <b>{num(dn1)}</b>")
-        L.append(f"  <b>B</b> ارتداد لفوق: صمود فوق <b>{num(lo)}</b> → "
-                 f"هدف <b>{num(up1)}</b>")
-        # C is a REVERSAL, not a bounce: B and C differ by one level -- the
-        # nearest resistance. Below it is still the down-trend (A or B); a 1h
-        # CLOSE above it flips the desk's own view to up. With no sell zone the
-        # day's high is the level that would have to give.
-        rev = sell[0][0] if sell else (hi if isinstance(hi, (int, float))
-                                       else live + atr1)
-        rev_t = sell[1][0] if len(sell) > 1 else rev + atr1
-        L.append(f"  <b>C</b> انقلاب صاعد: إغلاق 1س فوق <b>{num(rev)}</b> → "
-                 f"يقلب صاعد · هدف <b>{num(rev_t)}</b> · <i>وقّف البيع</i>")
+        # B and C name the SAME resistance, and that is correct: it is where a
+        # bounce dies OR where a close flips the trend. The card must say which
+        # is which, or the two read as one. So B is a TOUCH that gets rejected,
+        # C is a 1h CLOSE above it -- and each says so in words. Both levels are
+        # the nearest resistance ABOVE the price; taking sell[0] instead picked
+        # a zone the price had already left behind (below it), which is no
+        # level at all.
+        rev = up1
+        rev_t = sorted(above)[1] if len(above) > 1 else rev + atr1
+        L.append(f"  <b>B</b> ارتداد لفوق: يلمس <b>{num(rev)}</b> ويرتد منها → "
+                 f"يرجع يهبط · <i>فرصة بيع</i>")
+        L.append(f"  <b>C</b> انقلاب صاعد: إغلاق 1س <b>فوق</b> <b>{num(rev)}</b> "
+                 f"<i>(إغلاق، مو مجرد لمس)</i> → هدف <b>{num(rev_t)}</b> · "
+                 f"<i>وقّف البيع</i>")
     elif up_trend:
         below = [z for z, _n in buy if z < live]
         above = [z for z, _n in sell if z > hi]
         dn1 = max(below) if below else live - atr1
         up1 = min(above) if above else hi + atr1
-        L.append(f"  <b>A</b> استمرار صعود: ثبات فوق <b>{num(lo)}</b> → "
+        L.append(f"  <b>A</b> استمرار صعود: اختراق <b>{num(hi)}</b> بإغلاق → "
                  f"هدف <b>{num(up1)}</b>")
-        L.append(f"  <b>B</b> تصحيح: كسر <b>{num(lo)}</b> → هدف <b>{num(dn1)}</b>")
-        rev = buy[0][0] if buy else (lo if isinstance(lo, (int, float))
-                                     else live - atr1)
-        rev_t = buy[1][0] if len(buy) > 1 else rev - atr1
-        L.append(f"  <b>C</b> انقلاب هابط: إغلاق 1س تحت <b>{num(rev)}</b> → "
-                 f"يقلب هابط · هدف <b>{num(rev_t)}</b> · <i>وقّف الشراء</i>")
+        # Mirror of the down branch: B and C share the nearest support BELOW the
+        # price -- a touch that holds (still buy) vs a 1h close below it (flip
+        # down). Taking buy[0] instead could name a support the price already
+        # sits above, which is no level at all.
+        rev = dn1
+        rev_t = sorted(below)[-2] if len(below) > 1 else rev - atr1
+        L.append(f"  <b>B</b> ارتداد لتحت: يلمس <b>{num(rev)}</b> ويرتد منها → "
+                 f"يرجع يطلع · <i>فرصة شراء</i>")
+        L.append(f"  <b>C</b> انقلاب هابط: إغلاق 1س <b>تحت</b> <b>{num(rev)}</b> "
+                 f"<i>(إغلاق، مو مجرد لمس)</i> → هدف <b>{num(rev_t)}</b> · "
+                 f"<i>وقّف الشراء</i>")
     else:
         L.append(f"  <b>A</b> صعود: فوق <b>{num(live)}</b> → "
                  f"{num(live + atr1)}")
@@ -2367,7 +2375,9 @@ def card_full() -> str:
     if items:
         L.append("\n<b>📰 الأخبار (تأثر الذهب/الدولار):</b>")
         seen_t: set[str] = set()
-        for it in items[:6]:
+        # Three headlines, not six: the news is context, not the call, and it
+        # was eating a fifth of the card while every line ended in "معلومة فقط".
+        for it in items[:3]:
             tag, title = it[0], it[1]
             when = it[2] if len(it) > 2 else ""
             key = str(title)[:40]
