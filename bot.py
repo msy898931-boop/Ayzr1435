@@ -777,6 +777,37 @@ def _levels_with_strength(live: float) -> list[str]:
     return out
 
 
+def _swing_lines(live: float, seen: set[float],
+                 tol: float) -> list[str]:
+    """The raw pivot swings per frame, minus any already shown as a level.
+
+    The levels above are the zones the desk trades; these are the bare swing
+    highs/lows on the frames the owner watches. Two rules keep this from being
+    the levels printed a second time: split by the live price (a raw list prints
+    pre-drop lows ABOVE the price, which reads as nonsense), and DROP any swing
+    within `tol` of a level already named -- a number shown twice is padding.
+    """
+    out = []
+    for tf, label in (("1h", "1س"), ("30m", "30د"), ("15m", "15د")):
+        try:
+            hs, ls_ = pivots(bars(tf, 150))
+        except Exception:  # noqa: BLE001 - a missing frame must not kill the card
+            continue
+        tops = sorted(x for x in hs if x > live
+                      and not any(abs(x - s) <= tol for s in seen))[:3]
+        bots = sorted((x for x in ls_ if x < live
+                       and not any(abs(x - s) <= tol for s in seen)),
+                      reverse=True)[:3]
+        parts = []
+        if tops:
+            parts.append("قمم فوق: " + " · ".join(num(x) for x in tops))
+        if bots:
+            parts.append("قيعان تحت: " + " · ".join(num(x) for x in bots))
+        if parts:
+            out.append(f"  {label} — " + " | ".join(parts))
+    return out
+
+
 def _verdict(m: dict) -> dict:
     """The desk's read of this tape, decided ONCE.
 
@@ -2193,9 +2224,14 @@ def card_full() -> str:
     # Fibonacci line only appears when the price is actually near a level.
     L.append("\n<b>🧭 المستويات (خريطة واحدة):</b>")
     ls = _levels_with_strength(live)
-    if ls:
-        for x in ls:
-            L.append(f"  {x}")
+    shown: set[float] = set()
+    for x in ls:
+        L.append(f"  {x}")
+    for z, _n in sell[:3] + buy[:3]:
+        shown.add(z)
+    for x in ls:
+        shown.update(float(m.group(1).replace(",", ""))
+                     for m in re.finditer(r"([\d,]+\.\d+)", x))
     if sell:
         L.append("  🔴 بيع فوق: " + " · ".join(f"{num(z)} ({n})"
                                                for z, n in sell[:3]))
@@ -2213,22 +2249,12 @@ def card_full() -> str:
             L.append(f"  ⭐ السعر قريب من فيبو <b>{near[0]}</b> "
                      f"({num(near[1])}) — منطقة قرار")
 
-    # ---- 5b. the raw swings, split by the live price ---------------------
-    # The levels above are the zones the desk trades; these are the bare swing
-    # highs/lows the pivots found on the frames the owner watches. A raw list
-    # prints lows ABOVE the price (old swings from before the drop), which reads
-    # as nonsense -- so each is split: highs above, lows below, nearest first.
-    L.append("\n<b>🏔️ القمم والقيعان (المحاور):</b>")
-    for tf, label in (("1h", "1س"), ("30m", "30د"), ("15m", "15د")):
-        try:
-            hs, ls_ = pivots(bars(tf, 150))
-        except Exception:  # noqa: BLE001 - a missing frame must not kill the card
-            continue
-        tops = [f"{num(x)}" for x in sorted(x for x in hs if x > live)[:3]]
-        bots = [f"{num(x)}" for x in sorted(
-            (x for x in ls_ if x < live), reverse=True)[:3]]
-        L.append(f"  {label} — قمم فوق: {' · '.join(tops) or '—'} | "
-                 f"قيعان تحت: {' · '.join(bots) or '—'}")
+    # ---- 5b. the raw swings, minus anything already named as a level -----
+    tol_sw = max(1.0, (atrs.get("1h") or 10.0) * 0.25)
+    sw = _swing_lines(live, shown, tol_sw)
+    if sw:
+        L.append("\n<b>🏔️ القمم والقيعان (المحاور — الجديدة):</b>")
+        L += sw
 
     # ---- 6. what I am watching: the triggers, each with its target -------
     # The old section printed "~74% / ~26%". That number was 50 + 6 * (frames
@@ -2414,6 +2440,103 @@ def card_full() -> str:
             L.append("  <i>هاد رقم دراسة مو رقمك — سجّل صفقاتك ليصير عندك "
                      "سجل حقيقي.</i>")
     L.append("\n<i>قراءتي الفنية من بيانات السوق الحيّة — مو وعد ربح.</i>")
+    return "\n".join(L)
+
+
+def card_score() -> str:
+    """Grade the card by MEASURING it -- never by opinion.
+
+    The lesson from the map and the acceptance work: a score the author gives
+    his own work is decoration. So every point below is a computation over the
+    rendered card and the live tape, printed with the number it measured. Two
+    rows are OUTCOME rows (edge, calibration): this market has no timing edge
+    and the desk is not calibrated, and saying so IS the criterion -- they do
+    not fail the command, because a gate that goes red for a true market fact
+    is a gate people learn to ignore.
+    """
+    m = read_market()
+    live = m["live"]
+    card = card_full()
+    plain = re.sub(r"<[^>]+>", "", card)
+
+    rows: list[tuple[str, float, float, bool]] = []  # name, got, max, gate
+
+    # -- 1. inside Telegram's hard limit (4096). A card that cannot be sent
+    #       scores nothing else. -------------------------------------------------
+    n = len(card)
+    rows.append(("الحجم ≤ 4096", 20 if n <= 4096 else 0, 20, True))
+    rows.append((f"  (الطول {n})", 0, 0, False))
+
+    # -- 2. every promised section is present --------------------------------
+    want = ["قراءتي للذهب", "موقفي", "الصورة", "الفريمات", "الزخم", "البنية",
+            "المستويات", "السيناريوهات", "خطتي", "حسابك"]
+    miss = [w for w in want if w not in plain]
+    rows.append((f"الأقسام ({len(want) - len(miss)}/{len(want)})",
+                 15 * (len(want) - len(miss)) / len(want), 15, True))
+
+    # -- 3. DUPLICATION: a number printed twice is padding. Count how many of
+    #       the swing numbers also appear in the levels block. ----------------
+    def _nums(seg: str) -> list[float]:
+        return [float(x.replace(",", ""))
+                for x in re.findall(r"\d,\d\d\d\.\d\d|\d,\d\d\.\d\d", seg)]
+    lev_seg = plain.split("المستويات")[-1].split("القمم")[0]
+    sw_seg = plain.split("القمم والقيعان")[-1].split("السيناريوهات")[0]
+    lev, sw = set(_nums(lev_seg)), _nums(sw_seg)
+    dup = sum(1 for x in sw if any(abs(x - y) <= 2.0 for y in lev))
+    dup_pct = (dup / len(sw)) if sw else 0.0
+    rows.append((f"تكرار القمم/القيعان ({dup}/{len(sw)})",
+                 15 * (1 - dup_pct), 15, True))
+
+    # -- 4. SCENARIOS: A, B, C present, and B/C must be told apart (a touch vs
+    #       a close). The owner's own defect report. --------------------------
+    sc = plain.split("السيناريوهات")[-1].split("خطتي")[0]
+    sc_ok = (("A" in sc and "B" in sc and "C" in sc)
+             and "يلمس" in sc and "إغلاق 1س" in sc)
+    rows.append(("السيناريوهات A/B/C واضحة", 15 if sc_ok else 0, 15, True))
+
+    # -- 5. HONESTY: no invented probability, the invalidation line is there,
+    #       and any win-rate line names its SOURCE (باكتست or his own). --------
+    honest = 0
+    if "احتمال مخترع" in plain or "مو احتمالات" in plain:
+        honest += 1
+    if "بيلغي نظريتي" in plain:
+        honest += 1
+    if "نسبة الفوز" not in plain or "باكتست" in plain or "نسبتك الحقيقية" in plain:
+        honest += 1
+    if "مو وعد ربح" in plain:
+        honest += 1
+    rows.append((f"الصدق ({honest}/4)", 10 * honest / 4, 10, True))
+
+    # -- 6. SIZED PLAN: at least two entries, each with a stop and a target,
+    #       and the account block. -------------------------------------------
+    plan = plain.split("خطتي")[-1].split("الأخبار")[0]
+    n_stop = plan.count("وقف")
+    n_tgt = plan.count("هدف")
+    plan_ok = (n_stop >= 2 and n_tgt >= 2 and "حسابك" in plan and "R:R" in plan)
+    rows.append((f"الخطة مسعّرة (وقف {n_stop} · هدف {n_tgt})",
+                 15 if plan_ok else 0, 15, True))
+
+    # -- 7. OUTCOME rows (do NOT fail the command) ---------------------------
+    rows.append(("الحافة الزمنية (خارج البطاقة)", 0, 5, False))
+    rows.append(("المعايرة (خارج البطاقة)", 0, 5, False))
+
+    got = sum(r[1] for r in rows)
+    mx = sum(r[2] for r in rows)
+    L = [f"🧮 <b>تقييم الزر — قياس مو رأي</b>",
+         f"السعر <b>{num(live)}</b> · الطول <b>{n}</b>/4096", ""]
+    for name, g, x, gate in rows:
+        if x == 0:
+            L.append(f"  <i>{name}</i>")
+            continue
+        mark = "✅" if g >= x else ("🟠" if not gate else "❌")
+        L.append(f"  {mark} {name}: <b>{g:.0f}</b>/{x:.0f}")
+    L.append("")
+    L.append(f"  🎯 <b>المجموع: {got:.0f} / {mx:.0f}</b>")
+    L.append("  <i>كل نقطة محسوبة من البطاقة والسوق الحيّ — مو رأيي.</i>")
+    if miss:
+        L.append(f"  ⚠️ ناقص: {' · '.join(miss)}")
+    if dup:
+        L.append(f"  ⚠️ {dup} رقم مكرر بالمحاور.")
     return "\n".join(L)
 
 
@@ -3489,6 +3612,9 @@ def main() -> int:
     tok = token()
     if "--selftest" in args:
         return selftest()
+    if "--score" in args:
+        print(re.sub(r"<[^>]+>", "", card_score()))
+        return 0
     if not tok:
         print("لا يوجد توكن — ضع التوكن في .tg_token", file=sys.stderr)
         return 2

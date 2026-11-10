@@ -915,6 +915,24 @@ class FullCardTest(unittest.TestCase):
         self.assertIn("نسبة الفوز", t)
         self.assertIn("باكتست", t)
 
+    def test_the_score_measures_the_card_not_an_opinion(self):
+        with self._feed():
+            s = bot.card_score()
+            plain = bot.card_full()
+        # The score is a computation over the rendered card: it must name the
+        # numbers it measured, and it must not award full marks while a defect
+        # (a duplicated swing) is present in the card it just read.
+        self.assertIn("المجموع", s)
+        self.assertIn("تكرار", s)
+        import re as _re
+        m = _re.search(r"المجموع: (\d+) / (\d+)", s)
+        self.assertIsNotNone(m)
+        assert m is not None
+        self.assertLessEqual(int(m.group(1)), int(m.group(2)))
+        # The gate rows are structural and must all pass on a healthy card.
+        self.assertNotIn("❌", s)
+        self.assertIn("خطتي", plain)
+
     def test_it_gives_a_concrete_call(self):
         with self._feed():
             t = bot.card_full()
