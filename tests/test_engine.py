@@ -658,6 +658,91 @@ class WatchLevelsTest(unittest.TestCase):
             bot.read_market = saved
 
 
+class AdaptiveAlertTest(unittest.TestCase):
+    """The crossing alert must (a) cover the levels that matter NOW, not only
+    the frozen 4100-era set, and (b) carry the trade the desk would take."""
+
+    def test_live_levels_track_the_price(self):
+        # With the price at 4055 the frozen set has nothing useful below it;
+        # _live_levels must return pivots on both sides of the live price.
+        closes = [4050.0 + (i % 7) for i in range(40)]
+        with FakeFeed(mid=4055.0, closes={"1h": closes}):
+            lv = bot._live_levels(4055.0)
+        self.assertTrue(lv)
+        self.assertTrue(any(x > 4055.0 for x in lv))
+        self.assertTrue(any(x < 4055.0 for x in lv))
+
+    def test_alert_carries_entry_stop_target(self):
+        msg = bot._level_cross_msg(4096.0, "below", 4090.0)
+        self.assertIn("بيع", msg)
+        self.assertIn("الوقف", msg)
+        self.assertIn("الهدف", msg)
+        self.assertIn("R:R", msg)
+
+    def test_alert_names_the_level_and_side(self):
+        up = bot._level_cross_msg(4132.0, "above", 4135.0)
+        self.assertIn("4,132", up)
+        self.assertIn("اختراق", up)
+
+    def test_alert_stays_honest_below_the_rr_floor(self):
+        # A stop that is clamped wide leaves R:R under the floor: the alert
+        # must not invent a trade, only name the break.
+        saved = bot._sized
+        try:
+            bot._sized = lambda *a, **k: {"stop": 0, "target": 0, "rr": 0.5,
+                                          "risk_usd": 8}
+            msg = bot._level_cross_msg(4096.0, "below", 4090.0)
+            self.assertNotIn("الهدف", msg)
+            self.assertIn("راقب التأكيد", msg)
+        finally:
+            bot._sized = saved
+
+    def test_a_multi_level_break_carries_one_trade_not_three(self):
+        saved = bot.read_market
+        try:
+            seen: dict = {}
+            bot.read_market = lambda: {"live": 4100.0}
+            bot.levels_watch(seen)
+            bot.read_market = lambda: {"live": 4060.0}   # breaks 4096/4084/4070
+            note = bot.levels_watch(seen)
+            self.assertIsNotNone(note)
+            # exactly one priced trade (one "الوقف"), the rest merely named
+            self.assertEqual(note.count("الوقف"), 1)
+            self.assertIn("كمان انكسرت", note)
+        finally:
+            bot.read_market = saved
+
+    def test_a_live_level_is_latched_and_speaks_once(self):
+        """A live pivot must survive the cycle that breaks it, or its break is
+        never seen (recomputing from the new price drops it)."""
+        saved_m, saved_lv = bot.read_market, bot._live_levels
+        try:
+            bot._live_levels = lambda live, n=3: (4120.0, 4090.0)
+            seen: dict = {}
+            bot.read_market = lambda: {"live": 4100.0}
+            bot.levels_watch(seen)                     # baseline
+            bot.read_market = lambda: {"live": 4085.0}  # clears 4090 down
+            note = bot.levels_watch(seen)
+            self.assertIsNotNone(note)
+            self.assertIn("4,090", note)
+            self.assertIn("بيع", note)
+        finally:
+            bot.read_market, bot._live_levels = saved_m, saved_lv
+
+    def test_a_far_live_level_is_dropped(self):
+        saved_lv, saved_m = bot._live_levels, bot.read_market
+        try:
+            bot._live_levels = lambda live, n=3: (4060.0,)
+            seen: dict = {"live_levels": [4000.0]}
+            bot.read_market = lambda: {"live": 4050.0}
+            bot.levels_watch(seen)
+            # 4000 is 50 pts away (> LIVE_LEVEL_BAND) -> dropped; 4060 kept
+            self.assertNotIn(4000.0, seen["live_levels"])
+            self.assertIn(4060.0, seen["live_levels"])
+        finally:
+            bot._live_levels, bot.read_market = saved_lv, saved_m
+
+
 
 
 if __name__ == "__main__":

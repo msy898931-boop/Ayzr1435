@@ -26,11 +26,12 @@ services:
         sync: false
       - key: DESK_SYMBOL
         value: XAUUSD
-      # The owner's two trigger levels, watched in addition to the built-in set:
-      # 4138 (breakout up) and 4108 (breakdown down). A crossing of either
-      # sends ONE alert. Extend with a comma list, e.g. "4138,4108,4200".
+      # The owner's trigger levels, watched IN ADDITION to the built-in set and
+      # the live pivots the watch now tracks on its own. 4080 is the pivot the
+      # price is pinned to, 4035 and 4005 the supports below it. A crossing of
+      # any sends ONE alert carrying the trade. Extend with a comma list.
       - key: DESK_WATCH_LEVELS
-        value: "4138,4108"
+        value: "4080,4035,4005"
       # The news card pulls fresh gold headlines from Google News (keyless RSS)
       # when this is 1. INFORMATION ONLY -- it never opens, blocks or sizes a
       # trade. Set to 0 to show only the hand-edited NEWS_ITEMS list.

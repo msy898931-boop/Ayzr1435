@@ -121,6 +121,10 @@ if _extra:
     WATCH_LEVELS = tuple(sorted(set(WATCH_LEVELS) | {
         float(x) for x in _extra.split(",") if x.strip()}))
 LEVEL_BAND = 1.0                 # hysteresis: a crossing needs this much clearance
+# How far a LIVE pivot may drift from the price before the watch drops it. The
+# frozen set never expires, but live pivots are re-read each cycle; latching
+# them within this band keeps a broken level around long enough to speak once.
+LIVE_LEVEL_BAND = 25.0           # points; ~2x the 1h ATR on gold
 # The green-light watch: the desk's own entry filter is "a long needs price
 # above the 15m EMA20". So rather than hard-code the number 4103 (which the
 # EMA moves away from within the hour), watch the EMA itself -- the owner hears
@@ -895,6 +899,20 @@ def _levels(live: float) -> tuple[list[float], list[float]]:
     res = sorted({round(h, 2) for h in highs if h > live})
     sup = sorted({round(l, 2) for l in lows if l < live}, reverse=True)
     return res, sup
+
+
+def _live_levels(live: float, n: int = 3) -> tuple[float, ...]:
+    """The nearest pivots above and below the live price, from the desk's own
+    _levels(). WATCH_LEVELS is a FROZEN set pinned when price sat near 4100; as
+    the market travels those levels drift far away and the ones that matter now
+    (the nearest support and resistance) are not in it at all. These travel with
+    the price, so the crossing watch always covers the levels that matter now.
+    """
+    try:
+        res, sup = _levels(live)
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return ()
+    return tuple(round(x, 2) for x in (res[:n] + sup[:n]))
 
 
 def card_levels() -> str:
@@ -2390,32 +2408,43 @@ def support_watch(seen: dict) -> str | None:
 
 
 def levels_watch(seen: dict) -> str | None:
-    """Announce a crossing of ANY key level in WATCH_LEVELS.
+    """Announce a crossing of a key level, and carry the trade it implies.
 
-    Returns one message the first time price clears a level by LEVEL_BAND in
-    either direction, and None otherwise. The side of each level is kept in
-    `seen['levels']` so a level that keeps holding never repeats, and a price
-    hovering on a level (inside the band) does not flicker. The first call
-    records the starting sides silently -- a break that already happened is not
-    a new event.
+    Watches two sets: the FROZEN WATCH_LEVELS the owner pinned, and the nearest
+    LIVE pivots from the desk's own _levels(), which travel with the price. The
+    frozen set alone goes stale -- pinned when price sat near 4100, it holds no
+    level near 4050 -- so the live set is what keeps the alert useful as the
+    market moves.
 
-    This is the multi-level sibling of support_watch: that one follows the
-    desk's own latched support, this one follows a fixed set of pivots so the
-    owner hears about every level he asked to watch, not only the nearest.
+    Live levels are LATCHED in seen['live_levels']: recomputing them from the
+    new price each cycle would make a level that was just broken vanish (it is
+    now on the other side), and its break would never be seen. A latched level
+    is kept until price is far from it, then dropped.
+
+    The side of every level is kept in seen['levels'] so a level that keeps
+    holding never repeats, and a price hovering on a level does not flicker. The
+    first call (and any newly added level) records its starting side silently.
     """
     try:
         live = float(read_market()["live"])
-        sides: dict = seen.get("levels")
-        first = sides is None
-        if first:
-            sides = {}
+        raw_sides = seen.get("levels")
+        first = raw_sides is None
+        sides: dict[str, str] = dict(raw_sides) if raw_sides else {}
+        # Latch the live pivots: add any new ones, keep the old until price is
+        # far away, so a level's side transition is stable across cycles.
+        tracked = seen.setdefault("live_levels", [])
+        for lv in _live_levels(live):
+            if all(abs(lv - x) > 0.5 for x in tracked):
+                tracked.append(lv)
+        tracked[:] = [lv for lv in tracked if abs(lv - live) <= LIVE_LEVEL_BAND]
         # support_watch (run just before this one) already narrates the desk's
         # own latched support with richer states (near / bounce / 15m break).
-        # A fixed level that lands on it would deliver the same break twice, so
-        # its side is still tracked but its event is left to support_watch.
+        # A level that lands on it would deliver the same break twice, so its
+        # side is still tracked but its event is left to support_watch.
         latched = seen.get("support_level")
+        watched = tuple(sorted(set(WATCH_LEVELS) | set(tracked)))
         crossed: list[tuple[float, str]] = []
-        for lvl in WATCH_LEVELS:
+        for lvl in watched:
             k = f"{lvl:.2f}"
             prev = sides.get(k, "above" if live > lvl else "below")
             if live >= lvl + LEVEL_BAND:
@@ -2432,19 +2461,49 @@ def levels_watch(seen: dict) -> str | None:
         seen["levels"] = sides
         if not crossed:
             return None
-        return "\n\n".join(_level_cross_msg(lvl, side, live) for lvl, side in crossed)
+        # Carry the trade for the ONE level that matters now (nearest the price)
+        # and just name the others: a fast move can break several levels at once,
+        # and three conflicting plans in one message is noise, not a signal.
+        nearest = min(crossed, key=lambda c: abs(c[0] - live))
+        msg = _level_cross_msg(nearest[0], nearest[1], live)
+        others = [c for c in crossed if c[0] != nearest[0]]
+        if others:
+            names = "، ".join(num(l) for l, _ in sorted(others, reverse=True))
+            msg += f"\n\n<i>كمان انكسرت: {names}</i>"
+        return msg
     except Exception:  # noqa: BLE001 - a watch must never kill the loop
         return None
 
 
 def _level_cross_msg(level: float, side: str, live: float) -> str:
+    """The crossing alert, carrying the trade the desk's own rules would take.
+
+    A bare "level broke" leaves the owner to work out entry, stop and target at
+    the worst moment. _sized() prices the trade the desk would open on that
+    break, so the alert says what to do -- and stays honest when the desk's own
+    gate would refuse the trade (no conviction is invented).
+    """
+    direction = "long" if side == "above" else "short"
+    try:
+        p = _sized(live, direction, level)
+        rr_ok = p["rr"] >= MIN_RR
+    except Exception:  # noqa: BLE001 - the alert must still fire without sizing
+        p, rr_ok = None, False
     if side == "above":
-        return ("🚀 <b>اختراق مستوى</b> — XAUUSD\n"
-                f"السعر <b>{num(live)}</b> طلع فوق <b>{num(level)}</b>.\n"
-                "<i>مقاومة اتكسرت — راقب التأكيد قبل الدخول.</i>")
-    return ("⚠️ <b>كسر مستوى</b> — XAUUSD\n"
-            f"السعر <b>{num(live)}</b> نزل تحت <b>{num(level)}</b>.\n"
-            "<i>دعم انكسر — احذر، راقب التأكيد.</i>")
+        head = ("🚀 <b>اختراق مستوى</b> — XAUUSD\n"
+                f"السعر <b>{num(live)}</b> طلع فوق <b>{num(level)}</b>.")
+    else:
+        head = ("⚠️ <b>كسر مستوى</b> — XAUUSD\n"
+                f"السعر <b>{num(live)}</b> نزل تحت <b>{num(level)}</b>.")
+    if p is not None and rr_ok:
+        arrow = "🟢 شراء" if direction == "long" else "🔴 بيع"
+        return (head + "\n"
+                f"{arrow} عند {num(live)}\n"
+                f"  الوقف: {num(p['stop'])} · الهدف: {num(p['target'])}\n"
+                f"  R:R ≈ {p['rr']:.2f} · مخاطرة ${p['risk_usd']:.0f}\n"
+                "<i>راجع الفلتر والتأكيد قبل الدخول — التنبيه ليس أمراً.</i>")
+    return (head + "\n"
+            "<i>مستوى انكسر — راقب التأكيد قبل الدخول (الصفقة تحت عتبة R:R).</i>")
 
 
 def gate_watch(seen: dict) -> str | None:
