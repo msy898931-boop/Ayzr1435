@@ -633,6 +633,33 @@ class NewsTest(unittest.TestCase):
         finally:
             bot.NEWS_ITEMS, bot.NEWS_LIVE = saved_items, saved_live
 
+    def test_retail_price_and_other_currencies_are_dropped(self):
+        # A karat-21 shop price and the Canadian dollar mention gold/the dollar
+        # but do not move XAUUSD -- they must be filtered out.
+        self.assertFalse(bot._news_keep("سعر الذهب عيار 21 اليوم"))
+        self.assertFalse(bot._news_keep("تراجع الدولار الكندي أمام الأميركي"))
+        self.assertFalse(bot._news_keep("أسعار الذهب في محلات الصاغة"))
+        self.assertTrue(bot._news_keep("الذهب الفوري يتراجع مع ارتفاع الدولار"))
+        self.assertTrue(bot._news_keep("الفيدرالي يرفع الفائدة في ديسمبر"))
+
+    def test_fetch_drops_noise_titles(self):
+        saved_q, saved_one = bot.NEWS_QUERIES, bot._news_one
+        from datetime import UTC, datetime
+        stamp = datetime(2026, 11, 10, 9, 0, tzinfo=UTC)
+        bot.NEWS_QUERIES = ("x",)
+        bot._news_one = lambda q: [
+            (stamp, "▫️", "الذهب عيار 21 في مصر", "12:00"),
+            (stamp, "🔥", "الذهب الفوري يتراجع", "12:00"),
+        ]
+        bot._NEWS_CACHE["at"], bot._NEWS_CACHE["items"] = 0.0, []
+        try:
+            titles = [t for _, t, _ in bot._news_fetch()]
+        finally:
+            bot.NEWS_QUERIES, bot._news_one = saved_q, saved_one
+            bot._NEWS_CACHE["at"], bot._NEWS_CACHE["items"] = 0.0, []
+        self.assertIn("الذهب الفوري يتراجع", titles)
+        self.assertNotIn("الذهب عيار 21 في مصر", titles)
+
 
 class WatchLevelsTest(unittest.TestCase):
     """The owner's levels (4138 / 4108) must be watchable, and a crossing of
@@ -841,7 +868,7 @@ class FullCardTest(unittest.TestCase):
             t = bot.card_full()
         for marker in ("قراءتي للذهب", "الصورة", "الفريمات", "الزخم",
                        "البنية", "الدعوم والمقاومات", "فيبوناتشي",
-                       "المناطق", "السيناريوهات", "قراءتي وتوصيتي"):
+                       "المناطق", "السيناريوهات", "خطتي"):
             self.assertIn(marker, t)
 
     def test_it_gives_a_concrete_call(self):
@@ -882,6 +909,32 @@ class FullCardTest(unittest.TestCase):
                 self.assertIn("الأخبار", bot.card_full())
         finally:
             bot.NEWS_ITEMS = saved
+
+
+class VerdictLineTest(unittest.TestCase):
+    """The up-front verdict must say whether a trade is live RIGHT NOW, and
+    never flash a clean "buy" against a falling market."""
+
+    def test_nothing_near_says_wait(self):
+        line = bot._verdict_line(4030.0, [(4080.0, 4)], [(3990.0, 2)], "sell")
+        self.assertIn("ما في صفقة", line)
+        self.assertIn("4,080", line)
+
+    def test_a_zone_at_the_price_with_trend_is_a_green_light(self):
+        line = bot._verdict_line(4080.0, [(4080.5, 4)], [], "sell")
+        self.assertIn("في فرصة الآن", line)
+        self.assertIn("بيع", line)
+
+    def test_a_counter_trend_zone_is_warned_not_celebrated(self):
+        # Price sits on a BUY zone while the trend is down: a scalp, warned.
+        line = bot._verdict_line(4028.0, [], [(4028.0, 2)], "sell")
+        self.assertIn("معاكسة للاتجاه", line)
+        self.assertIn("سكالب", line)
+        self.assertNotIn("في فرصة الآن", line)
+
+    def test_no_zones_at_all_says_wait(self):
+        line = bot._verdict_line(4030.0, [], [], "sell")
+        self.assertIn("ما في صفقة", line)
 
 
 class TrendWatchTest(unittest.TestCase):

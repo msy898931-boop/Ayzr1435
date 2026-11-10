@@ -168,16 +168,27 @@ NEWS_LIVE = os.environ.get("DESK_NEWS_LIVE", "1").strip().lower() in (
 # The news card pulls fresh headlines from Google News (keyless RSS). Arabic by
 # default -- the owner reads Arabic. Google News is keyed by locale, so both the
 # queries AND the feed's language/region are Arabic (ar / SA).
-# Everything that moves gold vs the dollar, not just the phrase "gold price":
-# the Fed's rate path, US inflation and the dollar index are the real drivers.
+# The queries are chosen for SIGNAL, measured live: "الذهب الفوري" and "مؤشر
+# الدولار" returned zero retail-price noise, while "سعر الذهب" (4/10) and
+# "الدولار" (3/10) pulled karat-21 shop prices and the Canadian/Australian
+# dollar. The Fed's rate path and US inflation are the real gold drivers.
 # Override with DESK_NEWS_QUERY, pipe-separated for more than one query.
 NEWS_QUERIES: tuple[str, ...] = tuple(
     q.strip() for q in os.environ.get(
         "DESK_NEWS_QUERY",
-        "سعر الذهب|الفيدرالي الفائدة|التضخم الأميركي|الدولار").split("|")
+        "الذهب الفوري|مؤشر الدولار|الفيدرالي الفائدة|التضخم الأميركي").split("|")
     if q.strip())
 NEWS_LANG = os.environ.get("DESK_NEWS_LANG", "ar").strip()
 NEWS_REGION = os.environ.get("DESK_NEWS_REGION", "SA").strip()
+# Headlines that mention gold or the dollar but do not move XAUUSD: a local
+# retail gold price (عيار = karat), a different currency (the Canadian/Australian
+# dollar, the Egyptian pound), a jewellery shop. Dropped from the live feed so
+# the card stays signal. Override with DESK_NEWS_NOISE, pipe-separated.
+NEWS_NOISE: tuple[str, ...] = tuple(
+    w.strip() for w in os.environ.get(
+        "DESK_NEWS_NOISE",
+        "عيار|الكندي|الأسترالي|الاسترالي|النيوزلندي|الجنيه|محلات").split("|")
+    if w.strip())
 NEWS_CACHE_S = 300               # reuse a fetch for 5 minutes (feeds are slow)
 # The automatic direction alert: tell the owner when the desk's net direction
 # flips (up / down / range) without a tap. A cooldown damps a chop at the edge.
@@ -1259,13 +1270,20 @@ def _news_one(query: str) -> list[tuple[datetime, str, str, str]]:
     return parsed
 
 
+def _news_keep(title: str) -> bool:
+    """True if a headline is worth showing: it mentions gold/dollar AND is not
+    a retail price or a different currency (see NEWS_NOISE)."""
+    return not any(w in title for w in NEWS_NOISE)
+
+
 def _news_fetch() -> list[tuple[str, str, str]]:
     """Best-effort gold headlines merged from several Google News queries.
 
     "Gold price" alone misses the drivers the owner asked for: the Fed's rate
     path, US inflation prints and the dollar index. Each focused query is
-    fetched, merged, deduped by title and sorted newest first. Parsed with a
-    regex, not an XML parser, so a malformed feed degrades to [] instead of
+    fetched, merged, deduped by title and sorted newest first. Titles matching
+    NEWS_NOISE (retail karat prices, other currencies) are dropped. Parsed with
+    a regex, not an XML parser, so a malformed feed degrades to [] instead of
     raising. The result is cached for NEWS_CACHE_S seconds -- the feeds are
     slow and the RSS cards are tapped far more often than headlines change.
     """
@@ -1280,6 +1298,8 @@ def _news_fetch() -> list[tuple[str, str, str]]:
     out: list[tuple[str, str, str]] = []
     seen: set[str] = set()
     for _, tag, title, when in merged:
+        if not _news_keep(title):
+            continue
         key = title[:40].lower()
         if key in seen:
             continue
@@ -2006,6 +2026,47 @@ def _fib_retr(hi: float, lo: float, up: bool) -> list[tuple[str, float]]:
     return out
 
 
+def _verdict_line(live: float, sell: list, buy: list,
+                  trend_side: str | None) -> str:
+    """One line at the top of card_full answering "is there a trade NOW?".
+
+    The call section further down is the PLAN (sell the rally / buy the dip);
+    without this line the plan reads as if it were armed at the current price.
+    So this says whether a zone is under the price right now, and flags a zone
+    that fights the trend (a buy under a falling market is a scalp, not a
+    signal) so it never reads as a clean green light against the direction the
+    rest of the card just argued.
+    """
+    cands: list[tuple[str, float]] = []
+    if sell:
+        cands.append(("sell", sell[0][0]))
+    if buy:
+        cands.append(("buy", buy[0][0]))
+    near = [c for c in cands if abs(live - c[1]) <= ENTRY_NEAR_PTS]
+    if near:
+        with_trend = [c for c in near if c[0] == trend_side]
+        side, zone = min(with_trend or near, key=lambda c: abs(live - c[1]))
+        arrow = "🔴 بيع" if side == "sell" else "🟢 شراء"
+        if trend_side and side != trend_side:
+            with_dir = "بيع القوة فوق" if trend_side == "sell" else \
+                       "شراء الانخفاض تحت"
+            return (f"\n⚠️ <b>السعر على منطقة {arrow} معاكسة للاتجاه</b> "
+                    f"({num(zone)}) — <i>سكالب خطير، مو إشارة. "
+                    f"مع الاتجاه: {with_dir}.</i>")
+        return (f"\n✅ <b>في فرصة الآن (مع الاتجاه):</b> {arrow} عند "
+                f"<b>{num(zone)}</b> — السعر عليه")
+    if cands:
+        bits = []
+        if sell:
+            bits.append(f"بيع <b>{num(sell[0][0])}</b> "
+                        f"(+{sell[0][0] - live:.0f})")
+        if buy:
+            bits.append(f"شراء <b>{num(buy[0][0])}</b> "
+                        f"({buy[0][0] - live:+.0f})")
+        return "\n⏸️ <b>ما في صفقة هلّق</b> — استنى " + " أو ".join(bits)
+    return "\n⏸️ <b>ما في صفقة هلّق</b> — ما في مناطق واضحة"
+
+
 def card_full() -> str:
     """MY OWN read of the market -- the agent's analysis, not the desk's verdict.
 
@@ -2038,6 +2099,11 @@ def card_full() -> str:
     L = [f"🥇 <b>قراءتي للذهب</b> — لحظياً",
          f"السعر <b>{num(live)}</b> · السوق "
          f"{'مفتوح ✅' if market_open(q) else 'مسكّر ⛔'}"]
+
+    # ---- 0. the verdict, up front: is there a trade RIGHT NOW? -----------
+    trend_side = "sell" if down else ("buy" if up_trend else None)
+    sell, buy = _zones(live)
+    L.append(_verdict_line(live, sell, buy, trend_side))
 
     # ---- 1. the day's picture -------------------------------------------
     hi, lo = q.get("high"), q.get("low")
@@ -2104,7 +2170,6 @@ def card_full() -> str:
                      f"({num(near[1])}) — منطقة قرار")
 
     # ---- 5. zones --------------------------------------------------------
-    sell, buy = _zones(live)
     L.append("\n<b>🧭 المناطق:</b>")
     if sell:
         L.append("  🔴 بيع فوق: " + " · ".join(f"{num(z)} ({n})"
@@ -2140,7 +2205,9 @@ def card_full() -> str:
     L.append("  <i>(الاحتمال من اتفاق الفريمات + الزخم — قراءة، مو قياس)</i>")
 
     # ---- 7. MY call ------------------------------------------------------
-    L.append("\n<b>🎬 قراءتي وتوصيتي:</b>")
+    # This is the PLAN, not an armed order: the entries sit at the zones above
+    # the price, so nothing here fills at the current price. The header says so.
+    L.append("\n<b>🎬 خطتي (تنتظر السعر يجي للمنطقة):</b>")
     if down:
         L.append("  الاتجاه هابط → <b>بيع القوة</b> (مع الاتجاه)")
         entry = sell[0][0] if sell else live + (atrs.get("1h") or 10) * 0.5
