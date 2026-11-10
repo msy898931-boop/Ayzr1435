@@ -2205,66 +2205,119 @@ def card_full() -> str:
             L.append(f"  ⭐ السعر قريب من فيبو <b>{near[0]}</b> "
                      f"({num(near[1])}) — منطقة قرار")
 
-    # ---- 6. what I am watching: the two triggers, NO invented odds -------
+    # ---- 6. what I am watching: the triggers, each with its target -------
     # The old section printed "~74% / ~26%". That number was 50 + 6 * (frames
     # agreeing) -- the frame count re-spelled as a percentage, with no
-    # predictive content. An honest card names the two levels that decide the
-    # next move and stops there; it does not dress a count up as a probability.
-    L.append("\n<b>👀 يلي بترقبه:</b>")
+    # predictive content. An honest card names the levels that decide the next
+    # move and where each one goes; it does not dress a count up as a
+    # probability.
+    L.append("\n<b>👀 السيناريوهات (بلا احتمال مخترع):</b>")
+    atr1 = atrs.get("1h") or 10.0
     if down:
-        L.append(f"  • صمود فوق <b>{num(lo)}</b> → ارتداد لفوق")
-        L.append(f"  • كسر <b>{num(lo)}</b> بإغلاق → استمرار هبوط")
+        below = [z for z, _n in buy if z < lo]
+        above = [z for z, _n in sell if z > live]
+        dn1 = max(below) if below else lo - atr1
+        up1 = min(above) if above else live + atr1
+        L.append(f"  <b>A</b> استمرار هبوط: كسر <b>{num(lo)}</b> بإغلاق → "
+                 f"هدف <b>{num(dn1)}</b>")
+        L.append(f"  <b>B</b> ارتداد لفوق: صمود فوق <b>{num(lo)}</b> → "
+                 f"هدف <b>{num(up1)}</b>")
     elif up_trend:
-        L.append(f"  • ثبات فوق <b>{num(lo)}</b> → استمرار صعود")
-        L.append(f"  • كسر <b>{num(lo)}</b> → تصحيح")
+        below = [z for z, _n in buy if z < live]
+        above = [z for z, _n in sell if z > hi]
+        dn1 = max(below) if below else live - atr1
+        up1 = min(above) if above else hi + atr1
+        L.append(f"  <b>A</b> استمرار صعود: ثبات فوق <b>{num(lo)}</b> → "
+                 f"هدف <b>{num(up1)}</b>")
+        L.append(f"  <b>B</b> تصحيح: كسر <b>{num(lo)}</b> → هدف <b>{num(dn1)}</b>")
     else:
-        L.append(f"  • فوق <b>{num(live)}</b> → ميل صعودي")
-        L.append(f"  • تحت <b>{num(live)}</b> → ميل هبوطي")
-    L.append("  <i>هاد مستويات القرار — ما في احتمال محسوب.</i>")
+        L.append(f"  <b>A</b> صعود: فوق <b>{num(live)}</b> → "
+                 f"{num(live + atr1)}")
+        L.append(f"  <b>B</b> هبوط: تحت <b>{num(live)}</b> → "
+                 f"{num(live - atr1)}")
+    L.append("  <i>مستويات قرار بأهدافها — مو احتمالات.</i>")
 
-    # ---- 7. MY call ------------------------------------------------------
-    # The PLAN (not an armed order): the entries sit at the zones, so nothing
-    # fills at the current price. The label says which kind of entry it is:
-    # a sell that needs a rally up to the zone is "بيع القوة"; a sell at a zone
-    # the price is already on is "بيع كسر" -- naming it "بيع القوة" there was
-    # simply wrong.
-    L.append("\n<b>🎬 خطتي (تنتظر السعر يجي للمنطقة):</b>")
+    # ---- 7. THE PLAN: the whole ladder of entries, sized, plus account ---
+    # The owner asked for the same depth he gets in chat, live: not one entry
+    # but the whole ladder with stop/target/risk, plus how it maps onto his
+    # $200 / 0.01 lot. Everything here is computed from the live feed, never
+    # hardcoded. A sell that needs a rally up to the zone is "بيع القوة"; a sell
+    # at a zone the price is already on is "بيع كسر" -- naming it "بيع القوة"
+    # there was simply wrong.
+    L.append("\n<b>🎬 خطتي — كل الدخولات (لحظي من السوق):</b>")
     if down:
-        entry = sell[0][0] if sell else live + (atrs.get("1h") or 10) * 0.5
         kind = ("بيع كسر (السعر عالمنطقة)" if sell
-                and abs(live - entry) <= ENTRY_NEAR_PTS else "بيع القوة (ارتداد)")
+                and abs(live - sell[0][0]) <= ENTRY_NEAR_PTS
+                else "بيع القوة (ارتداد)")
         L.append(f"  الاتجاه هابط → <b>{kind}</b>")
-        p = _sized(entry, "short", entry)
-        L.append(f"  🔴 بيع: دخول <b>{num(entry)}</b> · وقف {num(p['stop'])} "
-                 f"(−${p['risk_usd']:.0f}) · هدف {num(p['target'])} "
-                 f"(+${p['gain_usd']:.0f})")
-        if buy:
-            b = _sized(buy[0][0], "long", buy[0][0])
-            L.append(f"  🟢 فرصة معاكسة: صمد فوق <b>{num(buy[0][0])}</b> → "
-                     f"شراء سريع (وقف {num(b['stop'])} · هدف {num(b['target'])})")
     elif up_trend:
-        entry = buy[0][0] if buy else live - (atrs.get("1h") or 10) * 0.5
         kind = ("شراء كسر (السعر عالمنطقة)" if buy
-                and abs(live - entry) <= ENTRY_NEAR_PTS else "شراء الانخفاض")
+                and abs(live - buy[0][0]) <= ENTRY_NEAR_PTS
+                else "شراء الانخفاض")
         L.append(f"  الاتجاه صاعد → <b>{kind}</b>")
-        p = _sized(entry, "long", entry)
-        L.append(f"  🟢 شراء: دخول <b>{num(entry)}</b> · وقف {num(p['stop'])} "
-                 f"(−${p['risk_usd']:.0f}) · هدف {num(p['target'])} "
-                 f"(+${p['gain_usd']:.0f})")
-        if sell:
-            s = _sized(sell[0][0], "short", sell[0][0])
-            L.append(f"  🔴 فرصة معاكسة: رفض <b>{num(sell[0][0])}</b> → "
-                     f"بيع سريع (وقف {num(s['stop'])} · هدف {num(s['target'])})")
     else:
         L.append("  السوق عرضي → <b>اشترِ عند الدعم · بِع عند المقاومة</b>")
-        if buy:
-            b = _sized(buy[0][0], "long", buy[0][0])
-            L.append(f"  🟢 شراء عند <b>{num(buy[0][0])}</b> · وقف "
-                     f"{num(b['stop'])} · هدف {num(b['target'])}")
-        if sell:
-            s = _sized(sell[0][0], "short", sell[0][0])
-            L.append(f"  🔴 بيع عند <b>{num(sell[0][0])}</b> · وقف "
-                     f"{num(s['stop'])} · هدف {num(s['target'])}")
+
+    fibs_d: dict[str, float] = {}
+    fibs_u: dict[str, float] = {}
+    if isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
+        fibs_d = dict(_fib_retr(hi, lo, False))
+        fibs_u = dict(_fib_retr(hi, lo, True))
+
+    def _entry_line(entry: float, side: str, tag: str) -> str:
+        s = _sized(entry, side, entry)
+        return (f"    • {tag}: <b>{num(entry)}</b> · وقف {num(s['stop'])} · "
+                f"هدف {num(s['target'])} <i>(−${s['risk_usd']:.0f}/"
+                f"+${s['gain_usd']:.0f})</i>")
+
+    def _ladder(tags: list[tuple[float, str]], side: str) -> list[str]:
+        out: list[str] = []
+        seen: set[float] = set()
+        for e, tag in sorted(tags, key=lambda t: -t[0]):
+            if any(abs(e - x) < 3 for x in seen):
+                continue
+            seen.add(e)
+            out.append(_entry_line(e, side, tag))
+        return out
+
+    # -- sell ladder (with the trend when down, or as a fade when up) -----
+    if down:
+        s_tags = [(sell[i][0], f"منطقة بيع {i + 1}")
+                  for i in range(min(2, len(sell)))]
+        if fibs_d:
+            s_tags.append((fibs_d["38.2%"], "فيبو 38.2%"))
+        if isinstance(lo, (int, float)):
+            s_tags.append((lo, "بيع كسر تحت القاع"))
+        lines = _ladder(s_tags, "short")
+        if lines:
+            L.append("  🔴 <b>البيع (مع الاتجاه):</b>")
+            L += lines
+    elif up_trend and sell:
+        L.append("  🔴 <b>بيع (عكس الاتجاه — سكالب):</b>")
+        L += _ladder([(z, f"منطقة بيع {i + 1}")
+                      for i, (z, _n) in enumerate(sell[:2])], "short")
+
+    # -- buy ladder ------------------------------------------------------
+    if up_trend:
+        b_tags = [(buy[i][0], f"منطقة شراء {i + 1}")
+                  for i in range(min(2, len(buy)))]
+        if fibs_u:
+            b_tags.append((fibs_u["38.2%"], "فيبو 38.2%"))
+        lines = _ladder(b_tags, "long")
+        if lines:
+            L.append("  🟢 <b>الشراء (مع الاتجاه):</b>")
+            L += lines
+    elif buy:
+        L.append("  🟢 <b>شراء (عكس الاتجاه — حذر، نصّ الحجم):</b>")
+        L += _ladder([(z, f"منطقة شراء {i + 1}")
+                      for i, (z, _n) in enumerate(buy[:2])], "long")
+
+    # -- account ---------------------------------------------------------
+    L.append(f"  💰 <b>حسابك ${ACCOUNT_USD:.0f} · {LOT} لوت:</b> نقطة = "
+             f"${POINT_VALUE:.0f} · خطر ${STOP_PICK_USD:.0f} "
+             f"({STOP_PICK_USD / ACCOUNT_USD * 100:.1f}%) · مكسب "
+             f"${STOP_PICK_USD * TARGET_RR:.0f} · R:R {TARGET_RR:.1f}")
+    L.append("  ⚠️ <i>صفقة واحدة فقط · الوقف مقدّس</i>")
 
     # ---- 8. the news that moves gold vs the dollar ----------------------
     items: list[tuple] = []

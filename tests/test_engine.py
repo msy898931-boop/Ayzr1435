@@ -867,8 +867,18 @@ class FullCardTest(unittest.TestCase):
         with self._feed():
             t = bot.card_full()
         for marker in ("قراءتي للذهب", "موقفي", "الصورة", "الفريمات", "الزخم",
-                       "البنية", "المستويات", "يلي بترقبه", "خطتي"):
+                       "البنية", "المستويات", "السيناريوهات", "خطتي", "حسابك"):
             self.assertIn(marker, t)
+
+    def test_the_plan_carries_multiple_sized_entries_and_the_account(self):
+        with self._feed():
+            t = bot.card_full()
+        # The owner asked for the whole ladder live, not one entry: at least two
+        # entries with a stop and a target, and the account line.
+        self.assertGreaterEqual(t.count("وقف"), 2)
+        self.assertGreaterEqual(t.count("هدف"), 2)
+        self.assertIn("R:R", t)
+        self.assertIn("صفقة واحدة فقط", t)
 
     def test_it_gives_a_concrete_call(self):
         with self._feed():
