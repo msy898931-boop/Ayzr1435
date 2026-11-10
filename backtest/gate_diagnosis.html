@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ليش البوت ما عطاك الصفقة — تشخيص وبيانات</title>
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--ink:#e6edf3;--mut:#8b949e;--grn:#3fb950;--red:#f85149;--ylw:#d29922;--blu:#58a6ff;--line:#30363d}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Tahoma,Arial,sans-serif;line-height:1.8;padding:24px}
+  .wrap{max-width:980px;margin:0 auto}
+  h1{font-size:25px;margin:0 0 4px}
+  h2{font-size:19px;margin:28px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
+  .sub{color:var(--mut);font-size:14px;margin-bottom:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:12px 0}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin:8px 0}
+  th,td{padding:9px 8px;text-align:right;border-bottom:1px solid var(--line)}
+  th{color:var(--mut);font-weight:600;font-size:13px}
+  .num{font-variant-numeric:tabular-nums;font-weight:700}
+  .g{color:var(--grn)}.r{color:var(--red)}.y{color:var(--ylw)}.b{color:var(--blu)}
+  .pill{display:inline-block;padding:3px 12px;border-radius:20px;font-size:13px;font-weight:700}
+  .pill.r{background:rgba(248,81,73,.15);color:var(--red)}
+  .pill.g{background:rgba(63,185,80,.15);color:var(--grn)}
+  .pill.y{background:rgba(210,153,34,.18);color:var(--ylw)}
+  ul{margin:8px 0;padding-inline-start:20px}li{margin:6px 0}
+  .note{color:var(--mut);font-size:13px}
+  .hl{background:rgba(88,166,255,.08);border-inline-start:3px solid var(--blu);padding:12px 15px;border-radius:6px;margin:12px 0}
+  .warn{background:rgba(210,153,34,.10);border-inline-start:3px solid var(--ylw);padding:12px 15px;border-radius:6px;margin:12px 0}
+  .bad{background:rgba(248,81,73,.08);border-inline-start:3px solid var(--red);padding:12px 15px;border-radius:6px;margin:12px 0}
+  .good{background:rgba(63,185,80,.07);border-inline-start:3px solid var(--grn);padding:12px 15px;border-radius:6px;margin:12px 0}
+  code{background:#21262d;padding:1px 6px;border-radius:4px;font-size:13px;direction:ltr;display:inline-block}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ليش البوت ما عطاك الصفقة؟</h1>
+  <div class="sub">تشخيص بالأرقام على بيانات 2026 كاملة (٢٥١ يوم · ٣٤٩٠٥ إشارة) · 10 تشرين ثاني 2026</div>
+
+  <div class="hl">
+    <b>أنت صح:</b> السوق نازل من 4044 لـ4022، والبوت ما عطاك شي. السبب <b>مو واحد — تلاتة</b>، وواحد منهن <b>خطير أكتر من الفلتر</b>.
+  </div>
+
+  <h2>🔴 المشكلة ١: تعريف الترند غلط (والسعر مو داخل بالحساب)</h2>
+  <div class="bad">
+    البوت بيحدّد لون الفريم بـ<b>EMA20 فوق EMA50</b> — <b>وما بيفحص السعر أبداً!</b>
+  </div>
+  <table>
+    <tr><th>فريم 4س</th><th>القيمة</th></tr>
+    <tr><td>السعر</td><td class="num r">4,023</td></tr>
+    <tr><td>EMA20</td><td class="num">4,076</td></tr>
+    <tr><td>EMA50</td><td class="num">4,053</td></tr>
+    <tr><td>البوت يقول</td><td><span class="pill g">🟢 صاعد</span> لأن EMA20 (4076) &gt; EMA50 (4053)</td></tr>
+    <tr><td>الحقيقة</td><td><span class="pill r">🔴 هابط</span> — السعر <b>تحت التنين</b></td></tr>
+  </table>
+  <div class="note">الـEMA20 بطيئة: الذهب نزل 114 نقطة بـ٤ شمعات 4س فقط، فالمتوسط لسّا ما لحق. التعريف الصح: <code>السعر فوق EMA20 AND EMA20 فوق EMA50 = صاعد</code>.</div>
+
+  <h2>🔴 المشكلة ٢: قراءة «البنية» قديمة وغالطة</h2>
+  <div class="bad">
+    الكارت قال <b>«البنية (1س): صاعدة 🟢»</b> — والسعر كسر آخر قاع أصلاً!
+  </div>
+  <ul>
+    <li>آخر قمة عند <b>4,148</b> · آخر قاع عند <b>4,108</b></li>
+    <li>السعر الحالي <b>4,023</b> — <b>تحت التنين بكتير!</b></li>
+    <li>البوت يقارن قمة بقمة سابقة بس، <b>وما بيفحص إذا السعر كسرهن</b></li>
+  </ul>
+  <div class="note">البنية صارت "صاعدة" من قمم قديمة، والبوت لسّا يعرضها — قراءة من الماضي مو من الحاضر.</div>
+
+  <h2>🔴 المشكلة ٣: الفلتر يرفض أقوى الحركات</h2>
+  <div class="bad">
+    الساعة اللي سألت فيها: <b>ADX 59</b> (المسموح 20-40) · <b>ATR 0.28%</b> (المسموح ≤0.25%). البوت يرفض <b>لأن الترند قوي كتير والحركة سريعة كتير</b>.
+  </div>
+  <div class="hl">
+    يعني البوت بيرفض <b>بالضبط الحركة اللي بدك ياها</b> — النزول الحاد الواضح.
+  </div>
+
+  <h2>📊 لكن — الأرقام تقول شي مهم (اقرأ هاد بعناية)</h2>
+  <div class="warn">
+    قست الصفقات اللي <b>منعها الفلتر</b> على ٢٥١ يوم. لو دخلناهن كلهن:
+  </div>
+  <table>
+    <tr><th>المجموعة</th><th>صفقات</th><th>نسبة ربح</th><th>صافي</th><th>لكل صفقة</th></tr>
+    <tr><td>مرّت الفلتر</td><td class="num">598</td><td class="num g">44%</td><td class="num g">+$1,946</td><td class="num g">+$3.25</td></tr>
+    <tr><td>منعها: ترند ممتد (ADX&gt;40)</td><td class="num">185</td><td class="num">36%</td><td class="num g">+$157</td><td class="num">+$0.85</td></tr>
+    <tr><td>منعها: تقلب عالي (ATR&gt;0.25%)</td><td class="num">1,355</td><td class="num">32%</td><td class="num r">−$287</td><td class="num r">−$0.21</td></tr>
+    <tr><td>منعها: التنين معاً</td><td class="num">497</td><td class="num">36%</td><td class="num g">+$470</td><td class="num">+$0.94</td></tr>
+    <tr><td>منعها: هادئ (ADX&lt;20)</td><td class="num">538</td><td class="num">36%</td><td class="num g">+$544</td><td class="num">+$1.01</td></tr>
+  </table>
+  <div class="warn">
+    <b>الترند الممتد (ADX&gt;40) رابح</b> (+$0.85/صفقة) — يعني الفلتر <b>عم يمنع فلوس هنيك</b>. بس <b>التقلب العالي (ATR) خاسر</b> (−$0.21/صفقة) — يعني الفلتر <b>عم يحميك هنيك</b>. <b>مش كل المنع سوا!</b>
+  </div>
+
+  <h2>🧪 اختبرت: شو بيصير لو رخّينا الفلتر؟</h2>
+  <table>
+    <tr><th>ADX_MAX</th><th>ATR_MAX</th><th>صفقات</th><th>صافي</th><th>أقصى تراجع</th></tr>
+    <tr><td>40 (الحالي)</td><td>0.25%</td><td class="num">722</td><td class="num g">+$14</td><td class="num">−$384</td></tr>
+    <tr><td>40</td><td>0.30%</td><td class="num">967</td><td class="num r">−$284</td><td class="num r">−$603</td></tr>
+    <tr><td>40</td><td>0.40%</td><td class="num">1,183</td><td class="num r">−$422</td><td class="num r">−$686</td></tr>
+    <tr><td>60</td><td>0.25%</td><td class="num">825</td><td class="num g">+$22</td><td class="num">−$349</td></tr>
+    <tr><td>100 (بلا ADX)</td><td>0.25%</td><td class="num">834</td><td class="num r">−$35</td><td class="num">−$350</td></tr>
+  </table>
+  <div class="bad">
+    <b>رخّي فلتر ATR = خسارة مضمونة</b> (−$284 لـ−$665). أما <b>رفع سقف ADX من 40 لـ60 = تحسّن بسيط</b> (+$14 ← +$22، وتراجع أقل).
+  </div>
+
+  <h2>🧾 الخلاصة</h2>
+  <div class="card">
+    <ul>
+      <li><b>١) تعريف الترند:</b> لازم يصير «السعر + المتوسطين». <span class="pill y">عرض + قرار</span></li>
+      <li><b>٢) البنية:</b> لازم تفحص إذا السعر كسر آخر قمة/قاع. <span class="pill y">عرض فقط</span></li>
+      <li><b>٣) فلتر ADX:</b> سقفو 40 عالٍ — نرفعو لـ60. <span class="pill g">بس التقلب نخلّيه</span></li>
+    </ul>
+  </div>
+  <div class="hl">
+    <b>الأهم:</b> بس <b>تصلّح تعريف الترند</b>، الـ4س يصير 🔴، وتصويت الأطر يصير <b>٦ من ٦ هبوط</b> بدل ٥ — يعني القرار يصير أنضف وأصدق، حتى لو الدراسة تقول إن الربح ما بيتغيّر كتير (−$47 مقابل +$14). <b>الصدق أهم من رقم صغير.</b>
+  </div>
+  <div class="note">* كل الأرقام من <code>duka_2026.json</code> (٢٥١ يوم، spot XAUUSD) بمحرّك <code>owner_plan.py</code> نفسه — نفس اللي بنيت عليه كل الدراسات. صافي بعد $0.5/صفقة تكلفة.</div>
+</div>
+</body>
+</html>

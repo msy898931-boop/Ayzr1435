@@ -89,7 +89,11 @@ TREND_FILTER_TF = "15m"          # the frame whose EMA20 the entry must respect
 # broken feed degrades to the old behaviour instead of silencing the desk.
 FILTERS_ON = os.environ.get("DESK_FILTERS", "1").strip().lower() not in \
     ("0", "off", "no", "false")
-ADX_MIN, ADX_MAX = 20.0, 40.0    # ride a trend, but not an extended one
+ADX_MIN, ADX_MAX = 20.0, 60.0    # ride a trend, but not an extended one
+# The ceiling was 40. Measured on the 251-day sample, the trades the ADX ceiling
+# alone blocked made +$0.85 each -- a rising ceiling keeps them, and the sweep
+# showed 40->60 both raises net (+$14 -> +$22) and cuts the drawdown. The ATR
+# ceiling stays: the trades IT blocked made -$0.21 each, so it earns its keep.
 ATR_MIN_PCT, ATR_MAX_PCT = 0.0008, 0.0025   # 0.08%-0.25% of price: alive, calm
 RSI_LONG = (35.0, 58.0)          # a long is a pullback, not a chase
 RSI_SHORT = (42.0, 65.0)         # the short mirror
@@ -570,16 +574,33 @@ def _touches(level: float, b: list[dict], tol: float) -> int:
     return n
 
 
-def frame_trend(b: list[dict]) -> int:
-    closes = [x["close"] for x in b]
-    e20, e50 = ema(closes, 20), ema(closes, 50)
+def trend_from(close: float, e20: float | None,
+               e50: float | None) -> int:
+    """The frame tilt from the price and its two EMAs -- the desk's ONE
+    definition of "up" and "down", so every surface and the study agree.
+
+    A frame is UP while price sits ABOVE both averages, DOWN while it sits
+    BELOW both, and NEUTRAL in between. The old rule compared the two averages
+    alone, blind to where price actually was: when gold fell 114 points in four
+    4h bars the 20-EMA had not caught up, so EMA20 still sat above EMA50 and the
+    frame read "up" while price was 50 points under both. Price is the truth; the
+    averages only smooth it. Price on one side of both is a trend, between them
+    is a transition, and the middle case stays neutral rather than guessing.
+    """
     if e20 is None or e50 is None:
         return 0
-    if e20 > e50 * 1.0005:
+    if close > e20 and close > e50:
         return 1
-    if e20 < e50 * 0.9995:
+    if close < e20 and close < e50:
         return -1
     return 0
+
+
+def frame_trend(b: list[dict]) -> int:
+    closes = [x["close"] for x in b]
+    if not closes:
+        return 0
+    return trend_from(closes[-1], ema(closes, 20), ema(closes, 50))
 
 
 FRAMES = ("1d", "4h", "1h", "30m", "15m", "5m")
@@ -647,20 +668,34 @@ def _bias(trends: dict) -> tuple[str, str]:
 
 
 def _structure_read() -> str | None:
-    """Higher-highs/higher-lows on 1h, or None when the tape is unreadable."""
+    """Higher-highs/higher-lows on 1h, OR None when the tape is unreadable.
+
+    Two conditions, both required: the swings must be rising AND price must
+    still sit on the right side of the last one. The old version compared the
+    last two pivots only, so after price collapsed 120 points below the last
+    swing low it still announced "بنية صاعدة" -- a fact about the past that the
+    present had already broken. A structure is only live while price respects it.
+    """
     try:
         bh = bars("1h", 200)
         highs, lows = pivots(bh, 3, 3)
+        live = float(bh[-1]["close"])
     except Exception:  # noqa: BLE001 - a missing frame must not kill the card
         return None
     if len(highs) < 2 or len(lows) < 2:
         return None
     hh = highs[-1] > highs[-2]
     hl = lows[-1] > lows[-2]
-    if hh and hl:
+    if hh and hl and live > lows[-1]:
         return "البنية (1س): قمم وقيعان صاعدة 🟢 (بنية صاعدة)"
-    if not hh and not hl:
+    lh = highs[-1] < highs[-2]
+    ll = lows[-1] < lows[-2]
+    if lh and ll and live < highs[-1]:
         return "البنية (1س): قمم وقيعان هابطة 🔴 (بنية هابطة)"
+    if live < lows[-1]:
+        return "البنية (1س): انكسر آخر قاع 🔴 (البنية انهارت لتحت)"
+    if live > highs[-1]:
+        return "البنية (1س): اخترق آخر قمة 🟢 (البنية انفتحت لفوق)"
     return "البنية (1س): مختلطة ⚪ (بلا بنية واضحة)"
 
 

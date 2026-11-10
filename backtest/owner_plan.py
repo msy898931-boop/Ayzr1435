@@ -72,17 +72,30 @@ def last_closed(P, tf, t):
     return bisect.bisect_right(P[tf]["closes"], t) - 1
 
 
+def visible_idx(P, tf, t):
+    """Index of the last tf bar VISIBLE at time t, forming one included.
+
+    The frame tilt is a direction, not a level: day_replay and the live read both
+    let it see the bar still forming, and the fast path must read the same bar or
+    the two disagree. The 15m gate below still uses last_closed -- a gate is a
+    level, and a level read off a repainting bar is reading the future.
+    """
+    return bisect.bisect_right(P[tf]["opens"], t) - 1
+
+
 def signal_at(P, t, live):
     """The desk's entry signal at bar-close time t, exactly as day_replay sees it."""
     up = dn = 0
     for tf in bot.FRAMES:
-        i = last_closed(P, tf, t)
+        i = visible_idx(P, tf, t)
         e20 = P[tf]["e20"][i] if i >= 0 else None
         e50 = P[tf]["e50"][i] if i >= 0 else None
-        if e20 is None or e50 is None:
+        cl = P[tf]["cl"][i] if i >= 0 else None
+        if e20 is None or e50 is None or cl is None:
             continue
-        up += e20 > e50 * 1.0005
-        dn += e20 < e50 * 0.9995
+        tilt = bot.trend_from(cl, e20, e50)
+        up += tilt == 1
+        dn += tilt == -1
     d = ("long" if up >= bot.CONFIRM_FRAMES
          else "short" if dn >= bot.CONFIRM_FRAMES else None)
     if d is None:

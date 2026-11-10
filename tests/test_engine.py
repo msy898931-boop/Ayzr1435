@@ -743,6 +743,102 @@ class AdaptiveAlertTest(unittest.TestCase):
             bot._live_levels, bot.read_market = saved_lv, saved_m
 
 
+class TrendFromTest(unittest.TestCase):
+    """The ONE trend definition: price must sit on one side of BOTH averages.
+
+    Comparing the averages alone was blind to price: after gold fell 114 pts in
+    four 4h bars, EMA20 still sat above EMA50 and the frame read "up" while
+    price was 50 pts under both. These pin the price-aware rule.
+    """
+
+    def test_price_above_both_averages_is_up(self):
+        self.assertEqual(bot.trend_from(4100.0, 4080.0, 4060.0), 1)
+
+    def test_price_below_both_averages_is_down(self):
+        # The gold case: price far under both, even with EMA20 still above EMA50.
+        self.assertEqual(bot.trend_from(4020.0, 4076.0, 4053.0), -1)
+
+    def test_price_between_the_averages_is_neutral(self):
+        # A transition: price under the 20 but over the 50 -> no trend claimed.
+        self.assertEqual(bot.trend_from(4070.0, 4080.0, 4050.0), 0)
+
+    def test_a_missing_average_is_neutral(self):
+        self.assertEqual(bot.trend_from(4100.0, None, 4060.0), 0)
+        self.assertEqual(bot.trend_from(4100.0, 4080.0, None), 0)
+
+    def test_frame_trend_reads_price_against_both_averages(self):
+        # A long flat base then a sharp collapse: the last close is far under
+        # both EMAs, so the frame reads down (the gold case, reproduced).
+        closes = [4100.0] * 60 + [4060.0, 4020.0, 3980.0, 3940.0, 3900.0]
+        bars = [_bar(_iso(i), c, c + 1, c - 1, c) for i, c in enumerate(closes)]
+        self.assertEqual(bot.frame_trend(bars), -1)
+
+    def test_frame_trend_is_up_when_price_leads_both(self):
+        closes = [4000.0] * 60 + [4040.0, 4080.0, 4120.0, 4160.0, 4200.0]
+        bars = [_bar(_iso(i), c, c + 1, c - 1, c) for i, c in enumerate(closes)]
+        self.assertEqual(bot.frame_trend(bars), 1)
+
+
+class StructureReadTest(unittest.TestCase):
+    """The 1h structure is only live while price respects the last swing."""
+
+    @staticmethod
+    def _seg(a, b, n):
+        return [a + (b - a) * k / (n - 1) for k in range(n)]
+
+    def _zigzag(self, live):
+        """Rising highs (4060/4080/4100) and rising lows (4020/4040), then a
+        leg to `live`. With 3-bar pivots this yields the swing sequence the
+        structure read is meant to judge."""
+        s = self._seg
+        vals = s(4000, 4060, 9) + s(4060, 4020, 9)[1:] + s(4020, 4080, 9)[1:] \
+            + s(4080, 4040, 9)[1:] + s(4040, 4100, 9)[1:] + s(4100, live, 9)[1:]
+        return [_bar(_iso(i), v, v + 0.5, v - 0.5, v) for i, v in enumerate(vals)]
+
+    def test_a_broken_support_is_not_a_rising_structure(self):
+        # Rising swings, but price has collapsed far BELOW the last swing low.
+        saved = bot.bars
+        try:
+            bot.bars = lambda tf, limit=300: self._zigzag(3850.0)
+            txt = bot._structure_read()
+            self.assertIn("انكسر آخر قاع", txt or "")
+            self.assertNotIn("صاعدة", txt or "")
+        finally:
+            bot.bars = saved
+
+    def test_a_live_rising_structure_still_reads_up(self):
+        # Same rising swings, price holding above the last low -> still up.
+        saved = bot.bars
+        try:
+            bot.bars = lambda tf, limit=300: self._zigzag(4050.0)
+            txt = bot._structure_read()
+            self.assertIn("صاعدة", txt or "")
+        finally:
+            bot.bars = saved
+
+
+class AdxCeilingTest(unittest.TestCase):
+    """The ADX ceiling was raised 40 -> 60: a strong trend is no longer 'extended'.
+
+    Measured on the 251-day sample, the trades the ceiling alone blocked made
+    +$0.85 each; the sweep showed 40->60 raises net and cuts drawdown.
+    """
+
+    def test_the_ceiling_is_sixty(self):
+        self.assertEqual(bot.ADX_MAX, 60.0)
+
+    def test_a_trend_above_the_old_ceiling_now_passes(self):
+        # A rising trend with a sine wobble lands ADX ~50: past the OLD ceiling
+        # of 40, inside the new 60. It must no longer be the gate that blocks.
+        import math
+        closes = [4000 + i * 2 + 20 * math.sin(i / 3.0) for i in range(140)]
+        bars = [_bar(_iso(i), c, c + 1.2, c - 1.2, c)
+                for i, c in enumerate(closes)]
+        fs = bot.filter_status("long", bars)
+        adx = fs["readings"]["adx"]
+        self.assertIsNotNone(adx)
+        self.assertGreater(adx, 40.0)          # above the old ceiling
+        self.assertNotIn("ADX", fs["failed"])  # but inside the new one
 
 
 if __name__ == "__main__":
