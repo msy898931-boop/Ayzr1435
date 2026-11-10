@@ -170,7 +170,7 @@ NEWS_ITEMS: list[tuple[str, str]] = [
 ]
 
 MENU = [
-    [("🧠 التحليل الكامل", "full")],
+    [("🧠 قراءتي للسوق", "full")],
     [("🧭 شو تعمل هلّق", "action")],
     [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
     [("🗺️ خريطة المناطق", "map"), ("📰 الأخبار", "news")],
@@ -1933,84 +1933,132 @@ def card_action() -> str:
             "<i>الواقف بأمان أحسن من الداخل غلط.</i>")
 
 
-def card_full() -> str:
-    """The whole desk in one tap -- a single, live, self-consistent read.
+def _fib_retr(hi: float, lo: float, up: bool) -> list[tuple[str, float]]:
+    """Fibonacci retracement levels of a swing.
 
-    The owner asked for one button that returns the full picture: every frame's
-    trend, the structure, the day range, the buy/sell zones, the nearest levels,
-    the conditional scenarios, and the one thing to do right now. It is a VIEW
-    over the functions the other cards already use (read_market, _verdict,
-    _zones, _structure_read, _sized), computed at the instant of the tap -- not
-    a second opinion. Where it names a trade it is quoting _verdict/plan, so it
-    can never contradict the desk.
+    An UP leg (lo->hi) retraces DOWN from the high: 38.2% sits just under hi.
+    A DOWN leg (hi->lo) retraces UP from the low: 38.2% sits just above lo.
+    Getting the sides right matters -- the owner reads 38.2% as the shallow one.
+    """
+    span = hi - lo
+    out = []
+    for f, label in ((0.382, "38.2%"), (0.5, "50%"), (0.618, "61.8%")):
+        out.append((label, hi - span * f if up else lo + span * f))
+    return out
+
+
+def card_full() -> str:
+    """MY OWN read of the tape -- not the desk's verdict.
+
+    The owner asked for the agent's analysis inside the bot, in one tap. This
+    is a technical read computed at the instant of the tap: the trend across
+    every frame, momentum (RSI extremes), the 1h structure, the day range,
+    Fibonacci retracements of the day's leg, the buy/sell zones, and MY call --
+    when to buy and when to sell, with levels and the owner's $9/$20 sizing.
+
+    It deliberately does NOT print the desk's gate ("wait for ADX...") -- the
+    owner wants a read of the market, not the desk's permission. The numbers it
+    quotes for any trade come from _sized, so they still respect the account.
     """
     m = read_market()
     live = m["live"]
     q = m["q"]
-    v = _verdict(m)
     names = {"1d": "يومي", "4h": "4س", "1h": "1س", "30m": "30د",
              "15m": "15د", "5m": "5د"}
     icon = {1: "🟢", -1: "🔴", 0: "⚪"}
     state = "مفتوح ✅" if market_open(q) else "مسكّر ⛔"
+    up = sum(1 for tf in FRAMES if m["trends"].get(tf) == 1)
+    dn = sum(1 for tf in FRAMES if m["trends"].get(tf) == -1)
 
-    L = [f"🧠 <b>التحليل الكامل</b> — {SYMBOL}",
+    L = [f"🧠 <b>قراءتي للسوق</b> — {SYMBOL}",
          f"السعر <b>{num(live)}</b> · السوق {state}"]
 
     L.append("\n<b>1️⃣ الاتجاه — كل الفريمات:</b>")
-    for tf in FRAMES:
-        r = m["rsis"].get(tf)
-        rt = f"RSI {r:.0f}" if isinstance(r, (int, float)) else "RSI —"
-        L.append(f"  {names[tf]}: {icon[m['trends'].get(tf, 0)]} {rt}")
+    L.append("  " + " · ".join(
+        f"{names[tf]} {icon[m['trends'].get(tf, 0)]}" for tf in FRAMES))
+    if dn >= 4:
+        L.append(f"  → <b>هابط</b> ({dn} من 6)")
+    elif up >= 4:
+        L.append(f"  → <b>صاعد</b> ({up} من 6)")
+    else:
+        L.append("  → <b>عرضي</b> (بلا اتجاه واضح)")
+
+    r15 = m["rsis"].get("15m")
+    r1h = m["rsis"].get("1h")
+    if isinstance(r15, (int, float)):
+        if r15 <= 30:
+            mom = "تشبّع بيعي — احتمال ارتداد لفوق ⚠️"
+        elif r15 >= 70:
+            mom = "تشبّع شرائي — احتمال تصحيح ⚠️"
+        elif r15 >= 55:
+            mom = "زخم صاعد"
+        elif r15 <= 45:
+            mom = "زخم هابط"
+        else:
+            mom = "زخم محايد"
+        r1 = f" · 1س RSI {r1h:.0f}" if isinstance(r1h, (int, float)) else ""
+        L.append(f"\n<b>2️⃣ الزخم:</b> 15د RSI {r15:.0f}{r1} — <b>{mom}</b>")
 
     st = _structure_read()
     if st:
-        L.append(f"\n<b>2️⃣ البنية:</b> {st}")
+        L.append(f"\n<b>3️⃣ البنية:</b> {st}")
 
     hi, lo = q.get("high"), q.get("low")
     if isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
         pos = (live - lo) / (hi - lo) * 100
-        L.append(f"\n<b>3️⃣ نطاق اليوم:</b> {num(lo)} — {num(hi)} · "
+        L.append(f"\n<b>4️⃣ نطاق اليوم:</b> {num(lo)} — {num(hi)} · "
                  f"السعر عند <b>{pos:.0f}%</b> منه")
+        chg = q.get("dayDiffPercent")
+        if isinstance(chg, (int, float)):
+            up_day = chg >= 0
+        else:
+            up_day = live >= (hi + lo) / 2
+        leg = "صعود" if up_day else "هبوط"
+        L.append(f"\n<b>5️⃣ فيبوناتشي ({leg} اليوم):</b>")
+        L.append("  " + " · ".join(f"{lab} {num(v)}"
+                                   for lab, v in _fib_retr(hi, lo, up_day)))
 
     sell, buy = _zones(live)
-    L.append("\n<b>4️⃣ مناطق البيع/الشراء:</b>")
+    L.append("\n<b>6️⃣ المناطق:</b>")
     if sell:
-        L.append("  🔴 بيع فوق: " + " · ".join(f"{num(z)}" for z, _ in sell[:3]))
+        L.append("  🔴 بيع فوق: " + " · ".join(num(z) for z, _ in sell[:3]))
     if buy:
-        L.append("  🟢 شراء تحت: " + " · ".join(f"{num(z)}" for z, _ in buy[:3]))
+        L.append("  🟢 شراء تحت: " + " · ".join(num(z) for z, _ in buy[:3]))
     if not sell and not buy:
         L.append("  — ما في مناطق واضحة قريبة")
 
-    ls = _levels_with_strength(live)
-    if ls:
-        L.append("\n<b>5️⃣ أقرب المستويات:</b>")
-        L += [f"  {x}" for x in ls]
+    # ---- MY call ---------------------------------------------------------
+    L.append("\n<b>7️⃣ قراءتي وتوصيتي:</b>")
+    if dn >= 4:
+        L.append("  الاتجاه هابط → <b>الأفضل تبيع القوة</b> (ارتداد لفوق)")
+        entry = sell[0][0] if sell else live + (m["atrs"].get("1h") or 10) * 0.5
+        p = _sized(entry, "short", entry)
+        L.append(f"  📍 ادخل بيع عند <b>{num(entry)}</b>")
+        L.append(f"  🛡 وقف {num(p['stop'])} (−${p['risk_usd']:.0f}) · "
+                 f"🎯 هدف {num(p['target'])} (+${p['gain_usd']:.0f})")
+        if buy:
+            b = _sized(buy[0][0], "long", buy[0][0])
+            L.append(f"  🟢 فرصة معاكسة: صمد فوق {num(buy[0][0])} → شراء سريع "
+                     f"(وقف {num(b['stop'])} · هدف {num(b['target'])})")
+    elif up >= 4:
+        L.append("  الاتجاه صاعد → <b>الأفضل تشتري الانخفاض</b>")
+        entry = buy[0][0] if buy else live - (m["atrs"].get("1h") or 10) * 0.5
+        p = _sized(entry, "long", entry)
+        L.append(f"  📍 ادخل شراء عند <b>{num(entry)}</b>")
+        L.append(f"  🛡 وقف {num(p['stop'])} (−${p['risk_usd']:.0f}) · "
+                 f"🎯 هدف {num(p['target'])} (+${p['gain_usd']:.0f})")
+        if sell:
+            s = _sized(sell[0][0], "short", sell[0][0])
+            L.append(f"  🔴 فرصة معاكسة: رفض {num(sell[0][0])} → بيع سريع "
+                     f"(وقف {num(s['stop'])} · هدف {num(s['target'])})")
+    else:
+        L.append("  السوق عرضي → <b>اشترِ عند الدعم · بِع عند المقاومة</b>")
+        if buy:
+            L.append(f"  🟢 شراء عند {num(buy[0][0])}")
+        if sell:
+            L.append(f"  🔴 بيع عند {num(sell[0][0])}")
 
-    L.append("\n<b>6️⃣ شو تعمل هلّق:</b>")
-    L.append(_headline(v))
-    if v["state"] == "enter":
-        L += [f"  {x}" for x in _plan_lines(v["plan"])]
-    elif v["state"] == "hold":
-        t = v["trade"]
-        L.append(f"  دخول {num(t['entry'])} · وقف {num(t['stop'])} · "
-                 f"هدف {num(t['target'])}")
-
-    L.append("\n<b>7️⃣ السيناريوهات (مشروطة):</b>")
-    if sell:
-        trig = sell[0][0] + 0.5
-        p = _sized(trig, "long", sell[0][0])
-        L.append(f"  🟢 صعود: اختراق <b>{num(trig)}</b> → وقف {num(p['stop'])} · "
-                 f"هدف {num(p['target'])} (R:R {p['rr']:.2f})")
-    if buy:
-        trig = buy[0][0] - 0.5
-        p = _sized(trig, "short", buy[0][0])
-        L.append(f"  🔴 هبوط: كسر <b>{num(trig)}</b> → وقف {num(p['stop'])} · "
-                 f"هدف {num(p['target'])} (R:R {p['rr']:.2f})")
-    if not sell and not buy:
-        L.append("  — بلا مشغّل واضح")
-
-    L.append("\n<i>قراءة لحظية من نفس محرك المكتب — مو وعد ربح. "
-             "الوقف إلزامي.</i>")
+    L.append("\n<i>قراءتي الفنية — مو وعد ربح. الوقف إلزامي.</i>")
     return "\n".join(L)
 
 

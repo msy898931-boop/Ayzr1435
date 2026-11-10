@@ -819,9 +819,9 @@ class StructureReadTest(unittest.TestCase):
 
 
 class FullCardTest(unittest.TestCase):
-    """card_full is the one-tap whole-desk read. It must be a VIEW over the
-    other cards -- same engine, no second opinion -- and stay inside Telegram's
-    message limit."""
+    """card_full is MY OWN read of the tape (the owner asked for the agent's
+    analysis, not the desk's verdict). It must stay inside Telegram's limit and
+    carry the sections plus a concrete call."""
 
     def _feed(self):
         # A wavy 1h series: real pivots, so structure and zones are present.
@@ -839,24 +839,40 @@ class FullCardTest(unittest.TestCase):
     def test_it_carries_every_section(self):
         with self._feed():
             t = bot.card_full()
-        for marker in ("التحليل الكامل", "الاتجاه", "البنية", "نطاق اليوم",
-                       "مناطق البيع/الشراء", "شو تعمل", "السيناريوهات"):
+        for marker in ("قراءتي للسوق", "الاتجاه", "الزخم", "البنية",
+                       "نطاق اليوم", "فيبوناتشي", "المناطق",
+                       "قراءتي وتوصيتي"):
             self.assertIn(marker, t)
+
+    def test_it_gives_a_concrete_call(self):
+        with self._feed():
+            t = bot.card_full()
+        self.assertTrue("ادخل" in t or "اشترِ" in t)
 
     def test_it_is_wired_to_the_menu_and_dispatch(self):
         with self._feed():
             self.assertEqual(bot.dispatch("full"), bot.card_full())
-        self.assertIn(("🧠 التحليل الكامل", "full"),
+        self.assertIn(("🧠 قراءتي للسوق", "full"),
                       [pair for row in bot.MENU for pair in row])
         self.assertEqual(bot.TEXT_ACTIONS.get("كامل"), "full")
 
-    def test_its_verdict_line_matches_the_action_card(self):
-        # Both read _verdict, so the headline of one is the headline of the
-        # other -- the desk cannot tell the owner two things in the same minute.
+    def test_it_does_not_print_the_desks_gate(self):
+        # The owner wants a market read, not the desk's permission slip: the
+        # card must not echo the "wait, filter blocks it" verdict line.
         with self._feed():
-            m = bot.read_market()
-            v = bot._verdict(m)
-            self.assertIn(bot._headline(v), bot.card_full())
+            self.assertNotIn("فلتر", bot.card_full())
+
+    def test_fibonacci_labels_sit_on_the_right_side(self):
+        # Down leg: 38.2% is the SHALLOW retracement, just above the low.
+        hi, lo = 4141.0, 4013.0
+        fib = dict(bot._fib_retr(hi, lo, up=False))
+        self.assertAlmostEqual(fib["38.2%"], lo + (hi - lo) * 0.382, places=2)
+        self.assertAlmostEqual(fib["61.8%"], lo + (hi - lo) * 0.618, places=2)
+        self.assertLess(fib["38.2%"], fib["61.8%"])
+        # Up leg: 38.2% sits just under the high.
+        fib_up = dict(bot._fib_retr(hi, lo, up=True))
+        self.assertAlmostEqual(fib_up["38.2%"], hi - (hi - lo) * 0.382, places=2)
+        self.assertGreater(fib_up["38.2%"], fib_up["61.8%"])
 
 
 class AdxCeilingTest(unittest.TestCase):
