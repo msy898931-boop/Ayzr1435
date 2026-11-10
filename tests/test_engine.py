@@ -818,14 +818,33 @@ class StructureReadTest(unittest.TestCase):
 
 
 class AdxCeilingTest(unittest.TestCase):
-    """The ADX ceiling was raised 40 -> 60: a strong trend is no longer 'extended'.
+    """The ADX window was 20-60; band-by-band it is 0-50.
 
-    Measured on the 251-day sample, the trades the ceiling alone blocked made
-    +$0.85 each; the sweep showed 40->60 raises net and cuts drawdown.
+    Every ADX band up to 50 pays on the 251-day sample and ONLY the >50 band
+    loses (-$237 over 199 trades). The old floor of 20 threw away the best
+    entries (the 0-20 band pays ~$3.6/trade) and the old ceiling of 60 admitted
+    the worst. Floor -> 0, ceiling -> 50: 2386 -> 2937 trades, net $2186 ->
+    $3882, and the drawdown shrinks. Holds in both halves of the sample.
     """
 
-    def test_the_ceiling_is_sixty(self):
-        self.assertEqual(bot.ADX_MAX, 60.0)
+    def test_the_ceiling_is_fifty(self):
+        self.assertEqual(bot.ADX_MAX, 50.0)
+
+    def test_the_floor_is_off(self):
+        self.assertEqual(bot.ADX_MIN, 0.0)
+
+    def test_an_early_trend_is_no_longer_blocked_by_the_floor(self):
+        # A shallow, choppy rise reads ADX ~18 -- under the OLD floor of 20,
+        # which called it "no trend". With the floor off it must pass.
+        import math
+        closes = [4000 + i * 0.5 + 12 * math.sin(i / 2.5) for i in range(140)]
+        bars = [_bar(_iso(i), c, c + 3.0, c - 3.0, c)
+                for i, c in enumerate(closes)]
+        fs = bot.filter_status("long", bars)
+        adx = fs["readings"]["adx"]
+        self.assertIsNotNone(adx)
+        self.assertLess(adx, 20.0)             # under the old floor
+        self.assertNotIn("ADX", fs["failed"])  # but no longer blocked
 
 
 class AtrCeilingTest(unittest.TestCase):

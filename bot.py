@@ -89,14 +89,18 @@ TREND_FILTER_TF = "15m"          # the frame whose EMA20 the entry must respect
 # broken feed degrades to the old behaviour instead of silencing the desk.
 FILTERS_ON = os.environ.get("DESK_FILTERS", "1").strip().lower() not in \
     ("0", "off", "no", "false")
-ADX_MIN, ADX_MAX = 20.0, 60.0    # ride a trend, but not an extended one
-# The ADX ceiling was 40; measured on the 251-day sample the trades it alone
-# blocked made +$0.85 each, so 60 keeps them (net +$14 -> +$22, smaller drawdown).
-# The ATR ceiling was 0.25%, and the sweep says that was too tight: raising it to
-# 1.00% doubles the trades (1142 -> 2386) for +57% net, at the same quality --
-# and 1.00% still beats NO ceiling (2031$), because the >1% band is the one that
-# loses (-$212 over 117 trades). The stop stays at $9: widening it lifts the win
-# rate (37% -> 47%) but cuts net, so the tight stop is not what these trades lose.
+ADX_MIN, ADX_MAX = 0.0, 50.0     # ride a trend, but not an exhausted one
+# Re-measured on the 251-day sample, band by band: every ADX band up to 50 is
+# profitable (0-15 $3.50/trade, 15-25 $3.6, 25-40 $2, 40-50 $3.3) and ONLY the
+# >50 band loses (-$237 over 199 trades). So the old floor of 20 was throwing
+# away the best entries (the 0-20 band pays $3.6/trade), and the old ceiling of
+# 60 was admitting the worst. Floor -> 0, ceiling -> 50. Result: 2386 -> 2937
+# trades, net $2186 -> $3882, and the drawdown SHRINKS (-333 -> -211). Holds in
+# both halves of the sample (split-half: +2228 / +1674).
+# The ATR ceiling: the sweep says 0.25% was too tight -- 1.00% doubles the
+# trades for +57% net at the same quality, and still beats NO ceiling (2031$),
+# because the >1% band is the one that loses (-$212 over 117 trades). The stop
+# stays at $9: widening it lifts the win rate (37% -> 47%) but cuts net.
 ATR_MIN_PCT, ATR_MAX_PCT = 0.0008, 0.0100   # 0.08%-1.00% of price: alive, calm
 RSI_LONG = (35.0, 58.0)          # a long is a pullback, not a chase
 RSI_SHORT = (42.0, 65.0)         # the short mirror
