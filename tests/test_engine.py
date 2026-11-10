@@ -40,7 +40,8 @@ class FakeFeed:
         self._saved = (bot.quote, bot.bars)
 
     def _quote(self):
-        return {"mid": self.mid, "marketState": self.market, "stale": self.stale}
+        return {"mid": self.mid, "marketState": self.market, "stale": self.stale,
+                "high": self.mid + 20.0, "low": self.mid - 20.0}
 
     def _bars(self, tf, limit=300):
         closes = self.closes.get(tf)
@@ -815,6 +816,47 @@ class StructureReadTest(unittest.TestCase):
             self.assertIn("صاعدة", txt or "")
         finally:
             bot.bars = saved
+
+
+class FullCardTest(unittest.TestCase):
+    """card_full is the one-tap whole-desk read. It must be a VIEW over the
+    other cards -- same engine, no second opinion -- and stay inside Telegram's
+    message limit."""
+
+    def _feed(self):
+        # A wavy 1h series: real pivots, so structure and zones are present.
+        import math
+        wave = [4000 + 30 * math.sin(i / 3.0) + i * 0.3 for i in range(90)]
+        return FakeFeed(mid=wave[-1],
+                        closes={tf: wave for tf in bot.FRAMES})
+
+    def test_it_stays_inside_the_telegram_limit(self):
+        with self._feed():
+            t = bot.card_full()
+        self.assertLessEqual(len(t), 4000)
+        self.assertGreater(len(t), 200)
+
+    def test_it_carries_every_section(self):
+        with self._feed():
+            t = bot.card_full()
+        for marker in ("التحليل الكامل", "الاتجاه", "البنية", "نطاق اليوم",
+                       "مناطق البيع/الشراء", "شو تعمل", "السيناريوهات"):
+            self.assertIn(marker, t)
+
+    def test_it_is_wired_to_the_menu_and_dispatch(self):
+        with self._feed():
+            self.assertEqual(bot.dispatch("full"), bot.card_full())
+        self.assertIn(("🧠 التحليل الكامل", "full"),
+                      [pair for row in bot.MENU for pair in row])
+        self.assertEqual(bot.TEXT_ACTIONS.get("كامل"), "full")
+
+    def test_its_verdict_line_matches_the_action_card(self):
+        # Both read _verdict, so the headline of one is the headline of the
+        # other -- the desk cannot tell the owner two things in the same minute.
+        with self._feed():
+            m = bot.read_market()
+            v = bot._verdict(m)
+            self.assertIn(bot._headline(v), bot.card_full())
 
 
 class AdxCeilingTest(unittest.TestCase):

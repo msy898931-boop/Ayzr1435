@@ -170,6 +170,7 @@ NEWS_ITEMS: list[tuple[str, str]] = [
 ]
 
 MENU = [
+    [("🧠 التحليل الكامل", "full")],
     [("🧭 شو تعمل هلّق", "action")],
     [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
     [("🗺️ خريطة المناطق", "map"), ("📰 الأخبار", "news")],
@@ -188,6 +189,7 @@ JOURNAL_MENU = [
 TEXT_ACTIONS = {
     "/start": "menu", "/menu": "menu", "/help": "help",
     "تحليل": "analysis", "توصية": "recommend", "سيناريو": "scenarios",
+    "كامل": "full", "شامل": "full", "كل شي": "full", "التحليل الكامل": "full",
     "سيناريوهات": "scenarios", "مستويات": "levels", "مفتوحة": "open",
     "الصفقات": "open", "سجل": "journal_menu", "السجل": "journal_menu",
     "يومي": "j_day", "اليوم": "j_day", "أسبوعي": "j_week", "اسبوعي": "j_week",
@@ -1931,6 +1933,87 @@ def card_action() -> str:
             "<i>الواقف بأمان أحسن من الداخل غلط.</i>")
 
 
+def card_full() -> str:
+    """The whole desk in one tap -- a single, live, self-consistent read.
+
+    The owner asked for one button that returns the full picture: every frame's
+    trend, the structure, the day range, the buy/sell zones, the nearest levels,
+    the conditional scenarios, and the one thing to do right now. It is a VIEW
+    over the functions the other cards already use (read_market, _verdict,
+    _zones, _structure_read, _sized), computed at the instant of the tap -- not
+    a second opinion. Where it names a trade it is quoting _verdict/plan, so it
+    can never contradict the desk.
+    """
+    m = read_market()
+    live = m["live"]
+    q = m["q"]
+    v = _verdict(m)
+    names = {"1d": "يومي", "4h": "4س", "1h": "1س", "30m": "30د",
+             "15m": "15د", "5m": "5د"}
+    icon = {1: "🟢", -1: "🔴", 0: "⚪"}
+    state = "مفتوح ✅" if market_open(q) else "مسكّر ⛔"
+
+    L = [f"🧠 <b>التحليل الكامل</b> — {SYMBOL}",
+         f"السعر <b>{num(live)}</b> · السوق {state}"]
+
+    L.append("\n<b>1️⃣ الاتجاه — كل الفريمات:</b>")
+    for tf in FRAMES:
+        r = m["rsis"].get(tf)
+        rt = f"RSI {r:.0f}" if isinstance(r, (int, float)) else "RSI —"
+        L.append(f"  {names[tf]}: {icon[m['trends'].get(tf, 0)]} {rt}")
+
+    st = _structure_read()
+    if st:
+        L.append(f"\n<b>2️⃣ البنية:</b> {st}")
+
+    hi, lo = q.get("high"), q.get("low")
+    if isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
+        pos = (live - lo) / (hi - lo) * 100
+        L.append(f"\n<b>3️⃣ نطاق اليوم:</b> {num(lo)} — {num(hi)} · "
+                 f"السعر عند <b>{pos:.0f}%</b> منه")
+
+    sell, buy = _zones(live)
+    L.append("\n<b>4️⃣ مناطق البيع/الشراء:</b>")
+    if sell:
+        L.append("  🔴 بيع فوق: " + " · ".join(f"{num(z)}" for z, _ in sell[:3]))
+    if buy:
+        L.append("  🟢 شراء تحت: " + " · ".join(f"{num(z)}" for z, _ in buy[:3]))
+    if not sell and not buy:
+        L.append("  — ما في مناطق واضحة قريبة")
+
+    ls = _levels_with_strength(live)
+    if ls:
+        L.append("\n<b>5️⃣ أقرب المستويات:</b>")
+        L += [f"  {x}" for x in ls]
+
+    L.append("\n<b>6️⃣ شو تعمل هلّق:</b>")
+    L.append(_headline(v))
+    if v["state"] == "enter":
+        L += [f"  {x}" for x in _plan_lines(v["plan"])]
+    elif v["state"] == "hold":
+        t = v["trade"]
+        L.append(f"  دخول {num(t['entry'])} · وقف {num(t['stop'])} · "
+                 f"هدف {num(t['target'])}")
+
+    L.append("\n<b>7️⃣ السيناريوهات (مشروطة):</b>")
+    if sell:
+        trig = sell[0][0] + 0.5
+        p = _sized(trig, "long", sell[0][0])
+        L.append(f"  🟢 صعود: اختراق <b>{num(trig)}</b> → وقف {num(p['stop'])} · "
+                 f"هدف {num(p['target'])} (R:R {p['rr']:.2f})")
+    if buy:
+        trig = buy[0][0] - 0.5
+        p = _sized(trig, "short", buy[0][0])
+        L.append(f"  🔴 هبوط: كسر <b>{num(trig)}</b> → وقف {num(p['stop'])} · "
+                 f"هدف {num(p['target'])} (R:R {p['rr']:.2f})")
+    if not sell and not buy:
+        L.append("  — بلا مشغّل واضح")
+
+    L.append("\n<i>قراءة لحظية من نفس محرك المكتب — مو وعد ربح. "
+             "الوقف إلزامي.</i>")
+    return "\n".join(L)
+
+
 def alerts_guide() -> str:
     """The map of every alert the desk sends and what to do about each."""
     return ("🔔 <b>دليل التنبيهات</b> — " + SYMBOL + "\n"
@@ -1974,6 +2057,7 @@ def alerts_guide() -> str:
 def dispatch(action: str) -> str:
     return {
         "analysis": card_analysis,
+        "full": card_full,
         "action": card_action,
         "alerts": alerts_guide,
         "recommend": card_recommend,
