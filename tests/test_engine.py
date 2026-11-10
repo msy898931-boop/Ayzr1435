@@ -936,6 +936,52 @@ class TrendWatchTest(unittest.TestCase):
             bot.TREND_ALERTS = saved
 
 
+class EntryWatchTest(unittest.TestCase):
+    """entry_watch speaks ONCE as price reaches a desk zone, carrying the trade.
+    It must fire on the first approach, stay silent on a repeat while price
+    sits there, and forget a zone once price is well clear so a re-test speaks
+    again."""
+
+    def _feed(self):
+        import math
+        wave = [4000 + 30 * math.sin(i / 3.0) + i * 0.3 for i in range(90)]
+        return FakeFeed(mid=wave[-1], closes={tf: wave for tf in bot.FRAMES})
+
+    def test_it_fires_once_then_stays_silent(self):
+        saved = bot._zones
+        seen: dict = {}
+        try:
+            # Pin one sell zone right at the live price: the first look must
+            # speak, the second (same zone, same price) must stay silent.
+            bot._zones = lambda live: ([(live, 3)], [])
+            with self._feed():
+                first = bot.entry_watch(seen)
+                again = bot.entry_watch(seen)
+        finally:
+            bot._zones = saved
+        self.assertIsNotNone(first)
+        self.assertIn("منطقة بيع", first)
+        self.assertIn("دخول", first)          # it carries the trade
+        self.assertIsNone(again)
+
+    def test_a_clear_zone_is_forgotten(self):
+        seen = {"entry_fired": {"sell:1000.00": True}}
+        with self._feed():
+            bot.entry_watch(seen)             # price is ~4000, far from 1000
+        self.assertNotIn("sell:1000.00", seen["entry_fired"])
+
+    def test_a_buy_zone_speaks_as_a_buy(self):
+        saved = bot._zones
+        try:
+            bot._zones = lambda live: ([], [(live, 3)])
+            with self._feed():
+                msg = bot.entry_watch({})
+        finally:
+            bot._zones = saved
+        self.assertIsNotNone(msg)
+        self.assertIn("منطقة شراء", msg)
+
+
 class AdxCeilingTest(unittest.TestCase):
     """The ADX window was 20-60; band-by-band it is 0-50.
 

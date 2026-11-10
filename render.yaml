@@ -32,9 +32,9 @@ services:
       # any sends ONE alert carrying the trade. Extend with a comma list.
       - key: DESK_WATCH_LEVELS
         value: "4080,4035,4005"
-      # The news card pulls fresh gold headlines from Google News (keyless RSS)
-      # when this is 1 -- merged from several queries (gold price, Fed rate,
-      # US CPI, dollar index), cached 5 minutes. INFORMATION ONLY -- it never
+      # The news card pulls fresh headlines from Google News (keyless RSS),
+      # ARABIC by default (queries: سعر الذهب / الفيدرالي / التضخم / الدولار;
+      # feed locale ar / SA), cached 5 minutes. INFORMATION ONLY -- it never
       # opens, blocks or sizes a trade. Set to 0 to show only the hand-edited
       # NEWS_ITEMS list.
       - key: DESK_NEWS_LIVE
@@ -44,6 +44,10 @@ services:
       # chop cannot spam. Set to 0 to switch it off.
       - key: DESK_TREND_ALERTS
         value: "1"
+      # The entry-zone heads-up: speak once as price reaches a desk buy/sell
+      # zone, carrying the trade. Points within the zone that count as "near".
+      - key: DESK_ENTRY_NEAR_PTS
+        value: "6"
       # The owner's clock for every time the bot prints (news headlines come
       # stamped in GMT). Syria = UTC+3 and has had no DST since 2022, so a
       # fixed offset is exact; set 0 to show GMT.

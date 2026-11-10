@@ -147,6 +147,10 @@ GATE_ARM_PTS = 1.5               # close this far above/below the EMA = a signal
 # target, without a running commentary on every tick.
 NEAR_TARGET_FRAC = 0.25          # within this fraction of the entry->target span
 NEAR_STOP_FRAC = 0.30            # within this fraction of the entry->stop span
+# The entry-zone heads-up: speak once as price enters this band around one of
+# the desk's buy/sell zones, carrying the trade it implies -- the owner asked
+# to hear BEFORE an entry, not after. ~0.15% of the price on gold.
+ENTRY_NEAR_PTS = float(os.environ.get("DESK_ENTRY_NEAR_PTS", "6") or "6")
 
 
 # ---- menus --------------------------------------------------------------
@@ -156,15 +160,19 @@ NEAR_STOP_FRAC = 0.30            # within this fraction of the entry->stop span
 # RSS) -- still information only, still never a trade input.
 NEWS_LIVE = os.environ.get("DESK_NEWS_LIVE", "0").strip().lower() in (
     "1", "true", "yes", "on")
-# Everything that moves gold vs the dollar -- not just the phrase "gold price".
-# The Fed's rate path, US inflation prints and the dollar index are the real
-# drivers of XAUUSD, so several focused queries are merged (newest first,
-# deduped). Override with DESK_NEWS_QUERY, pipe-separated for more than one.
+# The news card pulls fresh headlines from Google News (keyless RSS). Arabic by
+# default -- the owner reads Arabic. Google News is keyed by locale, so both the
+# queries AND the feed's language/region are Arabic (ar / SA).
+# Everything that moves gold vs the dollar, not just the phrase "gold price":
+# the Fed's rate path, US inflation and the dollar index are the real drivers.
+# Override with DESK_NEWS_QUERY, pipe-separated for more than one query.
 NEWS_QUERIES: tuple[str, ...] = tuple(
     q.strip() for q in os.environ.get(
         "DESK_NEWS_QUERY",
-        "gold price XAUUSD|Federal Reserve rate decision|US inflation CPI|"
-        "US dollar index DXY").split("|") if q.strip())
+        "سعر الذهب|الفيدرالي الفائدة|التضخم الأميركي|الدولار").split("|")
+    if q.strip())
+NEWS_LANG = os.environ.get("DESK_NEWS_LANG", "ar").strip()
+NEWS_REGION = os.environ.get("DESK_NEWS_REGION", "SA").strip()
 NEWS_CACHE_S = 300               # reuse a fetch for 5 minutes (feeds are slow)
 # The automatic direction alert: tell the owner when the desk's net direction
 # flips (up / down / range) without a tap. A cooldown damps a chop at the edge.
@@ -1205,10 +1213,16 @@ _NEWS_CACHE: dict = {"at": 0.0, "items": []}
 
 
 def _news_one(query: str) -> list[tuple[datetime, str, str, str]]:
-    """Gold/dollar headlines for ONE Google News query, newest first."""
+    """Gold/dollar headlines for ONE Google News query, newest first.
+
+    The feed is keyed by language/region (NEWS_LANG/NEWS_REGION), so an Arabic
+    query returns Arabic headlines. Tagging falls back to a neutral dot when no
+    English keyword matches -- an Arabic headline is tagged by the query it came
+    from (the first query is the price one), not by an English substring.
+    """
     q = urllib.parse.quote(query)
     url = (f"https://news.google.com/rss/search?q={q}"
-           "&hl=en-US&gl=US&ceid=US:en")
+           f"&hl={NEWS_LANG}&gl={NEWS_REGION}&ceid={NEWS_REGION}:{NEWS_LANG}")
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=15) as r:
         raw = r.read().decode("utf-8", "ignore")
@@ -1228,9 +1242,13 @@ def _news_one(query: str) -> list[tuple[datetime, str, str, str]]:
                     stamp = stamp.replace(tzinfo=UTC)
                 when = _clock(stamp)
         low = title.lower()
-        tag = ("🔥" if any(w in low for w in ("cpi", "inflation", "fed", "rate"))
-               else "📈" if any(w in low for w in ("rally", "gain", "rise", "high"))
-               else "📉" if any(w in low for w in ("fall", "drop", "slump", "low"))
+        tag = ("🔥" if any(w in low for w in (
+                   "cpi", "inflation", "fed", "rate",
+                   "تضخم", "فائدة", "فيدرالي", "المركزي"))
+               else "📈" if any(w in low for w in (
+                   "rally", "gain", "rise", "high", "ارتفاع", "صعود", "يرتفع"))
+               else "📉" if any(w in low for w in (
+                   "fall", "drop", "slump", "low", "هبوط", "انخفاض", "ينخفض"))
                else "▫️")
         parsed.append((stamp, tag, title[:120], when))
     return parsed
@@ -2223,6 +2241,10 @@ def alerts_guide() -> str:
             "بلا ما تكبس.\n"
             "  👉 <i>حدّث نظرتك: صاعد = شراء الانخفاض · هابط = بيع القوة. "
             "(تنبيه وحدة كل 20 دقيقة كحد أقصى.)</i>\n\n"
+            "<b>1️⃣1️⃣ قرب منطقة دخول</b> 🎯\n"
+            "  يعني: السعر وصل قرب منطقة بيع أو شراء من مناطق المكتب.\n"
+            "  👉 <i>جهّز أمرك: الرسالة فيها الدخول والوقف والهدف. استنى "
+            "تأكيد الشمعة — الوقف إلزامي.</i>\n\n"
             "📌 <b>القاعدة الذهبية:</b> كل تنبيه بيقوللك «شو تعمل» بسطر — "
             "اقرأ آخر سطر دايماً.\n\n"
             "<i>قراءة تحليلية، مو وعد ربح.</i>")
@@ -2930,6 +2952,59 @@ def trend_watch(seen: dict) -> str | None:
     return "\n".join(lines)
 
 
+def _entry_msg(side: str, zone: float, live: float, direction: str) -> str:
+    p = _sized(zone, direction, zone)
+    if side == "sell":
+        head, d = f"🔴 <b>السعر قرب منطقة بيع</b> — {SYMBOL}", "بيع"
+    else:
+        head, d = f"🟢 <b>السعر قرب منطقة شراء</b> — {SYMBOL}", "شراء"
+    return "\n".join([
+        head,
+        f"السعر <b>{num(live)}</b> · المنطقة <b>{num(zone)}</b>",
+        f"{d}: دخول <b>{num(p['entry'])}</b> · وقف {num(p['stop'])} "
+        f"(−${p['risk_usd']:.0f}) · هدف {num(p['target'])} "
+        f"(+${p['gain_usd']:.0f})",
+        "<i>قراءة فنية — استنى تأكيد الشمعة. الوقف إلزامي.</i>"])
+
+
+def entry_watch(seen: dict) -> str | None:
+    """The entry-zone heads-up -- speak once as price REACHES a desk zone.
+
+    The owner asked to hear when price approaches an entry zone, not after a
+    trade opens. So this watches the desk's own buy/sell zones (_zones) and
+    fires once per zone per approach, carrying the trade that zone implies --
+    entry at the zone, stop and target from _sized. Fired zones are remembered
+    in seen['entry_fired'] and forgotten once price is well clear, so a zone
+    that price leaves and later re-tests can speak again.
+    """
+    try:
+        m = read_market()
+        live = m["live"]
+        sell, buy = _zones(live)
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return None
+    if not market_open(m["q"]):
+        return None
+    fired = seen.setdefault("entry_fired", {})
+    for key in list(fired):
+        if abs(live - float(key.split(":")[1])) > ENTRY_NEAR_PTS * 2:
+            del fired[key]
+    cands = []
+    if sell:
+        cands.append(("sell", sell[0][0], "short"))
+    if buy:
+        cands.append(("buy", buy[0][0], "long"))
+    near = [c for c in cands if abs(live - c[1]) <= ENTRY_NEAR_PTS]
+    if not near:
+        return None
+    side, zone, direction = min(near, key=lambda c: abs(live - c[1]))
+    key = f"{side}:{zone:.2f}"
+    if key in fired:
+        return None
+    fired[key] = True
+    return _entry_msg(side, zone, live, direction)
+
+
 def trade_watch(seen: dict) -> str | None:
     """Narrate an open trade as it approaches its stop or its target.
 
@@ -3017,6 +3092,10 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
         for c in allow:
             tg.send(c, note)
     note = trend_watch(seen)
+    if note:
+        for c in allow:
+            tg.send(c, note)
+    note = entry_watch(seen)
     if note:
         for c in allow:
             tg.send(c, note)
@@ -3180,6 +3259,8 @@ def selftest() -> int:
     print("== gate ==", (gate_watch({}) or "silent").replace("\n", " ")[:120])
     tw = trend_watch({"trend": "up", "trend_at": 0.0})
     print("== trend ==", (tw or "silent").replace("\n", " ")[:120])
+    ew = entry_watch({})
+    print("== entry ==", (ew or "silent").replace("\n", " ")[:120])
     print("== news live ==", len(_news_fetch()) if NEWS_LIVE else "off")
     print("== trade parse ==", str(parse_trade("سجل شراء 4075 وقف 4069 هدف 4085"))
           .replace("\n", " ")[:120])
