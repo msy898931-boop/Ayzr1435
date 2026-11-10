@@ -866,9 +866,8 @@ class FullCardTest(unittest.TestCase):
     def test_it_carries_every_section(self):
         with self._feed():
             t = bot.card_full()
-        for marker in ("قراءتي للذهب", "الصورة", "الفريمات", "الزخم",
-                       "البنية", "الدعوم والمقاومات", "فيبوناتشي",
-                       "المناطق", "السيناريوهات", "خطتي"):
+        for marker in ("قراءتي للذهب", "موقفي", "الصورة", "الفريمات", "الزخم",
+                       "البنية", "المستويات", "يلي بترقبه", "خطتي"):
             self.assertIn(marker, t)
 
     def test_it_gives_a_concrete_call(self):
@@ -911,30 +910,45 @@ class FullCardTest(unittest.TestCase):
             bot.NEWS_ITEMS = saved
 
 
-class VerdictLineTest(unittest.TestCase):
-    """The up-front verdict must say whether a trade is live RIGHT NOW, and
-    never flash a clean "buy" against a falling market."""
+class OpinionTest(unittest.TestCase):
+    """_opinion is the honest stance: it can say wait or stay out, it names a
+    confidence, it states what would flip it -- and it invents no probability."""
 
-    def test_nothing_near_says_wait(self):
-        line = bot._verdict_line(4030.0, [(4080.0, 4)], [(3990.0, 2)], "sell")
-        self.assertIn("ما في صفقة", line)
-        self.assertIn("4,080", line)
+    def test_a_range_says_stay_out(self):
+        lines = bot._opinion(4030.0, None, 0, [], [], 50.0, False)
+        text = "\n".join(lines)
+        self.assertIn("ما بتداول", text)
+        self.assertIn("عرضي", text)
 
-    def test_a_zone_at_the_price_with_trend_is_a_green_light(self):
-        line = bot._verdict_line(4080.0, [(4080.5, 4)], [], "sell")
-        self.assertIn("في فرصة الآن", line)
-        self.assertIn("بيع", line)
+    def test_waiting_for_a_rally_is_called_sell_the_strength(self):
+        # Price far below the sell zone: wait, and it is a rally-sell.
+        lines = bot._opinion(4030.0, "sell", 5, [(4080.0, 4)], [], 50.0, False)
+        text = "\n".join(lines)
+        self.assertIn("بستنى أبيع", text)
+        self.assertIn("بيع القوة", text)
 
-    def test_a_counter_trend_zone_is_warned_not_celebrated(self):
-        # Price sits on a BUY zone while the trend is down: a scalp, warned.
-        line = bot._verdict_line(4028.0, [], [(4028.0, 2)], "sell")
-        self.assertIn("معاكسة للاتجاه", line)
-        self.assertIn("سكالب", line)
-        self.assertNotIn("في فرصة الآن", line)
+    def test_a_zone_under_the_price_is_called_a_break_sell(self):
+        lines = bot._opinion(4080.0, "sell", 5, [(4080.5, 4)], [], 50.0, False)
+        text = "\n".join(lines)
+        self.assertIn("أبيع الآن", text)
+        self.assertIn("بيع كسر", text)
+        self.assertNotIn("بيع القوة", text)
 
-    def test_no_zones_at_all_says_wait(self):
-        line = bot._verdict_line(4030.0, [], [], "sell")
-        self.assertIn("ما في صفقة", line)
+    def test_confidence_drops_when_the_move_is_tired(self):
+        # 5/6 frames but 15m RSI saturated: high confidence is not honest here.
+        lines = bot._opinion(4030.0, "sell", 5, [(4080.0, 4)], [], 25.0, False)
+        self.assertIn("متوسطة", "\n".join(lines))
+        self.assertNotIn("عالية", "\n".join(lines))
+
+    def test_it_names_the_level_that_would_flip_it(self):
+        lines = bot._opinion(4030.0, "sell", 4, [(4080.0, 4)], [], 50.0, False)
+        self.assertIn("بيلغي نظريتي", "\n".join(lines))
+        self.assertIn("4,080", "\n".join(lines))
+
+    def test_no_probability_is_invented(self):
+        lines = bot._opinion(4030.0, "sell", 5, [(4080.0, 4)], [], 50.0, False)
+        text = "\n".join(lines)
+        self.assertNotIn("%", text)
 
 
 class TrendWatchTest(unittest.TestCase):

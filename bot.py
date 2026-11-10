@@ -2026,45 +2026,71 @@ def _fib_retr(hi: float, lo: float, up: bool) -> list[tuple[str, float]]:
     return out
 
 
-def _verdict_line(live: float, sell: list, buy: list,
-                  trend_side: str | None) -> str:
-    """One line at the top of card_full answering "is there a trade NOW?".
+def _opinion(live: float, side: str | None, agree: int,
+             sell: list, buy: list, r15: float | None,
+             mixed: bool) -> list[str]:
+    """The honest stance, up front: what I would DO, how sure, what flips me.
 
-    The call section further down is the PLAN (sell the rally / buy the dip);
-    without this line the plan reads as if it were armed at the current price.
-    So this says whether a zone is under the price right now, and flags a zone
-    that fights the trend (a buy under a falling market is a scalp, not a
-    signal) so it never reads as a clean green light against the direction the
-    rest of the card just argued.
+    This is the difference between a report and a view. It can say "wait" or
+    "stay out"; it names a confidence; and it states the level that would prove
+    it wrong. It never invents a probability -- the old "~74% / ~26%" was just
+    50 + 6 * (frames agreeing), the frame count re-spelled as a percentage.
+
+    `side` is the trend the frames agree on ("sell" for down, "buy" for up, None
+    for a range); `agree` is how many frames agree; `mixed` is whether the 1h
+    structure read as choppy. A tired move (15m RSI saturated) or a mixed
+    structure drops the confidence a notch -- an honest read gets quieter when
+    the tape does not support it.
     """
-    cands: list[tuple[str, float]] = []
-    if sell:
-        cands.append(("sell", sell[0][0]))
-    if buy:
-        cands.append(("buy", buy[0][0]))
-    near = [c for c in cands if abs(live - c[1]) <= ENTRY_NEAR_PTS]
-    if near:
-        with_trend = [c for c in near if c[0] == trend_side]
-        side, zone = min(with_trend or near, key=lambda c: abs(live - c[1]))
-        arrow = "🔴 بيع" if side == "sell" else "🟢 شراء"
-        if trend_side and side != trend_side:
-            with_dir = "بيع القوة فوق" if trend_side == "sell" else \
-                       "شراء الانخفاض تحت"
-            return (f"\n⚠️ <b>السعر على منطقة {arrow} معاكسة للاتجاه</b> "
-                    f"({num(zone)}) — <i>سكالب خطير، مو إشارة. "
-                    f"مع الاتجاه: {with_dir}.</i>")
-        return (f"\n✅ <b>في فرصة الآن (مع الاتجاه):</b> {arrow} عند "
-                f"<b>{num(zone)}</b> — السعر عليه")
-    if cands:
-        bits = []
-        if sell:
-            bits.append(f"بيع <b>{num(sell[0][0])}</b> "
-                        f"(+{sell[0][0] - live:.0f})")
-        if buy:
-            bits.append(f"شراء <b>{num(buy[0][0])}</b> "
-                        f"({buy[0][0] - live:+.0f})")
-        return "\n⏸️ <b>ما في صفقة هلّق</b> — استنى " + " أو ".join(bits)
-    return "\n⏸️ <b>ما في صفقة هلّق</b> — ما في مناطق واضحة"
+    conf = "متوسطة"
+    if agree >= 5:
+        conf = "عالية"
+    tired = (isinstance(r15, (int, float))
+             and ((side == "sell" and r15 <= 30)
+                  or (side == "buy" and r15 >= 70)))
+    if tired or mixed:
+        conf = {"عالية": "متوسطة", "متوسطة": "منخفضة"}.get(conf, conf)
+
+    if side is None:
+        return ["\n🚫 <b>موقفي: ما بتداول هلّق</b> — السوق عرضي بلا اتجاه "
+                "واضح.",
+                f"  الثقة <b>{conf}</b> · اقعد برا واستنى اتجاه — التداول "
+                "بالعرضي هوّ يلي ياكل الحساب."]
+
+    if side == "sell":
+        zone = sell[0][0] if sell else None
+        near = zone is not None and abs(live - zone) <= ENTRY_NEAR_PTS
+        if near:
+            head = f"🔴 <b>أبيع الآن</b> — السعر عالمنطقة {num(zone)}"
+            how = "بيع كسر مع الاتجاه · استنى تأكيد الشمعة"
+        elif zone:
+            head = f"⏸️ <b>بستنى أبيع</b> — يرتد لفوق لـ {num(zone)}"
+            how = "بيع القوة (مع الاتجاه) — مو بيع كسر"
+        else:
+            head, how = "⏸️ <b>بستنى</b> — ما في منطقة بيع واضحة", ""
+        inv = (f"إغلاق 1س فوق {num(zone)} يلغي الهبوط" if zone
+               else "إغلاق فوق قمة اليوم يلغي الهبوط")
+    else:
+        zone = buy[0][0] if buy else None
+        near = zone is not None and abs(live - zone) <= ENTRY_NEAR_PTS
+        if near:
+            head = f"🟢 <b>أشتري الآن</b> — السعر عالمنطقة {num(zone)}"
+            how = "شراء مع الاتجاه · استنى تأكيد الشمعة"
+        elif zone:
+            head = f"⏸️ <b>بستنى أشتري</b> — ينزل لـ {num(zone)}"
+            how = "شراء الانخفاض (مع الاتجاه)"
+        else:
+            head, how = "⏸️ <b>بستنى</b> — ما في منطقة شراء واضحة", ""
+        inv = (f"إغلاق 1س تحت {num(zone)} يلغي الصعود" if zone
+               else "إغلاق تحت قاع اليوم يلغي الصعود")
+
+    lines = [f"\n🎯 <b>موقفي:</b> {head}"]
+    if how:
+        lines.append(f"  {how}")
+    caveat = " · خفّف الحجم أو اقعد برا" if conf == "منخفضة" else ""
+    lines.append(f"  الثقة <b>{conf}</b>{caveat}")
+    lines.append(f"  🔄 بيلغي نظريتي: {inv}")
+    return lines
 
 
 def card_full() -> str:
@@ -2100,10 +2126,13 @@ def card_full() -> str:
          f"السعر <b>{num(live)}</b> · السوق "
          f"{'مفتوح ✅' if market_open(q) else 'مسكّر ⛔'}"]
 
-    # ---- 0. the verdict, up front: is there a trade RIGHT NOW? -----------
-    trend_side = "sell" if down else ("buy" if up_trend else None)
+    # ---- 0. MY stance, up front: what I would do, how sure, what flips me -
     sell, buy = _zones(live)
-    L.append(_verdict_line(live, sell, buy, trend_side))
+    trend_side = "sell" if down else ("buy" if up_trend else None)
+    agree = dn if down else (up if up_trend else 0)
+    st = _structure_read()
+    mixed = bool(st and "مختلطة" in st)
+    L += _opinion(live, trend_side, agree, sell, buy, rsis.get("15m"), mixed)
 
     # ---- 1. the day's picture -------------------------------------------
     hi, lo = q.get("high"), q.get("low")
@@ -2146,31 +2175,19 @@ def card_full() -> str:
         r1 = f" · 1س {r1h:.0f}" if isinstance(r1h, (int, float)) else ""
         L.append(f"\n<b>⚡ الزخم:</b> 15د {r15:.0f}{r1} — <b>{mom}</b>")
 
-    st = _structure_read()
     if st:
         L.append(f"\n<b>🧱 البنية:</b> {st}")
 
-    # ---- 3. the ladder around the price ---------------------------------
+    # ---- 3. the levels: ONE block, not three ----------------------------
+    # The ladder, the zones and Fibonacci are three views of the same prices.
+    # Printing them as three sections padded the card without adding anything
+    # (the same lesson the map taught). So they share one header, and the
+    # Fibonacci line only appears when the price is actually near a level.
+    L.append("\n<b>🧭 المستويات (خريطة واحدة):</b>")
     ls = _levels_with_strength(live)
     if ls:
-        L.append("\n<b>🎯 الدعوم والمقاومات:</b>")
         for x in ls:
             L.append(f"  {x}")
-
-    # ---- 4. fibonacci of the day's leg ----------------------------------
-    if isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
-        chg = q.get("dayDiffPercent")
-        up_day = (chg >= 0) if isinstance(chg, (int, float)) else (live >= day_open)
-        fibs = _fib_retr(hi, lo, up_day)
-        L.append(f"\n<b>📐 فيبوناتشي ({'صعود' if up_day else 'هبوط'} اليوم):</b>")
-        L.append("  " + " · ".join(f"{lab} {num(v)}" for lab, v in fibs))
-        near = min(fibs, key=lambda kv: abs(kv[1] - live))
-        if abs(near[1] - live) <= max(3.0, (atrs.get("1h") or 10) * 0.4):
-            L.append(f"  ⭐ السعر قريب من فيبوناتشي <b>{near[0]}</b> "
-                     f"({num(near[1])}) — منطقة قرار")
-
-    # ---- 5. zones --------------------------------------------------------
-    L.append("\n<b>🧭 المناطق:</b>")
     if sell:
         L.append("  🔴 بيع فوق: " + " · ".join(f"{num(z)} ({n})"
                                                for z, n in sell[:3]))
@@ -2179,38 +2196,44 @@ def card_full() -> str:
                                                 for z, n in buy[:3]))
     if not sell and not buy:
         L.append("  — ما في مناطق واضحة قريبة")
+    if isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
+        chg = q.get("dayDiffPercent")
+        up_day = (chg >= 0) if isinstance(chg, (int, float)) else (live >= day_open)
+        fibs = _fib_retr(hi, lo, up_day)
+        near = min(fibs, key=lambda kv: abs(kv[1] - live))
+        if abs(near[1] - live) <= max(3.0, (atrs.get("1h") or 10) * 0.4):
+            L.append(f"  ⭐ السعر قريب من فيبو <b>{near[0]}</b> "
+                     f"({num(near[1])}) — منطقة قرار")
 
-    # ---- 6. scenarios (probability from frame agreement, tempered by RSI)
-    strength = abs(dn - up)
-    p_trend = 50 + 6 * strength
-    sat = (isinstance(r15, (int, float))
-           and ((down and r15 <= 30) or (up_trend and r15 >= 70)))
-    if sat:
-        p_trend -= 15
-    p_trend = max(50, min(85, p_trend))
-    L.append("\n<b>🔀 السيناريوهات:</b>")
+    # ---- 6. what I am watching: the two triggers, NO invented odds -------
+    # The old section printed "~74% / ~26%". That number was 50 + 6 * (frames
+    # agreeing) -- the frame count re-spelled as a percentage, with no
+    # predictive content. An honest card names the two levels that decide the
+    # next move and stops there; it does not dress a count up as a probability.
+    L.append("\n<b>👀 يلي بترقبه:</b>")
     if down:
-        L.append(f"  <b>A</b> ارتداد لفوق — ~{100 - p_trend}% · المفتاح: صمود "
-                 f"{num(lo)}")
-        L.append(f"  <b>B</b> استمرار هبوط — ~{p_trend}% · المفتاح: كسر "
-                 f"{num(lo)}")
+        L.append(f"  • صمود فوق <b>{num(lo)}</b> → ارتداد لفوق")
+        L.append(f"  • كسر <b>{num(lo)}</b> بإغلاق → استمرار هبوط")
     elif up_trend:
-        L.append(f"  <b>A</b> استمرار صعود — ~{p_trend}% · المفتاح: ثبات فوق "
-                 f"{num(lo)}")
-        L.append(f"  <b>B</b> تصحيح — ~{100 - p_trend}% · المفتاح: كسر "
-                 f"{num(lo)}")
+        L.append(f"  • ثبات فوق <b>{num(lo)}</b> → استمرار صعود")
+        L.append(f"  • كسر <b>{num(lo)}</b> → تصحيح")
     else:
-        L.append(f"  <b>A</b> صعود — ~50% · فوق {num(live)}")
-        L.append(f"  <b>B</b> هبوط — ~50% · تحت {num(live)}")
-    L.append("  <i>(الاحتمال من اتفاق الفريمات + الزخم — قراءة، مو قياس)</i>")
+        L.append(f"  • فوق <b>{num(live)}</b> → ميل صعودي")
+        L.append(f"  • تحت <b>{num(live)}</b> → ميل هبوطي")
+    L.append("  <i>هاد مستويات القرار — ما في احتمال محسوب.</i>")
 
     # ---- 7. MY call ------------------------------------------------------
-    # This is the PLAN, not an armed order: the entries sit at the zones above
-    # the price, so nothing here fills at the current price. The header says so.
+    # The PLAN (not an armed order): the entries sit at the zones, so nothing
+    # fills at the current price. The label says which kind of entry it is:
+    # a sell that needs a rally up to the zone is "بيع القوة"; a sell at a zone
+    # the price is already on is "بيع كسر" -- naming it "بيع القوة" there was
+    # simply wrong.
     L.append("\n<b>🎬 خطتي (تنتظر السعر يجي للمنطقة):</b>")
     if down:
-        L.append("  الاتجاه هابط → <b>بيع القوة</b> (مع الاتجاه)")
         entry = sell[0][0] if sell else live + (atrs.get("1h") or 10) * 0.5
+        kind = ("بيع كسر (السعر عالمنطقة)" if sell
+                and abs(live - entry) <= ENTRY_NEAR_PTS else "بيع القوة (ارتداد)")
+        L.append(f"  الاتجاه هابط → <b>{kind}</b>")
         p = _sized(entry, "short", entry)
         L.append(f"  🔴 بيع: دخول <b>{num(entry)}</b> · وقف {num(p['stop'])} "
                  f"(−${p['risk_usd']:.0f}) · هدف {num(p['target'])} "
@@ -2220,8 +2243,10 @@ def card_full() -> str:
             L.append(f"  🟢 فرصة معاكسة: صمد فوق <b>{num(buy[0][0])}</b> → "
                      f"شراء سريع (وقف {num(b['stop'])} · هدف {num(b['target'])})")
     elif up_trend:
-        L.append("  الاتجاه صاعد → <b>شراء الانخفاض</b> (مع الاتجاه)")
         entry = buy[0][0] if buy else live - (atrs.get("1h") or 10) * 0.5
+        kind = ("شراء كسر (السعر عالمنطقة)" if buy
+                and abs(live - entry) <= ENTRY_NEAR_PTS else "شراء الانخفاض")
+        L.append(f"  الاتجاه صاعد → <b>{kind}</b>")
         p = _sized(entry, "long", entry)
         L.append(f"  🟢 شراء: دخول <b>{num(entry)}</b> · وقف {num(p['stop'])} "
                  f"(−${p['risk_usd']:.0f}) · هدف {num(p['target'])} "
