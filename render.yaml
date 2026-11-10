@@ -26,6 +26,16 @@ services:
         sync: false
       - key: DESK_SYMBOL
         value: XAUUSD
+      # The owner's two trigger levels, watched in addition to the built-in set:
+      # 4138 (breakout up) and 4108 (breakdown down). A crossing of either
+      # sends ONE alert. Extend with a comma list, e.g. "4138,4108,4200".
+      - key: DESK_WATCH_LEVELS
+        value: "4138,4108"
+      # The news card pulls fresh gold headlines from Google News (keyless RSS)
+      # when this is 1. INFORMATION ONLY -- it never opens, blocks or sizes a
+      # trade. Set to 0 to show only the hand-edited NEWS_ITEMS list.
+      - key: DESK_NEWS_LIVE
+        value: "1"
       # The combo quality gate is ON by default: ADX 20-40 + ATR 0.08-0.25% on
       # the 15m frame. Set DESK_FILTERS=0 to fall back to the raw frame tilt
       # (much noisier), or DESK_FILTER_GATES=adx,atr,macd,rsi to add the two

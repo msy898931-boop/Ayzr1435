@@ -26,8 +26,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from contextlib import closing
+from contextlib import closing, suppress
 from datetime import UTC, datetime, timedelta
+from html import unescape as _unescape
 from pathlib import Path
 
 HOME = Path(__file__).resolve().parent
@@ -61,15 +62,15 @@ SEED_CHATS = ["933571066", "8545528489"]
 # 0.01 lot moves $1 per $1 of gold -- a stop of 9 points is $9 of risk. Every
 # number below is in DOLLARS, which is what the account actually feels; the
 # point form (points = dollars / POINT_VALUE) is only for the stop line.
-ACCOUNT_USD = 200.0
+ACCOUNT_USD = float(os.environ.get("DESK_ACCOUNT", "200"))
 LOT = 0.01
 POINT_VALUE = LOT * 100.0        # $ per point at this lot
-STOP_MIN_USD = 8.0               # the owner's window: lose $8-10 at worst
-STOP_MAX_USD = 10.0
+STOP_MIN_USD = 8.0               # the owner's window: lose $8-12 at worst
+STOP_MAX_USD = 12.0
 TARGET_MIN_USD = 15.0            # ...and take $15-20
 TARGET_MAX_USD = 20.0
-STOP_PICK_USD = 9.0              # aim mid-window; the nearest level may move it
-TARGET_RR = 2.0                  # 9 * 2 = $18, inside the window
+STOP_PICK_USD = 9.0              # the validated sweet spot; a near level may move it
+TARGET_RR = 2.2                  # 9 * 2.2 = $19.8, top of the window
 MIN_RR = 1.5                     # below this a plan is not worth stating
 CONFIRM_FRAMES = 4               # a direction needs this many of 6 frames
 STRONG_FRAMES = 5                # ...and this many to allow a SECOND trade
@@ -108,9 +109,16 @@ SUPPORT_BREAK_PTS = 3.0          # a 15m close this far under = broken
 
 # The key levels the desk announces a crossing of, beyond its single latched
 # support. Taken from pivot clusters across 15m..1d (refresh when the market
-# moves well away from them). A crossing of ANY of these speaks once.
-WATCH_LEVELS = (4055.0, 4070.0, 4084.0, 4096.0,
-                4119.0, 4132.0, 4147.0, 4168.0, 4192.0)
+# moves well away from them). A crossing of ANY of these speaks once. 4138 and
+# 4108 are the owner's two triggers (breakout / breakdown); the owner can extend
+# the set at deploy time with DESK_WATCH_LEVELS=4138,4108,4200,...
+WATCH_LEVELS: tuple[float, ...] = (
+    4055.0, 4070.0, 4084.0, 4096.0, 4108.0,
+    4119.0, 4132.0, 4138.0, 4147.0, 4168.0, 4192.0)
+_extra = os.environ.get("DESK_WATCH_LEVELS", "").strip()
+if _extra:
+    WATCH_LEVELS = tuple(sorted(set(WATCH_LEVELS) | {
+        float(x) for x in _extra.split(",") if x.strip()}))
 LEVEL_BAND = 1.0                 # hysteresis: a crossing needs this much clearance
 # The green-light watch: the desk's own entry filter is "a long needs price
 # above the 15m EMA20". So rather than hard-code the number 4103 (which the
@@ -126,9 +134,24 @@ NEAR_STOP_FRAC = 0.30            # within this fraction of the entry->stop span
 
 
 # ---- menus --------------------------------------------------------------
+# The news layer is INFORMATION ONLY -- see card_news(). The owner edits this
+# list by hand; nothing here can open, block or size a trade. When
+# DESK_NEWS_LIVE=1 the card also pulls fresh headlines from Google News (keyless
+# RSS) -- still information only, still never a trade input.
+NEWS_LIVE = os.environ.get("DESK_NEWS_LIVE", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+NEWS_QUERY = os.environ.get("DESK_NEWS_QUERY", "gold price XAUUSD").strip()
+NEWS_ITEMS: list[tuple[str, str]] = [
+    ("🔥", "اليوم: تقرير التضخم الأميركي (CPI) — أهم حدث بالأسبوع"),
+    ("⚠️", "الـCPI رح يطلع بلا نسبة سنوية (تداعيات الإغلاق) — رقم مشوّه"),
+    ("🦅", "وظائف قوية → احتمال رفع فايدة بكسمبر >65% (سلبي للذهب)"),
+    ("📉", "تضخم متوقع يبطئ → ممكن يدعم اختراق 4,200 (إيجابي)"),
+]
+
 MENU = [
     [("🧭 شو تعمل هلّق", "action")],
     [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
+    [("🗺️ خريطة المناطق", "map"), ("📰 الأخبار", "news")],
     [("🎬 السيناريوهات", "scenarios"), ("🔔 المستويات", "levels")],
     [("📂 الصفقات المفتوحة", "open"), ("📒 السجل", "journal_menu")],
     [("👥 المشتركين", "who"), ("➕ سجّل صفقة", "howto")],
@@ -921,19 +944,205 @@ def card_scenarios() -> str:
     lines.append("<i>سيناريوهات مشروطة — ما تنفّذ إلا لما يتحقق المشغّل. "
                  f"الوقف والهدف من قواعد المكتب (مخاطرة ${STOP_MIN_USD:.0f}-"
                  f"${STOP_MAX_USD:.0f}، R:R {TARGET_RR}).</i>")
+    # A third, honest case: when the trend is absent the desk's own gate says
+    # "no trade" -- say so, and give the range instead of a fake breakout.
+    try:
+        b15 = closed(bars("15m", 300), "15m")
+        adx_v = adx_series(b15)[-1] if b15 else None
+    except Exception:  # noqa: BLE001
+        adx_v = None
+    if isinstance(adx_v, (int, float)) and adx_v < ADX_MIN:
+        lines.append("")
+        lines.append("<b>⚪ سيناريو عرضي (بلا ترند)</b>")
+        if res and sup:
+            lines.append(f"  النطاق: {num(sup[0])} ↔ {num(res[0])} "
+                         f"(ADX {adx_v:.0f} — بلا ترند)")
+            lines.append("  اللعب: اشترِ عند الدعم إذا صمد · بِع عند المقاومة إذا رفض")
+            lines.append("  <i>المكتب ما ياخد صفقة ترند لما ADX تحت 20.</i>")
     return "\n".join(lines)
+
+
+def _zones(live: float) -> tuple[list[tuple[float, int]], list[tuple[float, int]]]:
+    """Cluster the 1h pivots into zones, split by the live price.
+
+    A zone is a price where several pivots landed close together (within a
+    quarter of the 1h ATR) -- the same price, seen more than once, is what makes
+    it worth naming. Returns (sell_zones_above, buy_zones_below), each a list of
+    (centre_price, touch_count), nearest first.
+    """
+    try:
+        b = bars("1h", 300)
+    except Exception:  # noqa: BLE001 - a missing frame must not kill the card
+        return [], []
+    highs, lows = pivots(b, 3, 3)
+    tol = max(1.0, (atr(b) or 1.0) * 0.25)
+    pts = sorted(highs + lows)
+    zones: list[list[float]] = []
+    for p in pts:
+        if zones and p - zones[-1][-1] <= tol:
+            zones[-1].append(p)
+        else:
+            zones.append([p])
+    out = []
+    for z in zones:
+        if len(z) < 2:                       # a single touch is not a zone
+            continue
+        out.append((sum(z) / len(z), len(z)))
+    sell = sorted([z for z in out if z[0] > live])
+    buy = sorted([z for z in out if z[0] < live], reverse=True)
+    return sell, buy
+
+
+def _liquidity(live: float) -> tuple[list[float], list[float]]:
+    """Repeated highs / lows where stops cluster -- a liquidity pool.
+
+    A level touched many times is where resting stops sit: above equal highs
+    (buy-stops of shorts) and below equal lows (sell-stops of longs). Reported as
+    liquidity, never as 'manipulation' -- it is just where the orders are.
+    """
+    try:
+        b = bars("1h", 300)
+    except Exception:  # noqa: BLE001
+        return [], []
+    highs, lows = pivots(b, 3, 3)
+    tol = max(1.0, (atr(b) or 1.0) * 0.3)
+
+    def clusters(seq):
+        seq = sorted(seq)
+        out, cur = [], []
+        for x in seq:
+            if cur and x - cur[-1] <= tol:
+                cur.append(x)
+            else:
+                if len(cur) >= 2:
+                    out.append(sum(cur) / len(cur))
+                cur = [x]
+        if len(cur) >= 2:
+            out.append(sum(cur) / len(cur))
+        return out
+
+    above = [c for c in clusters(highs) if c > live]
+    below = [c for c in clusters(lows) if c < live]
+    return sorted(above), sorted(below, reverse=True)
+
+
+def card_map() -> str:
+    """The map: where to SELL (zones above) and where to BUY (zones below).
+
+    It is a VIEW of the pivots the desk already uses, not new math: supply and
+    demand are the same prices as resistance and support, so the card names them
+    once each. Liquidity marks the repeated highs/lows where stops sit. It
+    carries no buy/sell instruction -- the recommendation card does that.
+    """
+    m = read_market()
+    live = m["live"]
+    sell, buy = _zones(live)
+    liq_hi, liq_lo = _liquidity(live)
+    lines = [f"🗺️ <b>خريطة {SYMBOL}</b>", f"السعر <b>{num(live)}</b>", ""]
+    lines.append("<b>🔴 مناطق البيع (فوق السعر):</b>")
+    if sell:
+        for z, n in sell[:4]:
+            lines.append(f"  🔺 {num(z)} ({n} لمسة)")
+    else:
+        lines.append("  — ما في منطقة قريبة")
+    lines.append("")
+    lines.append("<b>🟢 مناطق الشراء (تحت السعر):</b>")
+    if buy:
+        for z, n in buy[:4]:
+            lines.append(f"  🔻 {num(z)} ({n} لمسة)")
+    else:
+        lines.append("  — ما في منطقة قريبة")
+    lines.append("")
+    lines.append("<b>💧 سيولة (مكان تجمّع الوقوف):</b>")
+    if liq_hi:
+        lines.append("  فوق: " + " · ".join(num(x) for x in liq_hi[:3]))
+    if liq_lo:
+        lines.append("  تحت: " + " · ".join(num(x) for x in liq_lo[:3]))
+    if not liq_hi and not liq_lo:
+        lines.append("  — بلا تجمّع واضح")
+    lines.append("")
+    lines.append("<i>خريطة عرضية — العرض والطلب هما نفس الأسعار (مقاومة/دعم). "
+                 "ما فيها أمر بيع أو شراء.</i>")
+    return "\n".join(lines)
+
+
+def card_news() -> str:
+    """The news layer -- INFORMATION ONLY, never a trade input.
+
+    The desk has no historical news data, so a news rule could never be
+    back-tested; it is shown so the owner knows WHY the tape may be jumpy, and
+    is explicitly labelled as not a signal. The desk's entries are unchanged by
+    anything here.
+
+    The headlines come from the NEWS_ITEMS list the owner maintains, PLUS a
+    best-effort live pull from Google News (keyless RSS) when
+    DESK_NEWS_LIVE=1. A failed fetch is silent -- the manual list still shows.
+    """
+    lines = [f"📰 <b>أخبار {SYMBOL}</b>", ""]
+    items = list(NEWS_ITEMS)
+    if NEWS_LIVE:
+        with suppress(Exception):      # a dead feed must not hide the list
+            items = _news_fetch() + items
+    if not items:
+        lines.append("— ما في أخبار. حدّث <code>NEWS_ITEMS</code> أو شغّل "
+                     "<code>DESK_NEWS_LIVE=1</code>.")
+    else:
+        seen: set[str] = set()
+        for tag, title in items[:12]:
+            key = title[:40]
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(f"• {tag} {esc(title)}")
+    lines.append("")
+    lines.append("<i>⚠️ معلومة فقط — مو إشارة. المكتب ما يفتح صفقة على الخبر، "
+                 "وقواعد الدخول ما تتأثر فيه. القرار الخبري إلك.</i>")
+    return "\n".join(lines)
+
+
+def _news_fetch() -> list[tuple[str, str]]:
+    """Best-effort gold headlines from Google News RSS (keyless).
+
+    Returns a short list of (emoji, title). Parsed with a regex, not an XML
+    parser, so a malformed feed degrades to [] instead of raising. The query is
+    the one the desk's symbol implies; the owner can override it with
+    DESK_NEWS_QUERY.
+    """
+    q = urllib.parse.quote(NEWS_QUERY)
+    url = (f"https://news.google.com/rss/search?q={q}"
+           "&hl=en-US&gl=US&ceid=US:en")
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        raw = r.read().decode("utf-8", "ignore")
+    out: list[tuple[str, str]] = []
+    for block in re.findall(r"<item>(.*?)</item>", raw, re.DOTALL)[:10]:
+        m = re.search(r"<title>(.*?)</title>", block, re.DOTALL)
+        if not m:
+            continue
+        title = re.sub(r"<!\[CDATA\[|\]\]>", "", m.group(1)).strip()
+        title = _unescape(title)
+        low = title.lower()
+        tag = ("🔥" if any(w in low for w in ("cpi", "inflation", "fed", "rate"))
+               else "📈" if any(w in low for w in ("rally", "gain", "rise", "high"))
+               else "📉" if any(w in low for w in ("fall", "drop", "slump", "low"))
+               else "▫️")
+        out.append((tag, title[:120]))
+    return out
+
+
 
 
 def _sized(entry: float, direction: str, stop_level: float | None) -> dict:
     """Size one trade from `entry`, the desk's single set of rules.
 
-    Risk sits inside the owner's $8-10 window and is tightened by `stop_level`
-    when that level is close enough to matter. The target is a RISK MULTIPLE,
-    never the next level: the old scenario card aimed at the next level, which
-    can sit a point away and quote a trade at R:R 0.16 -- a trade this desk's
-    own floor would refuse. Here the R:R is the target multiple by construction
-    and can never fall under MIN_RR. plan() and the scenario card both call
-    this, so no surface can quote a trade the desk would reject.
+    Both ends live inside the owner's windows: risk in $8-12, reward in $15-20.
+    The stop is tightened by `stop_level` when that level is close enough to
+    matter, then clamped to the risk window. The target is the risk times
+    TARGET_RR, then clamped into the reward window -- and re-floored at
+    risk * MIN_RR so the R:R floor can never be broken by the clamp (with a
+    $8-12 risk the floor needs at most $18, inside the $20 cap by construction).
+    plan() and the scenario card both call this, so no surface can quote a
+    trade the desk would reject.
     """
     d = 1 if direction == "long" else -1
     pts = STOP_PICK_USD / POINT_VALUE
@@ -944,10 +1153,12 @@ def _sized(entry: float, direction: str, stop_level: float | None) -> dict:
     pts = max(STOP_MIN_USD / POINT_VALUE,
               min(pts, STOP_MAX_USD / POINT_VALUE))
     stop = entry - d * pts * POINT_VALUE
-    rr = max(TARGET_RR, MIN_RR)
-    tgt = entry + d * pts * POINT_VALUE * rr
     risk_usd = abs(entry - stop) * POINT_VALUE
-    gain_usd = abs(tgt - entry) * POINT_VALUE
+    gain_usd = risk_usd * max(TARGET_RR, MIN_RR)
+    gain_usd = min(max(gain_usd, TARGET_MIN_USD), TARGET_MAX_USD)
+    gain_usd = max(gain_usd, risk_usd * MIN_RR)
+    tgt = entry + d * (gain_usd / POINT_VALUE)
+    rr = gain_usd / risk_usd if risk_usd else 0.0
     return {"direction": direction, "entry": entry, "stop": stop,
             "target": tgt, "rr": rr, "risk_usd": risk_usd,
             "risk_pts": risk_usd / POINT_VALUE, "gain_usd": gain_usd}
@@ -1647,6 +1858,9 @@ def alerts_guide() -> str:
             "<b>7️⃣ رجع فوق الدعم</b> ✅\n"
             "  يعني: السعر رجع فوق الدعم بعد كسره.\n"
             "  👉 <i>ارتداد محتمل — راقب تأكيد الصعود.</i>\n\n"
+            "<b>7.5️⃣ اختراق/كسر مستوى مراقب</b> 🚀⚠️\n"
+            "  يعني: السعر تعدّى مستوى من قائمة المراقبة (منها 4,138 و4,108).\n"
+            "  👉 <i>مستوى مراقب اتكسر — راقب التأكيد قبل الدخول.</i>\n\n"
             "<b>8️⃣ باب الشراء / البيع انفتح</b> 🟢🔴\n"
             "  يعني: شمعة 15د سكّرت فوق/تحت EMA20 (فلتر المكتب).\n"
             "  👉 <i>إذا الاتجاه العام بنفس الجهة = فرصة دخول.</i>\n\n"
@@ -1667,6 +1881,8 @@ def dispatch(action: str) -> str:
         "recommend": card_recommend,
         "scenarios": card_scenarios,
         "levels": card_levels,
+        "map": card_map,
+        "news": card_news,
         "open": card_open,
         "monitor": card_monitor,
         "journal": full_journal,

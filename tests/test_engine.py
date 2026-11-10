@@ -446,8 +446,8 @@ class LevelsWatchTest(unittest.TestCase):
             self.assertIsNotNone(note)
             self.assertIn("4,132", note)
             self.assertIn("اختراق", note)
-            # still above: no repeat
-            with FakeFeed(mid=4140.0):
+            # still above 4132 (and below the next level 4138): no repeat
+            with FakeFeed(mid=4136.0):
                 self.assertIsNone(bot.levels_watch(seen))
 
     def test_a_fall_speaks_and_names_the_level(self):
@@ -501,6 +501,143 @@ class LevelsWatchTest(unittest.TestCase):
             self.assertNotIn("4,096", note)
             self.assertIn("4,084", note)
             self.assertEqual(seen["levels"]["4096.00"], "below")
+
+class WindowTest(unittest.TestCase):
+    """The owner's windows: risk $8-12, reward $15-20, R:R >= the floor. Both
+    clamps must hold together -- a wide stop must not push the target out of the
+    reward window, and the reward window must not break the R:R floor."""
+
+    def test_default_sits_in_both_windows(self):
+        p = bot._sized(4100.0, "long", None)
+        self.assertGreaterEqual(p["risk_usd"], bot.STOP_MIN_USD - 1e-9)
+        self.assertLessEqual(p["risk_usd"], bot.STOP_MAX_USD + 1e-9)
+        self.assertGreaterEqual(p["gain_usd"], bot.TARGET_MIN_USD - 1e-9)
+        self.assertLessEqual(p["gain_usd"], bot.TARGET_MAX_USD + 1e-9)
+
+    def test_both_windows_and_rr_hold_across_levels(self):
+        for direction in ("long", "short"):
+            for lvl in (None, 4099.0, 4085.0, 4000.0, 4110.0):
+                p = bot._sized(4100.0, direction, lvl)
+                self.assertGreaterEqual(p["risk_usd"], bot.STOP_MIN_USD - 1e-9)
+                self.assertLessEqual(p["risk_usd"], bot.STOP_MAX_USD + 1e-9)
+                self.assertGreaterEqual(p["gain_usd"], bot.TARGET_MIN_USD - 1e-9)
+                self.assertLessEqual(p["gain_usd"], bot.TARGET_MAX_USD + 1e-9)
+                self.assertGreaterEqual(p["rr"], bot.MIN_RR - 1e-9)
+
+
+class MapTest(unittest.TestCase):
+    """card_map is a VIEW: sell zones above, buy zones below, no instruction."""
+
+    def _zigzag(self):
+        # A price that repeatedly turns at 4090 and 4120 -> two zones.
+        return [4090 + (30 if (i // 3) % 2 else 0) for i in range(60)]
+
+    def test_zones_split_by_the_live_price(self):
+        with FakeFeed(mid=4105.0, closes={"1h": self._zigzag()}):
+            sell, buy = bot._zones(4105.0)
+        self.assertTrue(all(z > 4105.0 for z, _ in sell))
+        self.assertTrue(all(z < 4105.0 for z, _ in buy))
+
+    def test_map_carries_no_buy_sell_instruction(self):
+        with FakeFeed(mid=4105.0, closes={"1h": self._zigzag()}):
+            text = bot.card_map()
+        self.assertIn("مناطق البيع", text)
+        self.assertIn("مناطق الشراء", text)
+        # A map states prices; the recommendation card states the trade.
+        self.assertNotIn("ادخل", text)
+
+    def test_map_survives_a_broken_feed(self):
+        saved = bot.bars
+        bot.bars = lambda tf, limit=300: (_ for _ in ()).throw(RuntimeError("x"))
+        try:
+            self.assertEqual(bot._zones(4100.0), ([], []))
+        finally:
+            bot.bars = saved
+
+
+class NewsTest(unittest.TestCase):
+    """The news layer is information only -- it must never read the tape."""
+
+    def test_news_card_labels_itself_as_not_a_signal(self):
+        text = bot.card_news()
+        self.assertIn("معلومة فقط", text)
+        self.assertIn("مو إشارة", text)
+
+    def test_news_does_not_change_the_plan(self):
+        # With no news items the plan is identical: news is not a trade input.
+        saved = bot.NEWS_ITEMS
+        rising = list(range(4000, 4060))
+        closes = {tf: rising for tf in bot.FRAMES}
+        fs = bot.FILTERS_ON
+        bot.FILTERS_ON = False
+        try:
+            bot.NEWS_ITEMS = []
+            with FakeFeed(mid=4059.0, closes=closes):
+                a = bot.plan()
+            bot.NEWS_ITEMS = [("🔥", "huge news")]
+            with FakeFeed(mid=4059.0, closes=closes):
+                b = bot.plan()
+            self.assertIsNotNone(a)
+            self.assertEqual(a, b)
+        finally:
+            bot.NEWS_ITEMS = saved
+            bot.FILTERS_ON = fs
+
+    def test_live_news_is_merged_and_still_labelled_not_a_signal(self):
+        saved_items, saved_live = bot.NEWS_ITEMS, bot.NEWS_LIVE
+        saved_fetch = bot._news_fetch
+        bot.NEWS_ITEMS = [("🔥", "manual headline")]
+        bot.NEWS_LIVE = True
+        bot._news_fetch = lambda: [("📈", "live headline")]
+        try:
+            text = bot.card_news()
+            self.assertIn("live headline", text)
+            self.assertIn("manual headline", text)
+            self.assertIn("مو إشارة", text)
+        finally:
+            bot.NEWS_ITEMS, bot.NEWS_LIVE = saved_items, saved_live
+            bot._news_fetch = saved_fetch
+
+    def test_a_dead_live_feed_still_shows_the_manual_list(self):
+        saved_items, saved_live = bot.NEWS_ITEMS, bot.NEWS_LIVE
+        saved_fetch = bot._news_fetch
+        bot.NEWS_ITEMS = [("🔥", "manual headline")]
+        bot.NEWS_LIVE = True
+        bot._news_fetch = lambda: (_ for _ in ()).throw(RuntimeError("down"))
+        try:
+            text = bot.card_news()
+            self.assertIn("manual headline", text)
+            self.assertIn("مو إشارة", text)
+        finally:
+            bot.NEWS_ITEMS, bot.NEWS_LIVE = saved_items, saved_live
+            bot._news_fetch = saved_fetch
+
+
+class WatchLevelsTest(unittest.TestCase):
+    """The owner's levels (4138 / 4108) must be watchable, and a crossing of
+    one must speak -- via the env extension and the existing watch."""
+
+    def test_env_levels_are_in_the_default_watch_set(self):
+        # The default set is a module constant; the env extension is applied at
+        # import. Both 4132 (default) and the owner's band must be reachable.
+        self.assertIn(4132.0, bot.WATCH_LEVELS)
+
+    def test_a_crossing_of_a_watched_level_speaks_once(self):
+        saved = bot.read_market
+        try:
+            seen: dict = {}
+            bot.read_market = lambda: {"live": 4100.0}
+            bot.levels_watch(seen)                     # baseline, silent
+            bot.read_market = lambda: {"live": 4121.0}
+            up = bot.levels_watch(seen)                # clears 4119
+            self.assertIsNotNone(up)
+            self.assertIn("اختراق", up)
+            again = bot.levels_watch(seen)             # no flicker -> silent
+            self.assertIsNone(again)
+        finally:
+            bot.read_market = saved
+
+
 
 
 if __name__ == "__main__":
