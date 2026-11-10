@@ -2222,6 +2222,15 @@ def card_full() -> str:
                  f"هدف <b>{num(dn1)}</b>")
         L.append(f"  <b>B</b> ارتداد لفوق: صمود فوق <b>{num(lo)}</b> → "
                  f"هدف <b>{num(up1)}</b>")
+        # C is a REVERSAL, not a bounce: B and C differ by one level -- the
+        # nearest resistance. Below it is still the down-trend (A or B); a 1h
+        # CLOSE above it flips the desk's own view to up. With no sell zone the
+        # day's high is the level that would have to give.
+        rev = sell[0][0] if sell else (hi if isinstance(hi, (int, float))
+                                       else live + atr1)
+        rev_t = sell[1][0] if len(sell) > 1 else rev + atr1
+        L.append(f"  <b>C</b> انقلاب صاعد: إغلاق 1س فوق <b>{num(rev)}</b> → "
+                 f"يقلب صاعد · هدف <b>{num(rev_t)}</b> · <i>وقّف البيع</i>")
     elif up_trend:
         below = [z for z, _n in buy if z < live]
         above = [z for z, _n in sell if z > hi]
@@ -2230,6 +2239,11 @@ def card_full() -> str:
         L.append(f"  <b>A</b> استمرار صعود: ثبات فوق <b>{num(lo)}</b> → "
                  f"هدف <b>{num(up1)}</b>")
         L.append(f"  <b>B</b> تصحيح: كسر <b>{num(lo)}</b> → هدف <b>{num(dn1)}</b>")
+        rev = buy[0][0] if buy else (lo if isinstance(lo, (int, float))
+                                     else live - atr1)
+        rev_t = buy[1][0] if len(buy) > 1 else rev - atr1
+        L.append(f"  <b>C</b> انقلاب هابط: إغلاق 1س تحت <b>{num(rev)}</b> → "
+                 f"يقلب هابط · هدف <b>{num(rev_t)}</b> · <i>وقّف الشراء</i>")
     else:
         L.append(f"  <b>A</b> صعود: فوق <b>{num(live)}</b> → "
                  f"{num(live + atr1)}")

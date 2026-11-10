@@ -880,6 +880,14 @@ class FullCardTest(unittest.TestCase):
         self.assertIn("R:R", t)
         self.assertIn("صفقة واحدة فقط", t)
 
+    def test_it_names_the_reversal_scenario_c_with_its_level(self):
+        with self._feed():
+            t = bot.card_full()
+        # C is a REVERSAL, not a bounce: it must name a level and say to stop
+        # trading the old direction -- otherwise B and C read the same.
+        self.assertIn("انقلاب", t)
+        self.assertIn("وقّف", t)
+
     def test_it_gives_a_concrete_call(self):
         with self._feed():
             t = bot.card_full()
