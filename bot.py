@@ -155,10 +155,15 @@ ENTRY_NEAR_PTS = float(os.environ.get("DESK_ENTRY_NEAR_PTS", "6") or "6")
 
 # ---- menus --------------------------------------------------------------
 # The news layer is INFORMATION ONLY -- see card_news(). The owner edits this
-# list by hand; nothing here can open, block or size a trade. When
-# DESK_NEWS_LIVE=1 the card also pulls fresh headlines from Google News (keyless
-# RSS) -- still information only, still never a trade input.
-NEWS_LIVE = os.environ.get("DESK_NEWS_LIVE", "0").strip().lower() in (
+# list by hand; nothing here can open, block or size a trade. The card also
+# pulls fresh headlines from Google News (keyless RSS) -- still information
+# only, still never a trade input.
+#
+# Default ON: the service is created via the Render API (inline envVars), so
+# render.yaml does NOT apply to it -- a default of "0" silently turned the live
+# news off in production. On by default here means it works with no dashboard
+# trip. Set DESK_NEWS_LIVE=0 to show only the hand-edited NEWS_ITEMS list.
+NEWS_LIVE = os.environ.get("DESK_NEWS_LIVE", "1").strip().lower() in (
     "1", "true", "yes", "on")
 # The news card pulls fresh headlines from Google News (keyless RSS). Arabic by
 # default -- the owner reads Arabic. Google News is keyed by locale, so both the
