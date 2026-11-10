@@ -36,6 +36,11 @@ services:
       # trade. Set to 0 to show only the hand-edited NEWS_ITEMS list.
       - key: DESK_NEWS_LIVE
         value: "1"
+      # The owner's clock for every time the bot prints (news headlines come
+      # stamped in GMT). Syria = UTC+3 and has had no DST since 2022, so a
+      # fixed offset is exact; set 0 to show GMT.
+      - key: DESK_TZ_OFFSET
+        value: "3"
       # The combo quality gate is ON by default: ADX 20-40 + ATR 0.08-0.25% on
       # the 15m frame. Set DESK_FILTERS=0 to fall back to the raw frame tilt
       # (much noisier), or DESK_FILTER_GATES=adx,atr,macd,rsi to add the two

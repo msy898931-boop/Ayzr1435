@@ -27,7 +27,8 @@ import urllib.parse
 import urllib.request
 import uuid
 from contextlib import closing, suppress
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from html import unescape as _unescape
 from pathlib import Path
 
@@ -141,6 +142,11 @@ NEAR_STOP_FRAC = 0.30            # within this fraction of the entry->stop span
 NEWS_LIVE = os.environ.get("DESK_NEWS_LIVE", "0").strip().lower() in (
     "1", "true", "yes", "on")
 NEWS_QUERY = os.environ.get("DESK_NEWS_QUERY", "gold price XAUUSD").strip()
+# The owner's clock: hours to add to UTC when a time is shown (Syria = 3, and
+# Syria has had no DST since 2022, so a fixed offset is exact). Set
+# DESK_TZ_OFFSET=0 to show GMT.
+TZ_OFFSET_H = int(os.environ.get("DESK_TZ_OFFSET", "3") or "3")
+TZ_LABEL = os.environ.get("DESK_TZ_LABEL", "بتوقيت سوريا")
 NEWS_ITEMS: list[tuple[str, str]] = [
     ("🔥", "اليوم: تقرير التضخم الأميركي (CPI) — أهم حدث بالأسبوع"),
     ("⚠️", "الـCPI رح يطلع بلا نسبة سنوية (تداعيات الإغلاق) — رقم مشوّه"),
@@ -1077,33 +1083,53 @@ def card_news() -> str:
     The headlines come from the NEWS_ITEMS list the owner maintains, PLUS a
     best-effort live pull from Google News (keyless RSS) when
     DESK_NEWS_LIVE=1. A failed fetch is silent -- the manual list still shows.
+    Times are shown in the owner's clock (DESK_TZ_OFFSET hours from UTC, 3 =
+    Syria), because Google stamps headlines in GMT.
     """
     lines = [f"📰 <b>أخبار {SYMBOL}</b>", ""]
-    items = list(NEWS_ITEMS)
+    lines.append(f"🕒 آخر تحديث: <b>{_clock(datetime.now(UTC))}</b> {TZ_LABEL}")
+    lines.append("")
+    items: list[tuple] = []
     if NEWS_LIVE:
         with suppress(Exception):      # a dead feed must not hide the list
-            items = _news_fetch() + items
+            items = list(_news_fetch())
+    items += [tuple(x) for x in NEWS_ITEMS]
     if not items:
         lines.append("— ما في أخبار. حدّث <code>NEWS_ITEMS</code> أو شغّل "
                      "<code>DESK_NEWS_LIVE=1</code>.")
     else:
         seen: set[str] = set()
-        for tag, title in items[:12]:
-            key = title[:40]
+        for it in items[:12]:
+            tag, title = it[0], it[1]
+            when = it[2] if len(it) > 2 else ""
+            key = str(title)[:40]
             if key in seen:
                 continue
             seen.add(key)
-            lines.append(f"• {tag} {esc(title)}")
+            stamp = f"  <i>({when})</i>" if when else ""
+            lines.append(f"• {tag} {esc(title)}{stamp}")
     lines.append("")
     lines.append("<i>⚠️ معلومة فقط — مو إشارة. المكتب ما يفتح صفقة على الخبر، "
                  "وقواعد الدخول ما تتأثر فيه. القرار الخبري إلك.</i>")
     return "\n".join(lines)
 
 
-def _news_fetch() -> list[tuple[str, str]]:
+def _clock(dt: datetime) -> str:
+    """A timestamp in the owner's clock, short: HH:MM today, else DD/MM HH:MM."""
+    if dt.tzinfo is None:          # a feed that omits the zone is GMT-stamped
+        dt = dt.replace(tzinfo=UTC)
+    loc = dt.astimezone(timezone(timedelta(hours=TZ_OFFSET_H)))
+    today = datetime.now(UTC).astimezone(
+        timezone(timedelta(hours=TZ_OFFSET_H))).date()
+    return loc.strftime("%H:%M") if loc.date() == today else loc.strftime(
+        "%d/%m %H:%M")
+
+
+def _news_fetch() -> list[tuple[str, str, str]]:
     """Best-effort gold headlines from Google News RSS (keyless).
 
-    Returns a short list of (emoji, title). Parsed with a regex, not an XML
+    Returns a short list of (emoji, title, time) where time is the headline's
+    publication clock in the owner's timezone. Parsed with a regex, not an XML
     parser, so a malformed feed degrades to [] instead of raising. The query is
     the one the desk's symbol implies; the owner can override it with
     DESK_NEWS_QUERY.
@@ -1114,19 +1140,31 @@ def _news_fetch() -> list[tuple[str, str]]:
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=15) as r:
         raw = r.read().decode("utf-8", "ignore")
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str]] = []
+    parsed: list[tuple[datetime, str, str, str]] = []
     for block in re.findall(r"<item>(.*?)</item>", raw, re.DOTALL)[:10]:
         m = re.search(r"<title>(.*?)</title>", block, re.DOTALL)
         if not m:
             continue
         title = re.sub(r"<!\[CDATA\[|\]\]>", "", m.group(1)).strip()
         title = _unescape(title)
+        when, stamp = "", datetime.min.replace(tzinfo=UTC)
+        pm = re.search(r"<pubDate>(.*?)</pubDate>", block, re.DOTALL)
+        if pm:
+            with suppress(Exception):
+                stamp = parsedate_to_datetime(pm.group(1).strip())
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=UTC)
+                when = _clock(stamp)
         low = title.lower()
         tag = ("🔥" if any(w in low for w in ("cpi", "inflation", "fed", "rate"))
                else "📈" if any(w in low for w in ("rally", "gain", "rise", "high"))
                else "📉" if any(w in low for w in ("fall", "drop", "slump", "low"))
                else "▫️")
-        out.append((tag, title[:120]))
+        parsed.append((stamp, tag, title[:120], when))
+    # Google's feed is not time-ordered; the owner reads newest first.
+    parsed.sort(key=lambda x: x[0], reverse=True)
+    out = [(tag, title, when) for _, tag, title, when in parsed]
     return out
 
 
@@ -2696,6 +2734,8 @@ def selftest() -> int:
     print("== analysis ==", card_analysis()[:120].replace("\n", " "))
     print("== recommend ==", card_recommend()[:120].replace("\n", " "))
     print("== levels ==", card_levels()[:120].replace("\n", " "))
+    print("== map ==", card_map()[:120].replace("\n", " "))
+    print("== news ==", card_news()[:120].replace("\n", " "))
     print("== scenarios ==", card_scenarios()[:120].replace("\n", " "))
     print("== journal ==", journal_menu_text().replace("\n", " | "))
     print("== open ==", card_open()[:80].replace("\n", " "))

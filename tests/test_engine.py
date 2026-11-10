@@ -612,6 +612,26 @@ class NewsTest(unittest.TestCase):
             bot.NEWS_ITEMS, bot.NEWS_LIVE = saved_items, saved_live
             bot._news_fetch = saved_fetch
 
+    def test_news_times_are_shown_in_the_owner_clock(self):
+        # Google stamps headlines in GMT; the owner reads Syria time (UTC+3),
+        # so a headline is shown three hours later than its GMT stamp.
+        from datetime import UTC, datetime
+        noon_gmt = datetime(2026, 11, 10, 9, 0, tzinfo=UTC)
+        self.assertEqual(bot._clock(noon_gmt), "12:00")
+        # A headline from another day carries the date, so it is not mistaken
+        # for today's tape.
+        old = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
+        self.assertIn("01/11", bot._clock(old))
+
+    def test_news_card_shows_the_owner_clock_label(self):
+        saved_items, saved_live = bot.NEWS_ITEMS, bot.NEWS_LIVE
+        bot.NEWS_ITEMS, bot.NEWS_LIVE = [("🔥", "manual")], False
+        try:
+            text = bot.card_news()
+            self.assertIn("بتوقيت سوريا", text)
+        finally:
+            bot.NEWS_ITEMS, bot.NEWS_LIVE = saved_items, saved_live
+
 
 class WatchLevelsTest(unittest.TestCase):
     """The owner's levels (4138 / 4108) must be watchable, and a crossing of
