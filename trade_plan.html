@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>قراءة الذهب — لحظية</title>
+<style>
+  :root{
+    --bg:#0b1220; --card:#151f31; --card2:#101a2b; --line:#24334d;
+    --txt:#e8eefb; --dim:#93a6c6; --red:#ef4d5a; --grn:#22c55e;
+    --amb:#f0a92b; --blu:#4b93f7; --vio:#a877f0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#16233a 0%,var(--bg) 55%);
+       color:var(--txt);font-family:system-ui,"Segoe UI",Tahoma,sans-serif;padding:26px 16px 60px}
+  .wrap{max-width:880px;margin:0 auto}
+  header{text-align:center;margin-bottom:22px}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:-.3px}
+  .sub{color:var(--dim);font-size:14px}
+  .px{font-size:44px;font-weight:800;margin:10px 0 2px;
+      background:linear-gradient(90deg,#ffd77a,#ffb02e);-webkit-background-clip:text;
+      background-clip:text;color:transparent}
+  .px small{font-size:16px;color:var(--dim);-webkit-text-fill-color:var(--dim)}
+  .chip{display:inline-block;font-size:12.5px;padding:4px 11px;border-radius:20px;
+        border:1px solid var(--line);color:var(--dim);margin:4px 3px}
+  .chip.b{color:#ffd0d5;border-color:#5a2730;background:#2a1218}
+  .chip.g{color:#c8f7d8;border-color:#1f5a37;background:#0f2417}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+  @media(max-width:640px){.grid{grid-template-columns:1fr}}
+  .card{background:linear-gradient(180deg,var(--card),var(--card2));
+        border:1px solid var(--line);border-radius:14px;padding:15px 17px;margin-bottom:13px}
+  .card h2{font-size:15px;margin:0 0 11px;display:flex;align-items:center;gap:8px;
+           padding-bottom:9px;border-bottom:1px solid var(--line)}
+  .row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:13.5px}
+  .row .k{color:var(--dim)}
+  .row .v{font-weight:700;font-variant-numeric:tabular-nums}
+  .lvl{display:flex;justify-content:space-between;padding:6px 10px;border-radius:8px;
+       margin-bottom:5px;font-size:13px;background:#0d1728;border:1px solid #1c2942}
+  .lvl.r{border-inline-start:3px solid var(--red)}
+  .lvl.s{border-inline-start:3px solid var(--grn)}
+  .lvl .t{color:var(--dim);font-size:11.5px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 12px}
+  .tab{font-size:12px;padding:5px 11px;border-radius:8px;background:#16233a;border:1px solid var(--line);color:var(--dim)}
+  .tab.d{background:#2a1218;color:#ffd0d5;border-color:#5a2730}
+  .tab.u{background:#0f2417;color:#c8f7d8;border-color:#1f5a37}
+  .call{border-radius:14px;padding:16px 18px;margin-bottom:13px;border:1px solid}
+  .call.wait{background:linear-gradient(180deg,#2a1f0c,#1c1508);border-color:#5e4715}
+  .call.arm{background:linear-gradient(180deg,#0f2a1a,#0a1c12);border-color:#1f5a37}
+  .call .big{font-size:20px;font-weight:800;margin-bottom:6px}
+  .call .ln{font-size:13.5px;color:#d8e2f4;padding:3px 0}
+  .call .ln b{color:#fff}
+  .tag{display:inline-block;font-size:11px;padding:2px 9px;border-radius:20px;
+       background:#0d1728;border:1px solid var(--line);color:var(--dim);margin-inline-start:8px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:7px 8px;text-align:right;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600;font-size:12px}
+  td.n{font-variant-numeric:tabular-nums;font-weight:700}
+  .red{color:var(--red)} .grn{color:var(--grn)} .amb{color:var(--amb)} .blu{color:var(--blu)} .vio{color:var(--vio)}
+  .sc{border-inline-start:3px solid;padding:9px 13px;border-radius:9px;background:#0d1728;margin-bottom:8px}
+  .sc.a{border-color:var(--red)} .sc.b{border-color:var(--amb)} .sc.c{border-color:var(--vio)}
+  .sc .h{font-weight:800;font-size:14px;margin-bottom:3px}
+  .sc .d{font-size:12.5px;color:var(--dim)}
+  .note{font-size:12px;color:var(--dim);line-height:1.8;margin-top:8px}
+  .warn{background:#2a1218;border:1px solid #5a2730;border-radius:10px;padding:11px 14px;
+        font-size:12.5px;color:#ffd0d5;margin-top:6px}
+  .foot{text-align:center;color:var(--dim);font-size:12px;margin-top:22px;line-height:1.9}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>🥇 قراءتي للذهب — لحظية</h1>
+  <div class="sub">XAUUSD · 10 نوفمبر 2026 · 21:2x UTC · السوق مفتوح ✅</div>
+  <div class="px">4,032.16 <small>دولار/أونصة</small></div>
+  <div>
+    <span class="chip b">📉 هبوط −0.58% اليوم</span>
+    <span class="chip b">الاتجاه هابط 5/6 فريمات</span>
+    <span class="chip">⚪ بنية مختلطة</span>
+    <span class="chip g">5د 🟢 بدأ يرتد</span>
+  </div>
+</header>
+
+<div class="call wait">
+  <div class="big">🎯 موقفي هلّق: ⏸️ بستنى أبيع — ما في صفقة الآن</div>
+  <div class="ln">السعر <b>4,032</b> واقف فوق الدعم <b>4,029</b> — مو مكان بيع.</div>
+  <div class="ln">الاتجاه هابط بقوة، بس <b>الهبوط تعبان</b> (RSI 1س = 32) وبدأ يرتد.</div>
+  <div class="ln">الثقة: <b>متوسطة</b> <span class="tag">الاتجاه واضح · السعر بمنطقة قرار</span></div>
+  <div class="ln">🔄 <b>بيلغي نظريتي:</b> إغلاق 1س فوق <b>4,080</b> يلغي الهبوط · إغلاق تحت <b>4,013</b> يفتح الباب لـ 3,970</div>
+</div>
+
+<div class="grid">
+
+<div class="card">
+  <h2>📉 صورة اليوم</h2>
+  <div class="row"><span class="k">الفتح</span><span class="v">4,139.07</span></div>
+  <div class="row"><span class="k">القمة اليومية</span><span class="v red">4,141.55</span></div>
+  <div class="row"><span class="k">القاع اليومي</span><span class="v grn">4,013.56</span></div>
+  <div class="row"><span class="k">النطاق</span><span class="v">128 نقطة (3.1%)</span></div>
+  <div class="row"><span class="k">السعر من النطاق</span><span class="v">عند 14% منه</span></div>
+  <div class="note">السعر بآخر ثلث النطاق السفلي — قريب من القاع. مسافة لسقف اليوم ≈ 109 نقطة.</div>
+</div>
+
+<div class="card">
+  <h2>📊 الفريمات والزخم</h2>
+  <div class="tabs">
+    <span class="tab d">يومي 🔴 47</span>
+    <span class="tab d">4س 🔴 43</span>
+    <span class="tab d">1س 🔴 32</span>
+    <span class="tab d">30د 🔴 35</span>
+    <span class="tab d">15د 🔴 43</span>
+    <span class="tab u">5د 🟢 53</span>
+  </div>
+  <div class="row"><span class="k">الاتفاق</span><span class="v red">هابط 5/6</span></div>
+  <div class="row"><span class="k">الزخم 1س</span><span class="v">RSI 32 — قريب تشبّع بيعي</span></div>
+  <div class="row"><span class="k">البنية (1س)</span><span class="v">⚪ مختلطة</span></div>
+  <div class="row"><span class="k">تقلّب 1س (ATR)</span><span class="v">16.1 نقطة (0.40%) — معتدل</span></div>
+  <div class="note">5 فريمات هبوط + 5د صاعد = ارتداد صغير جوّا اتجاه هابط. RSI 1س 32 يعني <b>البيع متعب</b> — خطر ارتداد.</div>
+</div>
+
+</div>
+
+<div class="card">
+  <h2>🧭 المقاومات والدعوم + القمم والقيعان</h2>
+  <div class="grid">
+    <div>
+      <div style="font-size:12.5px;color:var(--dim);margin-bottom:7px">🔴 مقاومات / قمم فوق السعر</div>
+      <div class="lvl r"><span>4,147.03 / 4,141.55</span><span class="t">قمة اليوم · بعيدة</span></div>
+      <div class="lvl r"><span>4,134.22 · 4,138.40</span><span class="t">قمم محاور 1س</span></div>
+      <div class="lvl r"><span>4,108.57</span><span class="t">منطقة بيع · 2 لمسة</span></div>
+      <div class="lvl r"><span>4,092.66</span><span class="t">فيبو 61.8%</span></div>
+      <div class="lvl r"><span>4,081.34</span><span class="t">مقاومة · 17 لمسة ⭐</span></div>
+      <div class="lvl r"><span>4,080.25</span><span class="t">منطقة بيع رئيسية · 4 لمسة</span></div>
+      <div class="lvl r"><span>4,078.76</span><span class="t">مقاومة · 15 لمسة ⭐</span></div>
+      <div class="lvl r"><span>4,077.55</span><span class="t">فيبو 50%</span></div>
+      <div class="lvl r"><span>4,070.67</span><span class="t">مقاومة · 27 لمسة ⭐⭐</span></div>
+      <div class="lvl r"><span>4,062.45</span><span class="t">فيبو 38.2%</span></div>
+    </div>
+    <div>
+      <div style="font-size:12.5px;color:var(--dim);margin-bottom:7px">🟢 دعوم / قيعان تحت السعر</div>
+      <div class="lvl s"><span>4,028.99</span><span class="t">دعم · 15 لمسة ⭐ ← السعر هنا</span></div>
+      <div class="lvl s"><span>4,027.97</span><span class="t">منطقة شراء · 2 لمسة</span></div>
+      <div class="lvl s"><span>4,026.96</span><span class="t">دعم · 13 لمسة ⭐</span></div>
+      <div class="lvl s"><span>4,024.33</span><span class="t">قاع 15د قصير</span></div>
+      <div class="lvl s"><span>4,013.56</span><span class="t">قاع اليوم 🛡️ خط الدفاع</span></div>
+      <div class="lvl s"><span>3,970.87</span><span class="t">دعم · 2 لمسة</span></div>
+      <div class="lvl s"><span>3,937.51</span><span class="t">دعم بعيد</span></div>
+      <div class="lvl s"><span>3,917.56</span><span class="t">دعم قوي</span></div>
+      <div class="note">⭐ = قوة اللمسات · النطاق <b>4,062–4,081</b> = منطقة بيع كثيفة (فيبو + 3 مقاومات + منطقة بيع).</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>🔀 السيناريوهات (بلا احتمالات مخترعة)</h2>
+  <div class="sc a">
+    <div class="h red">A — استمرار الهبوط <span class="tag">مع الاتجاه · الأقرب</span></div>
+    <div class="d">كسر وإغلاق 15د تحت <b>4,013</b> → هدف <b>3,970</b> ثم 3,937.</div>
+  </div>
+  <div class="sc b">
+    <div class="h amb">B — ارتداد للأعلى <span class="tag">الأكثر إزعاجاً</span></div>
+    <div class="d">صمود فوق <b>4,013</b> + اختراق <b>4,029</b> → <b>4,062</b> ثم <b>4,070–4,081</b> (منطقة بيع كثيفة).</div>
+  </div>
+  <div class="sc c">
+    <div class="h vio">C — انقلاب صاعد <span class="tag">يحتاج تأكيد</span></div>
+    <div class="d">إغلاق 1س فوق <b>4,081</b> → يقلب صاعد · الهدف <b>4,108</b> ثم 4,134 · <b>وقّف البيع</b>.</div>
+  </div>
+  <div class="note">القرار كله على <b>4,013</b>. فوقها = ارتداد. تحتها = استمرار. ما في احتمالات محسوبة — هي مستويات قرار.</div>
+</div>
+
+<div class="card">
+  <h2>🎬 خطة التداول — متى أبيع ومتى أشتري</h2>
+
+  <div style="font-size:13px;color:var(--dim);margin:4px 0 8px">🔴 البيع (مع الاتجاه) — الأولوية</div>
+  <table>
+    <tr><th>السيناريو</th><th>الدخول</th><th>الوقف</th><th>الهدف</th><th>خطر/مكسب</th></tr>
+    <tr><td>بيع من 4,062 (فيبو 38.2%)</td><td class="n">4,062.45</td><td class="n red">4,071.45</td><td class="n grn">4,042.65</td><td class="n">−$9 / +$20</td></tr>
+    <tr><td>بيع من 4,080 (منطقة البيع) — <b>الأفضل</b></td><td class="n">4,080.25</td><td class="n red">4,089.25</td><td class="n grn">4,060.45</td><td class="n">−$9 / +$20</td></tr>
+    <tr><td>بيع من 4,108 (منطقة بيع 2)</td><td class="n">4,108.57</td><td class="n red">4,117.57</td><td class="n grn">4,088.77</td><td class="n">−$9 / +$20</td></tr>
+    <tr><td>بيع كسر تحت 4,013 (إغلاق 15د)</td><td class="n">4,013.56</td><td class="n red">4,022.56</td><td class="n grn">3,993.76</td><td class="n">−$9 / +$20</td></tr>
+  </table>
+
+  <div style="font-size:13px;color:var(--dim);margin:14px 0 8px">🟢 الشراء (عكس الاتجاه — حذر)</div>
+  <table>
+    <tr><th>السيناريو</th><th>الدخول</th><th>الوقف</th><th>الهدف</th><th>خطر/مكسب</th></tr>
+    <tr><td>شراء ارتداد من 4,029 (دعم 15 لمسة)</td><td class="n">4,028.99</td><td class="n red">4,019.99</td><td class="n grn">4,048.79</td><td class="n">−$9 / +$20</td></tr>
+    <tr><td>شراء من القاع 4,013 (بعد تأكيد شمعة)</td><td class="n">4,013.56</td><td class="n red">4,004.56</td><td class="n grn">4,033.36</td><td class="n">−$9 / +$20</td></tr>
+  </table>
+
+  <div class="warn">⚠️ الشراء ضد اتجاه 5/6 فريمات = <b>سكالب خطر</b>، مو إشارة. إذا بدك إياه، <b>نصّ الحجم أو أقل</b> ولازم <b>تأكيد شمعة</b> (إغلاق فوق المنطقة)، وإلا اقعد برا.</div>
+</div>
+
+<div class="card">
+  <h2>💰 إدارة الصفقة — حساب $200 · 0.01 لوت</h2>
+  <div class="row"><span class="k">قيمة النقطة (0.01 لوت)</span><span class="v">$1 لكل نقطة</span></div>
+  <div class="row"><span class="k">الخطر لكل صفقة (وقف 9 نقاط)</span><span class="v red">$9 ≈ 4.5% من الحساب</span></div>
+  <div class="row"><span class="k">المكسب عند الهدف (20 نقطة)</span><span class="v grn">$20 ≈ 10% من الحساب</span></div>
+  <div class="row"><span class="k">نسبة الخطر/المكسب (R:R)</span><span class="v blu">1 : 2.2</span></div>
+  <div class="row"><span class="k">نسبة الفوز المتوقعة (باكتست)</span><span class="v">37–40% — تخسر أكتر مما تربح</span></div>
+  <div class="note">⚠️ خطر 4.5% للحساب عالي شوي. الأفضل <b>صفقة واحدة فقط</b> بكل مرة — لا تجمع صفقتين. والالتزام بالوقف <b>مقدّس</b>: إغلاق 1س فوق منطقة البيع يلغي الفكرة فوراً.</div>
+</div>
+
+<div class="call arm">
+  <div class="big">✅ الخلاصة — شو تعمل هلّق</div>
+  <div class="ln">1️⃣ <b>ما تفتح صفقة الآن.</b> السعر عالدعم — أسوأ مكان تبيع فيه.</div>
+  <div class="ln">2️⃣ <b>علّق تنبيه</b> على 4,062 و 4,081 و 4,013.</div>
+  <div class="ln">3️⃣ <b>الأولوية:</b> إذا ارتد لفوق → بيع من <b>4,070–4,080</b> (وقف 4,089 · هدف 4,060).</div>
+  <div class="ln">4️⃣ <b>البديل:</b> إذا كسر 4,013 بإغلاق 15د → بيع كسر (وقف 4,022 · هدف 3,994).</div>
+  <div class="ln">5️⃣ <b>اقعد برا</b> إذا السعر فضل يحوم بين 4,029 و 4,062 بلا اتجاه.</div>
+</div>
+
+<div class="foot">
+  قراءتي الفنية من بيانات السوق الحيّة — مو وعد ربح.<br>
+  نسبة الفوز 37–40% · أقصى سلسلة خسارة تاريخياً 16 صفقة · الرقم المهم مو التوصية — <b>الالتزام بالوقف</b>.
+</div>
+
+</div>
+</body>
+</html>

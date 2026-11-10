@@ -888,6 +888,23 @@ class FullCardTest(unittest.TestCase):
         self.assertIn("انقلاب", t)
         self.assertIn("وقّف", t)
 
+    def test_it_shows_the_raw_swings_split_by_the_price(self):
+        with self._feed():
+            t = bot.card_full()
+        # Tops above and bottoms below the live price; a bottom printed ABOVE
+        # the price is the old pre-drop swing and reads as nonsense.
+        self.assertIn("القمم والقيعان", t)
+        self.assertIn("قمم فوق", t)
+        self.assertIn("قيعان تحت", t)
+
+    def test_the_win_rate_line_names_its_source(self):
+        with self._feed():
+            t = bot.card_full()
+        # With no closed trades of his own the line must say it is a BACKTEST
+        # figure, never pass a study number off as a measured one.
+        self.assertIn("نسبة الفوز", t)
+        self.assertIn("باكتست", t)
+
     def test_it_gives_a_concrete_call(self):
         with self._feed():
             t = bot.card_full()

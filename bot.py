@@ -73,6 +73,14 @@ TARGET_MAX_USD = 20.0
 STOP_PICK_USD = 9.0              # the validated sweet spot; a near level may move it
 TARGET_RR = 2.2                  # 9 * 2.2 = $19.8, top of the window
 MIN_RR = 1.5                     # below this a plan is not worth stating
+# The desk's OWN backtest (251 days, 2,937 trades, $9 stop / $20 target). This
+# is a STUDY figure, never a live reading: the owner's journal is the live truth
+# and is used FIRST when it has closed trades. The card labels the source so a
+# backtest number is never mistaken for a measured one.
+STUDY_WIN_RATE = 0.37            # full-year, minus spread
+STUDY_LOSS_STREAK = 16           # longest run of losers that year (= 72% of the account)
+SHOW_STUDY = os.environ.get("DESK_SHOW_STUDY", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
 CONFIRM_FRAMES = 4               # a direction needs this many of 6 frames
 STRONG_FRAMES = 5                # ...and this many to allow a SECOND trade
 MAX_OPEN = 1                     # one trade at a time (raise to 2 to stack)
@@ -2205,6 +2213,23 @@ def card_full() -> str:
             L.append(f"  ⭐ السعر قريب من فيبو <b>{near[0]}</b> "
                      f"({num(near[1])}) — منطقة قرار")
 
+    # ---- 5b. the raw swings, split by the live price ---------------------
+    # The levels above are the zones the desk trades; these are the bare swing
+    # highs/lows the pivots found on the frames the owner watches. A raw list
+    # prints lows ABOVE the price (old swings from before the drop), which reads
+    # as nonsense -- so each is split: highs above, lows below, nearest first.
+    L.append("\n<b>🏔️ القمم والقيعان (المحاور):</b>")
+    for tf, label in (("1h", "1س"), ("30m", "30د"), ("15m", "15د")):
+        try:
+            hs, ls_ = pivots(bars(tf, 150))
+        except Exception:  # noqa: BLE001 - a missing frame must not kill the card
+            continue
+        tops = [f"{num(x)}" for x in sorted(x for x in hs if x > live)[:3]]
+        bots = [f"{num(x)}" for x in sorted(
+            (x for x in ls_ if x < live), reverse=True)[:3]]
+        L.append(f"  {label} — قمم فوق: {' · '.join(tops) or '—'} | "
+                 f"قيعان تحت: {' · '.join(bots) or '—'}")
+
     # ---- 6. what I am watching: the triggers, each with its target -------
     # The old section printed "~74% / ~26%". That number was 50 + 6 * (frames
     # agreeing) -- the frame count re-spelled as a percentage, with no
@@ -2361,6 +2386,23 @@ def card_full() -> str:
         L.append(f"  تقلّب 1س {vol:.1f} نقطة ({vp:.2f}%) — "
                  f"{'عالي، خطر مرتفع' if vp > 0.6 else 'معتدل'}")
     L.append("  الالتزام بالوقف ($9) أهم من أي توصية.")
+    # The win-rate line: the owner's OWN closed trades first (the live truth),
+    # and only when he has none does the desk's backtest stand in -- labelled as
+    # a backtest, so a study figure is never read as a measured one.
+    if SHOW_STUDY:
+        try:
+            jn = stats("all")
+        except Exception:  # noqa: BLE001 - the journal must not kill the card
+            jn = {"n": 0}
+        if jn.get("n"):
+            L.append(f"  📊 <b>نسبتك الحقيقية:</b> {jn['n']} صفقة · "
+                     f"فوز {jn['win_rate']:.0%} · مجموع {jn['total_r']:+.1f}R")
+        else:
+            L.append(f"  📊 <b>نسبة الفوز (باكتست سنة، 2,937 صفقة):</b> "
+                     f"~{STUDY_WIN_RATE:.0%} — تخسر أكتر مما تربح · أطول سلسلة "
+                     f"خسارة {STUDY_LOSS_STREAK} صفقة")
+            L.append("  <i>هاد رقم دراسة مو رقمك — سجّل صفقاتك ليصير عندك "
+                     "سجل حقيقي.</i>")
     L.append("\n<i>قراءتي الفنية من بيانات السوق الحيّة — مو وعد ربح.</i>")
     return "\n".join(L)
 
