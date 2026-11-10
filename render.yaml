@@ -33,9 +33,16 @@ services:
       - key: DESK_WATCH_LEVELS
         value: "4080,4035,4005"
       # The news card pulls fresh gold headlines from Google News (keyless RSS)
-      # when this is 1. INFORMATION ONLY -- it never opens, blocks or sizes a
-      # trade. Set to 0 to show only the hand-edited NEWS_ITEMS list.
+      # when this is 1 -- merged from several queries (gold price, Fed rate,
+      # US CPI, dollar index), cached 5 minutes. INFORMATION ONLY -- it never
+      # opens, blocks or sizes a trade. Set to 0 to show only the hand-edited
+      # NEWS_ITEMS list.
       - key: DESK_NEWS_LIVE
+        value: "1"
+      # The automatic direction alert: tell the owner when the net direction
+      # flips (up/down/range) without a tap, with a 20-minute cooldown so a
+      # chop cannot spam. Set to 0 to switch it off.
+      - key: DESK_TREND_ALERTS
         value: "1"
       # The owner's clock for every time the bot prints (news headlines come
       # stamped in GMT). Syria = UTC+3 and has had no DST since 2022, so a

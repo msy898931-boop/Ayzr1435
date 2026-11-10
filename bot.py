@@ -156,7 +156,21 @@ NEAR_STOP_FRAC = 0.30            # within this fraction of the entry->stop span
 # RSS) -- still information only, still never a trade input.
 NEWS_LIVE = os.environ.get("DESK_NEWS_LIVE", "0").strip().lower() in (
     "1", "true", "yes", "on")
-NEWS_QUERY = os.environ.get("DESK_NEWS_QUERY", "gold price XAUUSD").strip()
+# Everything that moves gold vs the dollar -- not just the phrase "gold price".
+# The Fed's rate path, US inflation prints and the dollar index are the real
+# drivers of XAUUSD, so several focused queries are merged (newest first,
+# deduped). Override with DESK_NEWS_QUERY, pipe-separated for more than one.
+NEWS_QUERIES: tuple[str, ...] = tuple(
+    q.strip() for q in os.environ.get(
+        "DESK_NEWS_QUERY",
+        "gold price XAUUSD|Federal Reserve rate decision|US inflation CPI|"
+        "US dollar index DXY").split("|") if q.strip())
+NEWS_CACHE_S = 300               # reuse a fetch for 5 minutes (feeds are slow)
+# The automatic direction alert: tell the owner when the desk's net direction
+# flips (up / down / range) without a tap. A cooldown damps a chop at the edge.
+TREND_ALERTS = os.environ.get("DESK_TREND_ALERTS", "1").strip().lower() in (
+    "1", "true", "yes", "on")
+TREND_ALERT_COOLDOWN_S = 20 * 60  # at most one direction alert per 20 minutes
 # The owner's clock: hours to add to UTC when a time is shown (Syria = 3, and
 # Syria has had no DST since 2022, so a fixed offset is exact). Set
 # DESK_TZ_OFFSET=0 to show GMT.
@@ -1187,22 +1201,17 @@ def _clock(dt: datetime) -> str:
         "%d/%m %H:%M")
 
 
-def _news_fetch() -> list[tuple[str, str, str]]:
-    """Best-effort gold headlines from Google News RSS (keyless).
+_NEWS_CACHE: dict = {"at": 0.0, "items": []}
 
-    Returns a short list of (emoji, title, time) where time is the headline's
-    publication clock in the owner's timezone. Parsed with a regex, not an XML
-    parser, so a malformed feed degrades to [] instead of raising. The query is
-    the one the desk's symbol implies; the owner can override it with
-    DESK_NEWS_QUERY.
-    """
-    q = urllib.parse.quote(NEWS_QUERY)
+
+def _news_one(query: str) -> list[tuple[datetime, str, str, str]]:
+    """Gold/dollar headlines for ONE Google News query, newest first."""
+    q = urllib.parse.quote(query)
     url = (f"https://news.google.com/rss/search?q={q}"
            "&hl=en-US&gl=US&ceid=US:en")
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=15) as r:
         raw = r.read().decode("utf-8", "ignore")
-    out: list[tuple[str, str, str]] = []
     parsed: list[tuple[datetime, str, str, str]] = []
     for block in re.findall(r"<item>(.*?)</item>", raw, re.DOTALL)[:10]:
         m = re.search(r"<title>(.*?)</title>", block, re.DOTALL)
@@ -1224,10 +1233,37 @@ def _news_fetch() -> list[tuple[str, str, str]]:
                else "📉" if any(w in low for w in ("fall", "drop", "slump", "low"))
                else "▫️")
         parsed.append((stamp, tag, title[:120], when))
-    # Google's feed is not time-ordered; the owner reads newest first.
-    parsed.sort(key=lambda x: x[0], reverse=True)
-    out = [(tag, title, when) for _, tag, title, when in parsed]
-    return out
+    return parsed
+
+
+def _news_fetch() -> list[tuple[str, str, str]]:
+    """Best-effort gold headlines merged from several Google News queries.
+
+    "Gold price" alone misses the drivers the owner asked for: the Fed's rate
+    path, US inflation prints and the dollar index. Each focused query is
+    fetched, merged, deduped by title and sorted newest first. Parsed with a
+    regex, not an XML parser, so a malformed feed degrades to [] instead of
+    raising. The result is cached for NEWS_CACHE_S seconds -- the feeds are
+    slow and the RSS cards are tapped far more often than headlines change.
+    """
+    now = time.monotonic()
+    if _NEWS_CACHE["items"] and now - _NEWS_CACHE["at"] < NEWS_CACHE_S:
+        return list(_NEWS_CACHE["items"])
+    merged: list[tuple[datetime, str, str, str]] = []
+    for query in NEWS_QUERIES:
+        with suppress(Exception):      # one dead query must not kill the rest
+            merged += _news_one(query)
+    merged.sort(key=lambda x: x[0], reverse=True)
+    out: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for _, tag, title, when in merged:
+        key = title[:40].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((tag, title, when))
+    _NEWS_CACHE["at"], _NEWS_CACHE["items"] = now, out
+    return list(out)
 
 
 
@@ -2115,7 +2151,27 @@ def card_full() -> str:
             L.append(f"  🔴 بيع عند <b>{num(sell[0][0])}</b> · وقف "
                      f"{num(s['stop'])} · هدف {num(s['target'])}")
 
-    # ---- 8. honest close -------------------------------------------------
+    # ---- 8. the news that moves gold vs the dollar ----------------------
+    items: list[tuple] = []
+    if NEWS_LIVE:
+        with suppress(Exception):      # a dead feed must not hide the read
+            items = list(_news_fetch())
+    items += [tuple(x) for x in NEWS_ITEMS]
+    if items:
+        L.append("\n<b>📰 الأخبار (تأثر الذهب/الدولار):</b>")
+        seen_t: set[str] = set()
+        for it in items[:6]:
+            tag, title = it[0], it[1]
+            when = it[2] if len(it) > 2 else ""
+            key = str(title)[:40]
+            if key in seen_t:
+                continue
+            seen_t.add(key)
+            stamp = f" <i>({when})</i>" if when else ""
+            L.append(f"  {tag} {esc(str(title)[:100])}{stamp}")
+        L.append("  <i>معلومة فقط — مو إشارة دخول.</i>")
+
+    # ---- 9. honest close -------------------------------------------------
     vol = atrs.get("1h")
     L.append("\n<b>⚠️ كلمة صريحة:</b>")
     if isinstance(vol, (int, float)) and live:
@@ -2162,6 +2218,11 @@ def alerts_guide() -> str:
             "  يعني: إشارة جديدة بس المكتب ما دخل (الكتاب ممتلئ، أو "
             "الصفقة الحالية متقدمة/رابحة).\n"
             "  👉 <i>ما تعمل شي — حماية من المخاطرة، مو خطأ.</i>\n\n"
+            "<b>🔟 تغيّر الاتجاه</b> 🔄\n"
+            "  يعني: صافي اتجاه الفريمات انقلب (صاعد/هابط/عرضي) — تلقائياً "
+            "بلا ما تكبس.\n"
+            "  👉 <i>حدّث نظرتك: صاعد = شراء الانخفاض · هابط = بيع القوة. "
+            "(تنبيه وحدة كل 20 دقيقة كحد أقصى.)</i>\n\n"
             "📌 <b>القاعدة الذهبية:</b> كل تنبيه بيقوللك «شو تعمل» بسطر — "
             "اقرأ آخر سطر دايماً.\n\n"
             "<i>قراءة تحليلية، مو وعد ربح.</i>")
@@ -2798,6 +2859,77 @@ def gate_watch(seen: dict) -> str | None:
         return None
 
 
+def _direction(m: dict) -> str:
+    """The desk's net direction from the frame tilt: up / down / range."""
+    up = sum(1 for tf in FRAMES if m["trends"].get(tf) == 1)
+    dn = sum(1 for tf in FRAMES if m["trends"].get(tf) == -1)
+    if dn >= CONFIRM_FRAMES:
+        return "down"
+    if up >= CONFIRM_FRAMES:
+        return "up"
+    return "range"
+
+
+def trend_watch(seen: dict) -> str | None:
+    """The automatic direction alert -- speak when the net direction flips.
+
+    The owner asked to be told when the direction changes without tapping, so
+    this is the one alert that fires on the market alone. It reads the desk's
+    own net direction (CONFIRM_FRAMES of six). Because a market can hover on
+    that boundary, a flip must be a real change AND at least TREND_ALERT_COOLDOWN_S
+    must have passed since the last alert -- a chop cannot spam. The first look
+    after boot seeds the state silently, so a restart never announces a
+    direction the market was already in.
+    """
+    if not TREND_ALERTS:
+        return None
+    try:
+        m = read_market()
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return None
+    if not market_open(m["q"]):
+        return None
+    d = _direction(m)
+    prev = seen.get("trend")
+    now = time.time()
+    if prev is None:
+        seen["trend"], seen["trend_at"] = d, now
+        return None
+    if d == prev:
+        return None
+    if now - seen.get("trend_at", 0) < TREND_ALERT_COOLDOWN_S:
+        return None
+    seen["trend"], seen["trend_at"] = d, now
+
+    live = m["live"]
+    up = sum(1 for tf in FRAMES if m["trends"].get(tf) == 1)
+    dn = sum(1 for tf in FRAMES if m["trends"].get(tf) == -1)
+    tally = f"{up}ص · {dn}هـ"
+    try:
+        sell, buy = _zones(live)
+    except Exception:  # noqa: BLE001
+        sell, buy = [], []
+
+    head = {"up": "🟢 <b>تغيّر الاتجاه → صاعد</b>",
+            "down": "🔴 <b>تغيّر الاتجاه → هابط</b>",
+            "range": "⚪ <b>تغيّر الاتجاه → عرضي</b>"}[d]
+    if d == "down":
+        advice = "الأفضل <b>بيع القوة</b> (ارتداد لفوق)"
+        zone = f"منطقة بيع قريبة: <b>{num(sell[0][0])}</b>" if sell else ""
+    elif d == "up":
+        advice = "الأفضل <b>شراء الانخفاض</b>"
+        zone = f"منطقة شراء قريبة: <b>{num(buy[0][0])}</b>" if buy else ""
+    else:
+        advice = "<b>اشترِ عند الدعم · بِع عند المقاومة</b>"
+        zone = ""
+    lines = [f"{head} — {SYMBOL}",
+             f"السعر <b>{num(live)}</b> · الفريمات {tally}"]
+    if zone:
+        lines.append(zone)
+    lines.append(f"<i>{advice}</i>")
+    return "\n".join(lines)
+
+
 def trade_watch(seen: dict) -> str | None:
     """Narrate an open trade as it approaches its stop or its target.
 
@@ -2881,6 +3013,10 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
         for c in allow:
             tg.send(c, note)
     note = gate_watch(seen)
+    if note:
+        for c in allow:
+            tg.send(c, note)
+    note = trend_watch(seen)
     if note:
         for c in allow:
             tg.send(c, note)
@@ -3042,6 +3178,9 @@ def selftest() -> int:
     sw = support_watch({})
     print("== support ==", (sw or "silent").replace("\n", " ")[:120])
     print("== gate ==", (gate_watch({}) or "silent").replace("\n", " ")[:120])
+    tw = trend_watch({"trend": "up", "trend_at": 0.0})
+    print("== trend ==", (tw or "silent").replace("\n", " ")[:120])
+    print("== news live ==", len(_news_fetch()) if NEWS_LIVE else "off")
     print("== trade parse ==", str(parse_trade("سجل شراء 4075 وقف 4069 هدف 4085"))
           .replace("\n", " ")[:120])
     return 0

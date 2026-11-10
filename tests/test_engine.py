@@ -874,6 +874,67 @@ class FullCardTest(unittest.TestCase):
         self.assertAlmostEqual(fib_up["38.2%"], hi - (hi - lo) * 0.382, places=2)
         self.assertGreater(fib_up["38.2%"], fib_up["61.8%"])
 
+    def test_the_news_section_appears_when_a_headline_exists(self):
+        saved = bot.NEWS_ITEMS
+        bot.NEWS_ITEMS = [("🔥", "Fed holds rates — headline")]
+        try:
+            with self._feed():
+                self.assertIn("الأخبار", bot.card_full())
+        finally:
+            bot.NEWS_ITEMS = saved
+
+
+class TrendWatchTest(unittest.TestCase):
+    """trend_watch is the one alert that fires on the market alone: the owner
+    asked to hear about a direction flip without tapping. It must seed silently
+    on boot, stay silent while the direction holds, and speak once on a real
+    flip -- with a cooldown so a chop at the boundary cannot spam."""
+
+    def _feed(self, trends):
+        # FakeFeed builds bars from a per-frame close; a rising close makes the
+        # frame trend up, a falling one down.
+        up = list(range(4000, 4060))
+        dn = list(range(4060, 4000, -1))
+        closes = {tf: (up if trends.get(tf, 0) == 1 else dn)
+                  for tf in bot.FRAMES}
+        return FakeFeed(mid=4030.0, closes=closes)
+
+    def test_first_look_seeds_silently(self):
+        seen: dict = {}
+        with self._feed({tf: -1 for tf in bot.FRAMES}):
+            self.assertIsNone(bot.trend_watch(seen))
+        self.assertEqual(seen.get("trend"), "down")
+
+    def test_same_direction_is_silent(self):
+        seen = {"trend": "down", "trend_at": 0.0}
+        with self._feed({tf: -1 for tf in bot.FRAMES}):
+            self.assertIsNone(bot.trend_watch(seen))
+
+    def test_a_real_flip_speaks(self):
+        seen = {"trend": "up", "trend_at": 0.0}
+        with self._feed({tf: -1 for tf in bot.FRAMES}):
+            msg = bot.trend_watch(seen)
+        self.assertIsNotNone(msg)
+        self.assertIn("تغيّر الاتجاه", msg)
+        self.assertEqual(seen["trend"], "down")
+
+    def test_the_cooldown_damps_a_chop(self):
+        # A flip moments after the last alert is swallowed.
+        seen = {"trend": "up", "trend_at": bot.time.time()}
+        with self._feed({tf: -1 for tf in bot.FRAMES}):
+            self.assertIsNone(bot.trend_watch(seen))
+        self.assertEqual(seen["trend"], "up")   # the state did not move
+
+    def test_it_can_be_switched_off(self):
+        saved = bot.TREND_ALERTS
+        bot.TREND_ALERTS = False
+        try:
+            seen = {"trend": "up", "trend_at": 0.0}
+            with self._feed({tf: -1 for tf in bot.FRAMES}):
+                self.assertIsNone(bot.trend_watch(seen))
+        finally:
+            bot.TREND_ALERTS = saved
+
 
 class AdxCeilingTest(unittest.TestCase):
     """The ADX window was 20-60; band-by-band it is 0-50.
