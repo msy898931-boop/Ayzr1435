@@ -827,18 +827,30 @@ class AdxCeilingTest(unittest.TestCase):
     def test_the_ceiling_is_sixty(self):
         self.assertEqual(bot.ADX_MAX, 60.0)
 
-    def test_a_trend_above_the_old_ceiling_now_passes(self):
-        # A rising trend with a sine wobble lands ADX ~50: past the OLD ceiling
-        # of 40, inside the new 60. It must no longer be the gate that blocks.
-        import math
-        closes = [4000 + i * 2 + 20 * math.sin(i / 3.0) for i in range(140)]
-        bars = [_bar(_iso(i), c, c + 1.2, c - 1.2, c)
+
+class AtrCeilingTest(unittest.TestCase):
+    """The ATR ceiling was raised 0.25% -> 1.00%: it was refusing real moves.
+
+    The owner watched the desk stand aside through a clean sell-off. The band
+    sweep says 0.25% was too tight: 1.00% doubles the trades (1142 -> 2386) for
+    +57% net at the same quality, and it still beats NO ceiling (2031$), because
+    the >1% band is the one that loses (-$212 over 117 trades).
+    """
+
+    def test_the_ceiling_is_one_percent(self):
+        self.assertEqual(bot.ATR_MAX_PCT, 0.0100)
+
+    def test_a_calm_trend_is_no_longer_blocked_by_atr(self):
+        # A gentle rise holds ATR% near the old ceiling's edge; the new one must
+        # let it through instead of turning a tradable move into "wait".
+        closes = [4000 + i * 0.4 for i in range(140)]
+        bars = [_bar(_iso(i), c, c + 2.0, c - 2.0, c)
                 for i, c in enumerate(closes)]
         fs = bot.filter_status("long", bars)
-        adx = fs["readings"]["adx"]
-        self.assertIsNotNone(adx)
-        self.assertGreater(adx, 40.0)          # above the old ceiling
-        self.assertNotIn("ADX", fs["failed"])  # but inside the new one
+        atr_pct = fs["readings"]["atr_pct"]
+        self.assertIsNotNone(atr_pct)
+        self.assertLessEqual(atr_pct, bot.ATR_MAX_PCT)
+        self.assertNotIn("ATR", fs["failed"])
 
 
 if __name__ == "__main__":

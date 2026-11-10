@@ -90,11 +90,14 @@ TREND_FILTER_TF = "15m"          # the frame whose EMA20 the entry must respect
 FILTERS_ON = os.environ.get("DESK_FILTERS", "1").strip().lower() not in \
     ("0", "off", "no", "false")
 ADX_MIN, ADX_MAX = 20.0, 60.0    # ride a trend, but not an extended one
-# The ceiling was 40. Measured on the 251-day sample, the trades the ADX ceiling
-# alone blocked made +$0.85 each -- a rising ceiling keeps them, and the sweep
-# showed 40->60 both raises net (+$14 -> +$22) and cuts the drawdown. The ATR
-# ceiling stays: the trades IT blocked made -$0.21 each, so it earns its keep.
-ATR_MIN_PCT, ATR_MAX_PCT = 0.0008, 0.0025   # 0.08%-0.25% of price: alive, calm
+# The ADX ceiling was 40; measured on the 251-day sample the trades it alone
+# blocked made +$0.85 each, so 60 keeps them (net +$14 -> +$22, smaller drawdown).
+# The ATR ceiling was 0.25%, and the sweep says that was too tight: raising it to
+# 1.00% doubles the trades (1142 -> 2386) for +57% net, at the same quality --
+# and 1.00% still beats NO ceiling (2031$), because the >1% band is the one that
+# loses (-$212 over 117 trades). The stop stays at $9: widening it lifts the win
+# rate (37% -> 47%) but cuts net, so the tight stop is not what these trades lose.
+ATR_MIN_PCT, ATR_MAX_PCT = 0.0008, 0.0100   # 0.08%-1.00% of price: alive, calm
 RSI_LONG = (35.0, 58.0)          # a long is a pullback, not a chase
 RSI_SHORT = (42.0, 65.0)         # the short mirror
 # Which gates are live. Default "adx,atr": the two that helped on BOTH the
