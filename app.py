@@ -62,7 +62,13 @@ class Health(BaseHTTPRequestHandler):
                 trades = -1
             self._send(200, {"status": "ok",
                              "uptime_s": int(time.time() - STARTED),
-                             "open_trades": trades})
+                             "open_trades": trades,
+                             # Render injects the running commit; the level
+                             # count is a second fingerprint (the owner's two
+                             # levels made it 11, it was 9 before).
+                             "commit": (os.environ.get("RENDER_GIT_COMMIT")
+                                        or "unknown")[:7],
+                             "levels": len(desk.WATCH_LEVELS)})
         else:
             self._send(404, {"error": "not found"})
 
