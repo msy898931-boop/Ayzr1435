@@ -2443,36 +2443,68 @@ def card_full() -> str:
     return "\n".join(L)
 
 
+def _study_edge() -> dict | None:
+    """Measure the desk's timing edge and calibration on the 2026 replay.
+
+    DEV/VALIDATION ONLY -- the owner keeps study numbers off the live cards, so
+    this feeds `--score`, never a market card. Returns None when the engine or
+    its data is missing, so the score says 'unmeasured' rather than guessing.
+
+    edge = the t-stat of the mean R over the replay (a timing edge needs t >= 2;
+    a t near 1 is indistinguishable from luck). calibration = the win rate vs
+    the break-even win rate implied by the reward:risk ratio.
+    """
+    try:
+        here = Path(__file__).resolve().parent
+        sys.path.insert(0, str(here / "backtest"))
+        import bot2026  # type: ignore[import-not-found]
+        trades, _ = bot2026.simulate()
+        rr = float(bot2026.RR)
+    except Exception:  # noqa: BLE001 - a missing study must not break the score
+        return None
+    closed = [t for t in trades if t.get("result")]
+    n = len(closed)
+    if n < 30:
+        return None
+    rs = [float(t["R"]) for t in closed]
+    mean = sum(rs) / n
+    var = sum((r - mean) ** 2 for r in rs) / (n - 1)
+    sd = var ** 0.5
+    tstat = mean / (sd / n ** 0.5) if sd else 0.0
+    wins = sum(1 for t in closed if t["result"] == "target")
+    return {"n": n, "mean": mean, "t": tstat,
+            "win": wins / n, "be": 1.0 / (1.0 + rr)}
+
+
 def card_score() -> str:
     """Grade the card by MEASURING it -- never by opinion.
 
     The lesson from the map and the acceptance work: a score the author gives
     his own work is decoration. So every point below is a computation over the
-    rendered card and the live tape, printed with the number it measured. Two
-    rows are OUTCOME rows (edge, calibration): this market has no timing edge
-    and the desk is not calibrated, and saying so IS the criterion -- they do
-    not fail the command, because a gate that goes red for a true market fact
-    is a gate people learn to ignore.
+    rendered card, printed with the number it measured. The /100 is the CARD's
+    build quality -- all structural. The two market facts (timing edge,
+    calibration) are MEASURED and printed BELOW the score as information, not
+    as points: the card can be perfect while the edge is not proven, and mixing
+    the two would let a good layout hide a market fact.
     """
     m = read_market()
     live = m["live"]
     card = card_full()
     plain = re.sub(r"<[^>]+>", "", card)
 
-    rows: list[tuple[str, float, float, bool]] = []  # name, got, max, gate
+    rows: list[tuple[str, float, float]] = []  # name, got, max
 
     # -- 1. inside Telegram's hard limit (4096). A card that cannot be sent
-    #       scores nothing else. -------------------------------------------------
+    #       scores nothing else. ----------------------------------------------
     n = len(card)
-    rows.append(("الحجم ≤ 4096", 20 if n <= 4096 else 0, 20, True))
-    rows.append((f"  (الطول {n})", 0, 0, False))
+    rows.append((f"الحجم ≤ 4096 (الطول {n})", 20 if n <= 4096 else 0, 20))
 
     # -- 2. every promised section is present --------------------------------
     want = ["قراءتي للذهب", "موقفي", "الصورة", "الفريمات", "الزخم", "البنية",
             "المستويات", "السيناريوهات", "خطتي", "حسابك"]
     miss = [w for w in want if w not in plain]
     rows.append((f"الأقسام ({len(want) - len(miss)}/{len(want)})",
-                 15 * (len(want) - len(miss)) / len(want), 15, True))
+                 20 * (len(want) - len(miss)) / len(want), 20))
 
     # -- 3. DUPLICATION: a number printed twice is padding. Count how many of
     #       the swing numbers also appear in the levels block. ----------------
@@ -2485,14 +2517,14 @@ def card_score() -> str:
     dup = sum(1 for x in sw if any(abs(x - y) <= 2.0 for y in lev))
     dup_pct = (dup / len(sw)) if sw else 0.0
     rows.append((f"تكرار القمم/القيعان ({dup}/{len(sw)})",
-                 15 * (1 - dup_pct), 15, True))
+                 15 * (1 - dup_pct), 15))
 
     # -- 4. SCENARIOS: A, B, C present, and B/C must be told apart (a touch vs
     #       a close). The owner's own defect report. --------------------------
     sc = plain.split("السيناريوهات")[-1].split("خطتي")[0]
     sc_ok = (("A" in sc and "B" in sc and "C" in sc)
              and "يلمس" in sc and "إغلاق 1س" in sc)
-    rows.append(("السيناريوهات A/B/C واضحة", 15 if sc_ok else 0, 15, True))
+    rows.append(("السيناريوهات A/B/C واضحة", 15 if sc_ok else 0, 15))
 
     # -- 5. HONESTY: no invented probability, the invalidation line is there,
     #       and any win-rate line names its SOURCE (باكتست or his own). --------
@@ -2505,7 +2537,7 @@ def card_score() -> str:
         honest += 1
     if "مو وعد ربح" in plain:
         honest += 1
-    rows.append((f"الصدق ({honest}/4)", 10 * honest / 4, 10, True))
+    rows.append((f"الصدق ({honest}/4)", 15 * honest / 4, 15))
 
     # -- 6. SIZED PLAN: at least two entries, each with a stop and a target,
     #       and the account block. -------------------------------------------
@@ -2514,29 +2546,39 @@ def card_score() -> str:
     n_tgt = plan.count("هدف")
     plan_ok = (n_stop >= 2 and n_tgt >= 2 and "حسابك" in plan and "R:R" in plan)
     rows.append((f"الخطة مسعّرة (وقف {n_stop} · هدف {n_tgt})",
-                 15 if plan_ok else 0, 15, True))
-
-    # -- 7. OUTCOME rows (do NOT fail the command) ---------------------------
-    rows.append(("الحافة الزمنية (خارج البطاقة)", 0, 5, False))
-    rows.append(("المعايرة (خارج البطاقة)", 0, 5, False))
+                 15 if plan_ok else 0, 15))
 
     got = sum(r[1] for r in rows)
     mx = sum(r[2] for r in rows)
-    L = [f"🧮 <b>تقييم الزر — قياس مو رأي</b>",
+    L = ["🧮 <b>تقييم الزر — قياس مو رأي</b>",
          f"السعر <b>{num(live)}</b> · الطول <b>{n}</b>/4096", ""]
-    for name, g, x, gate in rows:
-        if x == 0:
-            L.append(f"  <i>{name}</i>")
-            continue
-        mark = "✅" if g >= x else ("🟠" if not gate else "❌")
+    for name, g, x in rows:
+        mark = "✅" if g >= x else "❌"
         L.append(f"  {mark} {name}: <b>{g:.0f}</b>/{x:.0f}")
     L.append("")
-    L.append(f"  🎯 <b>المجموع: {got:.0f} / {mx:.0f}</b>")
-    L.append("  <i>كل نقطة محسوبة من البطاقة والسوق الحيّ — مو رأيي.</i>")
+    L.append(f"  🎯 <b>بناء البطاقة: {got:.0f} / {mx:.0f}</b>")
     if miss:
         L.append(f"  ⚠️ ناقص: {' · '.join(miss)}")
     if dup:
         L.append(f"  ⚠️ {dup} رقم مكرر بالمحاور.")
+    L.append("  <i>كل نقطة محسوبة من البطاقة — مو رأيي.</i>")
+
+    # -- the two market facts, measured, printed as INFORMATION (not points) --
+    L.append("")
+    L.append("<b>🔬 حقائق السوق (قياس، مو من الـ100):</b>")
+    st = _study_edge()
+    if st is None:
+        L.append("  ⚪ الحافة/المعايرة: ما في بيانات دراسة هلّق.")
+    else:
+        t = st["t"]
+        verdict = ("معنوية ✅" if t >= 2 else
+                   "قريبة (تحتاج t≥2) 🟠" if t >= 1 else "غير معنوية ❌")
+        L.append(f"  🔵 الحافة الزمنية: t=<b>{t:+.2f}</b> على {st['n']} صفقة "
+                 f"· متوسط {st['mean']:+.3f}R → <b>{verdict}</b>")
+        gap = (st["win"] - st["be"]) * 100
+        L.append(f"  🔵 المعايرة: فوز {st['win']:.1%} مقابل تعادل "
+                 f"{st['be']:.1%} → فرق <b>{gap:+.1f}</b> نقطة")
+        L.append("  <i>الحافة تحتاج t≥2 · وهاد رقم دراسة (2026) — مو رقمك.</i>")
     return "\n".join(L)
 
 

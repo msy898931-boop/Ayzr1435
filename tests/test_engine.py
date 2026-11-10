@@ -922,16 +922,21 @@ class FullCardTest(unittest.TestCase):
         # The score is a computation over the rendered card: it must name the
         # numbers it measured, and it must not award full marks while a defect
         # (a duplicated swing) is present in the card it just read.
-        self.assertIn("المجموع", s)
+        self.assertIn("بناء البطاقة", s)
         self.assertIn("تكرار", s)
         import re as _re
-        m = _re.search(r"المجموع: (\d+) / (\d+)", s)
+        m = _re.search(r"بناء البطاقة: (\d+) / (\d+)", s)
         self.assertIsNotNone(m)
         assert m is not None
         self.assertLessEqual(int(m.group(1)), int(m.group(2)))
-        # The gate rows are structural and must all pass on a healthy card.
+        # The structural rows must all pass on a healthy card.
         self.assertNotIn("❌", s)
         self.assertIn("خطتي", plain)
+        # The market facts are measured and printed BELOW the score, not mixed
+        # into it: a perfect layout must never hide the edge reading.
+        self.assertIn("حقائق السوق", s)
+        self.assertIn("الحافة الزمنية", s)
+        self.assertIn("المعايرة", s)
 
     def test_it_gives_a_concrete_call(self):
         with self._feed():
