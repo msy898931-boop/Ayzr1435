@@ -26,6 +26,14 @@ services:
         sync: false
       - key: DESK_SYMBOL
         value: XAUUSD
+      # The combo quality gate is ON by default: ADX 20-40 + ATR 0.08-0.25% on
+      # the 15m frame. Set DESK_FILTERS=0 to fall back to the raw frame tilt
+      # (much noisier), or DESK_FILTER_GATES=adx,atr,macd,rsi to add the two
+      # momentum gates the futures study used (they cost money on this bot).
+      # - key: DESK_FILTERS
+      #   value: "1"
+      # - key: DESK_FILTER_GATES
+      #   value: "adx,atr"
       # Optional: the chat that holds the pinned journal backup. Defaults to the
       # first allowed chat, so it normally needs no value.
       # - key: DESK_BACKUP_CHAT

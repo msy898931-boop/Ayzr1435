@@ -39,11 +39,11 @@ curl -s https://marketdesk-1o4g.onrender.com/health
 The checks that exist, and that must stay green:
 
 ```bash
-python3 -m unittest discover -s tests    # 27 tests, offline, no network
+python3 -m unittest discover -s tests    # 42 tests, offline, no network
 python3 -m py_compile bot.py             # syntax
 python3 bot.py --selftest                # token, quote, every frame, every card (needs network)
 python3 -m ruff check bot.py             # baseline: 16 findings, no new ones
-python3 -m mypy bot.py                   # baseline: 2 findings, no new ones
+python3 -m mypy bot.py                   # baseline: 3 findings, no new ones
 ```
 
 `tests/` stubs `quote`/`bars`, so it runs anywhere and pins the rules that

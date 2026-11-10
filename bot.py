@@ -80,6 +80,26 @@ MAX_OPEN = 1                     # one trade at a time (raise to 2 to stack)
 # blocked every loser (#7-9); the 30m version let a loser through, so the
 # filter is pinned to 15m. Set to False to disable and take raw frame tilt.
 TREND_FILTER_TF = "15m"          # the frame whose EMA20 the entry must respect
+# The quality gate (the "combo" filters), read on the 15m frame. A raw frame
+# tilt takes far too many trades (measured on 2026: 2702 trades, 33.9% win,
+# -55R drawdown); these four gates cut that to the good ones and lift the win
+# rate above 40%. Each gate FAILS OPEN when its reading is missing, so a
+# broken feed degrades to the old behaviour instead of silencing the desk.
+FILTERS_ON = os.environ.get("DESK_FILTERS", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
+ADX_MIN, ADX_MAX = 20.0, 40.0    # ride a trend, but not an extended one
+ATR_MIN_PCT, ATR_MAX_PCT = 0.0008, 0.0025   # 0.08%-0.25% of price: alive, calm
+RSI_LONG = (35.0, 58.0)          # a long is a pullback, not a chase
+RSI_SHORT = (42.0, 65.0)         # the short mirror
+# Which gates are live. Default "adx,atr": the two that helped on BOTH the
+# futures study and the bot's own 6-frame replay. MACD and RSI sit in the
+# validated futures combo but measured redundant-to-harmful here -- the 6-frame
+# agreement is already a trend filter, so a second momentum gate only cuts the
+# trades that pay (2026: full four-gate combo +32R vs adx+atr alone +71R, and
+# RSI alone dragged it to +13R). Add them with DESK_FILTER_GATES=adx,atr,macd,rsi.
+FILTER_GATES = {g.strip().lower() for g in os.environ.get(
+    "DESK_FILTER_GATES", "adx,atr").split(",") if g.strip()}
+DEFAULT_GATES = {"adx", "atr"}
 # The support watch: the desk's own nearest support (from _levels) gets a
 # dedicated heads-up -- approaching, bounced, or broken -- so the owner hears
 # about the level he cares about, not only when a whole plan appears.
@@ -341,6 +361,32 @@ def bars(tf: str, limit: int = 300) -> list[dict]:
     return sorted(out, key=lambda x: x["openTime"])
 
 
+TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+              "1h": 3600, "4h": 14400, "1d": 86400}
+
+
+def closed(b: list[dict], tf: str) -> list[dict]:
+    """Drop the bar still forming: its close repaints as the bar fills.
+
+    A filter that reads the live bar is reading the future -- the backtest that
+    used it measured +58R, but on the last CLOSED bar the same rule is +25R. The
+    decision surfaces read closed bars only; the raw frame tilt (a direction,
+    not a level) is left as it was.
+    """
+    if not b:
+        return b
+    dur = TF_SECONDS.get(tf)
+    if not dur:
+        return b
+    try:
+        last = datetime.fromisoformat(b[-1]["openTime"])
+    except (ValueError, KeyError):
+        return b
+    if (datetime.now(UTC) - last).total_seconds() < dur:
+        return b[:-1]
+    return b
+
+
 # ========================================================================
 # indicators (pure stdlib)
 # ========================================================================
@@ -386,6 +432,82 @@ def rsi(vals: list[float], n: int = 14):
     if al == 0:
         return 100.0
     return 100.0 - 100.0 / (1.0 + ag / al)
+
+
+def ema_series(vals: list[float], n: int) -> list[float | None]:
+    """EMA over the whole series, aligned to `vals` (None before it warms up)."""
+    out: list[float | None] = [None] * len(vals)
+    if len(vals) < n:
+        return out
+    k = 2 / (n + 1)
+    e = sum(vals[:n]) / n
+    out[n - 1] = e
+    for i in range(n, len(vals)):
+        e = vals[i] * k + e * (1 - k)
+        out[i] = e
+    return out
+
+
+def macd_hist_series(b: list[dict]) -> list[float | None]:
+    """MACD histogram (12/26/9): EMA12 - EMA26, minus its own EMA9 signal."""
+    cl = [x["close"] for x in b]
+    ef, es = ema_series(cl, 12), ema_series(cl, 26)
+    line: list[float | None] = []
+    for i in range(len(cl)):
+        a, c = ef[i], es[i]
+        line.append(None if (a is None or c is None) else a - c)
+    sig = ema_series([x if x is not None else 0.0 for x in line], 9)
+    hist: list[float | None] = []
+    for i in range(len(cl)):
+        a, c = line[i], sig[i]
+        hist.append(None if (a is None or c is None) else a - c)
+    return hist
+
+
+def adx_series(b: list[dict], n: int = 14) -> list[float | None]:
+    """Wilder's ADX: trend STRENGTH 0-100, no direction.
+
+    A gate on this is what keeps the desk out of chop: below ~20 the tape has
+    no trend to ride, above ~40 the move is already extended and a pullback
+    entry is buying the top.
+    """
+    if len(b) < 2 * n + 1:
+        return [None] * len(b)
+    plus, minus, trs = [0.0], [0.0], [0.0]
+    for i in range(1, len(b)):
+        up = b[i]["high"] - b[i - 1]["high"]
+        dn = b[i - 1]["low"] - b[i]["low"]
+        plus.append(up if (up > dn and up > 0) else 0.0)
+        minus.append(dn if (dn > up and dn > 0) else 0.0)
+        h, lo, pc = b[i]["high"], b[i]["low"], b[i - 1]["close"]
+        trs.append(max(h - lo, abs(h - pc), abs(lo - pc)))
+
+    def wilder(vals: list[float]) -> list[float | None]:
+        out: list[float | None] = [None] * len(vals)
+        s = sum(vals[1:n + 1])
+        out[n] = s
+        for i in range(n + 1, len(vals)):
+            s = s - s / n + vals[i]
+            out[i] = s
+        return out
+
+    atr_w, pdm, mdm = wilder(trs), wilder(plus), wilder(minus)
+    dx: list[float | None] = [None] * len(b)
+    for i in range(len(b)):
+        a, p, m = atr_w[i], pdm[i], mdm[i]
+        if a and p is not None and m is not None:
+            pdi = 100 * p / a if a else 0.0
+            mdi = 100 * m / a if a else 0.0
+            dx[i] = 100 * abs(pdi - mdi) / (pdi + mdi) if (pdi + mdi) else 0.0
+    out: list[float | None] = [None] * len(b)
+    if dx[n] is not None:
+        out[n] = dx[n]
+        for i in range(n + 1, len(b)):
+            prev, cur = out[i - 1], dx[i]
+            if cur is None or prev is None:
+                continue
+            out[i] = (prev * (n - 1) + cur) / n
+    return out
 
 
 def pivots(b: list[dict], left: int = 3, right: int = 3):
@@ -553,12 +675,24 @@ def _verdict(m: dict) -> dict:
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
     lean, mark = _bias(trends)
     try:
-        b = bars(TREND_FILTER_TF, 300)
-        e = ema([x["close"] for x in b], 20)
+        b15 = closed(bars(TREND_FILTER_TF, 300), TREND_FILTER_TF)
+        e = ema([x["close"] for x in b15], 20)
     except Exception:  # noqa: BLE001 - the filter is a guard, not a blocker
-        e = None
+        b15, e = [], None
+    # Why no plan? The frames may agree yet a quality gate (or the EMA20) may
+    # hold the trade back -- name the blocker so the desk never looks broken.
+    blocked = None
+    direction = "long" if up >= CONFIRM_FRAMES else \
+        ("short" if dn >= CONFIRM_FRAMES else None)
+    if direction and FILTERS_ON:
+        fs = filter_status(direction, b15)
+        if not fs["ok"]:
+            blocked = _filter_line(fs)
+        elif e is not None and not frame_agrees(direction, m["live"], b15):
+            blocked = f"فلتر EMA20 ({TREND_FILTER_TF})"
     return {"state": "wait", "up": up, "dn": dn, "ema": e,
-            "lean": lean, "mark": mark}
+            "lean": lean, "mark": mark, "blocked": blocked,
+            "direction": direction}
 
 
 def _headline(v: dict) -> str:
@@ -575,6 +709,9 @@ def _headline(v: dict) -> str:
         d = "شراء" if p["direction"] == "long" else "بيع"
         return (f"🟢 ادخل {d} — دخول {num(p['entry'])} · "
                 f"وقف {num(p['stop'])} · هدف {num(p['target'])}")
+    if v.get("blocked"):
+        way = "صاعد" if v.get("direction") == "long" else "هابط"
+        return f"⏸️ استنى — الاتجاه {way} بس الفلتر مانع ({v['blocked']})"
     if v["up"] >= CONFIRM_FRAMES:
         return "⏸️ استنى — الاتجاه صاعد بس السعر تحت الفلتر"
     if v["dn"] >= CONFIRM_FRAMES:
@@ -596,6 +733,10 @@ def _verdict_detail(v: dict) -> str:
         return (f"✅ صفقة جاهزة — {d} · دخول {num(p['entry'])} · "
                 f"وقف {num(p['stop'])} · هدف {num(p['target'])} · "
                 f"R:R {p['rr']:.2f}")
+    if v.get("blocked"):
+        way = "صاعد" if v.get("direction") == "long" else "هابط"
+        return (f"⏸️ الاتجاه <b>{way}</b> بس <b>فلتر الجودة مانع</b>: "
+                f"{v['blocked']}. المكتب ما ياخد إلا الصفقات النظيفة.")
     if v["up"] >= CONFIRM_FRAMES:
         return (f"⏸️ الاتجاه <b>صاعد</b> ({v['up']}/6) بس الفلتر مو موافق — "
                 "استنى التأكيد.")
@@ -664,14 +805,33 @@ def card_analysis() -> str:
 
     # ---- the desk's own gate --------------------------------------------
     try:
-        bf = bars(TREND_FILTER_TF, 300)
-        ef = ema([x["close"] for x in bf], 20)
+        b15f = closed(bars(TREND_FILTER_TF, 300), TREND_FILTER_TF)
+        ef = ema([x["close"] for x in b15f], 20)
     except Exception:  # noqa: BLE001
-        ef = None
+        b15f, ef = [], None
     if ef is not None:
         pos = "فوق ✅" if live > ef else "تحت ⬇️"
         lines.append(f"فلتر EMA20 ({names[TREND_FILTER_TF]}): السعر {pos} "
                      f"({num(ef)})")
+
+    # ---- the quality gate (the combo filters) ---------------------------
+    if FILTERS_ON:
+        r = filter_status("long", b15f)["readings"]
+
+        def _fmt(v, dp, suf=""):
+            return f"{v:.{dp}f}{suf}" if isinstance(v, (int, float)) else "—"
+
+        adx_v, atr_p, rsi_v, macd_v = (r["adx"], r["atr_pct"],
+                                       r["rsi"], r["macd_hist"])
+        adx_ok = "✅" if (adx_v is None or ADX_MIN <= adx_v <= ADX_MAX) else "❌"
+        atr_ok = "✅" if (atr_p is None
+                         or ATR_MIN_PCT <= atr_p <= ATR_MAX_PCT) else "❌"
+        macd_ico = "📈" if (macd_v or 0) > 0 else "📉"
+        lines.append(f"فلتر الجودة: ADX {_fmt(adx_v, 0)} {adx_ok} · "
+                     f"ATR {_fmt(atr_p * 100 if atr_p else None, 2, '%')} "
+                     f"{atr_ok}")
+        lines.append(f"  RSI {_fmt(rsi_v, 0)} · MACD hist "
+                     f"{_fmt(macd_v, 2)} {macd_ico}")
 
     # ---- structure: are the swings making higher highs / lower lows? -----
     struct = _structure_read()
@@ -793,7 +953,8 @@ def _sized(entry: float, direction: str, stop_level: float | None) -> dict:
             "risk_pts": risk_usd / POINT_VALUE, "gain_usd": gain_usd}
 
 
-def frame_agrees(direction: str, live: float) -> bool:
+def frame_agrees(direction: str, live: float,
+                 b15: list[dict] | None = None) -> bool:
     """Does the live price agree with `direction` on the filter frame?
 
     A long wants price ABOVE the frame's EMA20, a short BELOW it. A missing
@@ -803,13 +964,78 @@ def frame_agrees(direction: str, live: float) -> bool:
     if not TREND_FILTER_TF:
         return True
     try:
-        b = bars(TREND_FILTER_TF, 300)
+        b = b15 if b15 is not None else bars(TREND_FILTER_TF, 300)
+        b = closed(b, TREND_FILTER_TF)
         e = ema([x["close"] for x in b], 20)
         if e is None:
             return True
         return live > e if direction == "long" else live < e
     except Exception:  # noqa: BLE001
         return True
+
+
+def filter_status(direction: str, b15: list[dict] | None = None) -> dict:
+    """The combo's quality gate, read once on the 15m frame.
+
+    Four independent gates, all of which must pass for a plan to be worth
+    stating: ADX in a trend band (not chop, not extended), ATR inside a
+    volatility band (alive but not wild), MACD histogram turning the entry's
+    way, and RSI in a pullback band (a long is a dip, not a chase). Every gate
+    fails OPEN when its reading is missing -- the gate is a quality filter, and
+    a filter that fails closed is a desk that goes silent on a data blip.
+
+    Returns {"ok", "failed", "readings"} so a card can show the owner exactly
+    which gate held a trade back, and by how much.
+    """
+    try:
+        b = b15 if b15 is not None else bars("15m", 300)
+    except Exception:  # noqa: BLE001 - a broken feed must not silence the desk
+        b = []
+    b = closed(b, "15m")
+    live = b[-1]["close"] if b else 0.0
+    rsi_v = rsi([x["close"] for x in b]) if b else None
+    atr_v = atr(b) if b else None
+    adx_v = adx_series(b)[-1] if b else None
+    hist = macd_hist_series(b)
+    h, hp = (hist[-1], hist[-2]) if len(hist) >= 2 else (None, None)
+    lo, hi = RSI_LONG if direction == "long" else RSI_SHORT
+    atr_pct = (atr_v / live) if (atr_v and live > 0) else None
+
+    gates = {
+        "ADX": "adx" not in FILTER_GATES
+        or adx_v is None or ADX_MIN <= adx_v <= ADX_MAX,
+        "ATR": "atr" not in FILTER_GATES
+        or atr_pct is None or ATR_MIN_PCT <= atr_pct <= ATR_MAX_PCT,
+        "MACD": "macd" not in FILTER_GATES
+        or h is None or hp is None or (h > hp if direction == "long"
+                                       else h < hp),
+        "RSI": "rsi" not in FILTER_GATES
+        or rsi_v is None or lo <= rsi_v <= hi,
+    }
+    readings = {"rsi": rsi_v, "adx": adx_v, "atr_pct": atr_pct,
+                "macd_hist": h, "macd_prev": hp}
+    return {"ok": all(gates.values()),
+            "failed": [k for k, v in gates.items() if not v],
+            "readings": readings}
+
+
+def _filter_line(fs: dict) -> str:
+    """One owner-facing line naming the gate that held a trade back."""
+    r = fs["readings"]
+    names = {"ADX": "ADX (قوة الاتجاه)", "ATR": "ATR (التقلب)",
+             "MACD": "MACD (الزخم)", "RSI": "RSI (التشبّع)"}
+    parts = []
+    for k in fs["failed"][:2]:
+        v = r.get({"ADX": "adx", "ATR": "atr_pct", "MACD": "macd_hist",
+                   "RSI": "rsi"}[k])
+        if k == "ATR" and v is not None:
+            shown = f"{v*100:.2f}%"
+        elif v is None:
+            shown = "—"
+        else:
+            shown = f"{v:.0f}" if k != "MACD" else f"{v:+.2f}"
+        parts.append(f"{names[k]} {shown}")
+    return " · ".join(parts)
 
 
 def plan(m: dict | None = None) -> dict | None:
@@ -841,10 +1067,27 @@ def plan(m: dict | None = None) -> dict | None:
         p["up"], p["dn"] = up, dn
         p["strong"] = (up if direction == "long" else dn) >= STRONG_FRAMES
         return p
-    if up >= CONFIRM_FRAMES and frame_agrees("long", live):
-        return sized("long")
-    if dn >= CONFIRM_FRAMES and frame_agrees("short", live):
-        return sized("short")
+
+    try:
+        b15 = bars(TREND_FILTER_TF, 300) if TREND_FILTER_TF else None
+    except Exception:  # noqa: BLE001 - a broken feed must not kill the plan
+        b15 = None
+
+    def gated(direction: str) -> dict | None:
+        if not frame_agrees(direction, live, b15):
+            return None
+        if FILTERS_ON and not filter_status(direction, b15)["ok"]:
+            return None
+        return sized(direction)
+
+    if up >= CONFIRM_FRAMES:
+        p = gated("long")
+        if p is not None:
+            return p
+    if dn >= CONFIRM_FRAMES:
+        p = gated("short")
+        if p is not None:
+            return p
     return None
 
 
@@ -859,25 +1102,35 @@ def _plan_lines(p: dict) -> list[str]:
 
 
 def card_recommend() -> str:
-    p = plan()
+    m = read_market()
+    p = plan(m)
     if p is None:
-        m = read_market()
         if not market_open(m["q"]):
             return ("🎯 <b>التوصية</b> — XAUUSD\n<b>لا صفقة</b> — السوق مسكّر.\n\n"
                     "<i>المكتب ما يعطي إشارة على سعر ميت.</i>")
         lean, mark = _bias(m["trends"])
         up = sum(1 for tf in FRAMES if m["trends"].get(tf) == 1)
         dn = sum(1 for tf in FRAMES if m["trends"].get(tf) == -1)
-        if up >= CONFIRM_FRAMES and not frame_agrees("long", m["live"]):
-            return ("🎯 <b>التوصية</b> — XAUUSD\n"
-                    "<b>لا صفقة</b> — الاتجاه صاعد بس السعر تحت "
-                    f"EMA20 ({TREND_FILTER_TF}).\n"
-                    "<i>المكتب ما يشتري والزخم القصير هابط — استنى يرجع فوق.</i>")
-        if dn >= CONFIRM_FRAMES and not frame_agrees("short", m["live"]):
-            return ("🎯 <b>التوصية</b> — XAUUSD\n"
-                    "<b>لا صفقة</b> — الاتجاه هابط بس السعر فوق "
-                    f"EMA20 ({TREND_FILTER_TF}).\n"
-                    "<i>المكتب ما يبيع والزخم القصير صاعد — استنى يرجع تحت.</i>")
+        if up >= CONFIRM_FRAMES or dn >= CONFIRM_FRAMES:
+            direction = "long" if up >= CONFIRM_FRAMES else "short"
+            way = "صاعد" if direction == "long" else "هابط"
+            try:
+                b15 = bars(TREND_FILTER_TF, 300)
+            except Exception:  # noqa: BLE001
+                b15 = []
+            if FILTERS_ON:
+                fs = filter_status(direction, b15)
+                if not fs["ok"]:
+                    return ("🎯 <b>التوصية</b> — XAUUSD\n"
+                            f"<b>لا صفقة</b> — الاتجاه {way} بس <b>فلتر "
+                            f"الجودة مانع</b>:\n{_filter_line(fs)}\n\n"
+                            "<i>المكتب ما ياخد إلا الصفقات النظيفة.</i>")
+            if not frame_agrees(direction, m["live"], b15):
+                return ("🎯 <b>التوصية</b> — XAUUSD\n"
+                        f"<b>لا صفقة</b> — الاتجاه {way} بس السعر "
+                        f"{'تحت' if direction == 'long' else 'فوق'} "
+                        f"EMA20 ({TREND_FILTER_TF}).\n"
+                        "<i>المكتب ما ياخد عكس الزخم القصير — استنى يرجع.</i>")
         return ("🎯 <b>التوصية</b> — XAUUSD\n"
                 f"<b>لا صفقة</b> — الفريمات ما اتفقت "
                 f"({CONFIRM_FRAMES}/6 مطلوبة).\n"
@@ -1346,7 +1599,11 @@ def card_action() -> str:
     tf_ar = {"1d": "يومي", "4h": "4س", "1h": "1س", "30m": "30د",
              "15m": "15د", "5m": "5د"}.get(TREND_FILTER_TF, TREND_FILTER_TF)
     e = v["ema"]
-    if v["up"] >= CONFIRM_FRAMES:
+    if v.get("blocked"):
+        way = "صاعد" if v.get("direction") == "long" else "هابط"
+        why = f"الاتجاه {way}، بس فلتر الجودة مانع: {v['blocked']}."
+        todo = ("⏸️ <b>استنى</b> يتحسّن الفلتر (اتجاه واضح + زخم مؤيد).")
+    elif v["up"] >= CONFIRM_FRAMES:
         why = ("الاتجاه صاعد، بس السعر تحت EMA20 "
                f"({tf_ar}) — الدخول عكس الزخم.")
         todo = (f"⏸️ <b>استنى</b> شمعة {tf_ar} تسكّر فوق "

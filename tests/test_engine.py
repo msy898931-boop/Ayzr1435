@@ -111,19 +111,125 @@ class PlanGateTest(unittest.TestCase):
             self.assertIsNone(bot.plan())
 
     def test_a_confirmed_long_with_the_filter_passes(self):
+        # The frame tilt + EMA20 rule in isolation: the quality gate is turned
+        # off here so this test pins ONE rule (the gate has its own tests).
         rising = list(range(4000, 4060))
         closes = {tf: rising for tf in bot.FRAMES}
-        with FakeFeed(mid=4059.0, closes=closes):
-            p = bot.plan()
-            self.assertIsNotNone(p)
-            self.assertEqual(p["direction"], "long")
-            self.assertEqual(p["up"], len(bot.FRAMES))
+        saved = bot.FILTERS_ON
+        bot.FILTERS_ON = False
+        try:
+            with FakeFeed(mid=4059.0, closes=closes):
+                p = bot.plan()
+                self.assertIsNotNone(p)
+                self.assertEqual(p["direction"], "long")
+                self.assertEqual(p["up"], len(bot.FRAMES))
+        finally:
+            bot.FILTERS_ON = saved
 
     def test_frame_agrees_fails_open_on_a_missing_frame(self):
         # A broken feed must not stop the desk trading entirely: the filter is a
         # guard, and a guard that fails closed is a desk that goes silent.
         with FakeFeed(closes={"15m": []}):
             self.assertTrue(bot.frame_agrees("long", 1.0))
+
+
+class FilterStatusTest(unittest.TestCase):
+    """The combo's quality gate: four bands on the 15m frame. Every gate fails
+    OPEN on a missing reading, the default set is the two that paid (adx+atr),
+    and the gate as a whole must block a plan its own bands would refuse."""
+
+    def setUp(self):
+        self._gates = bot.FILTER_GATES
+        bot.FILTER_GATES = {"adx", "atr", "macd", "rsi"}
+
+    def tearDown(self):
+        bot.FILTER_GATES = self._gates
+
+    def _bars(self, closes, spread=0.0):
+        out = []
+        for i, c in enumerate(closes):
+            out.append({"openTime": _iso(i), "open": c, "high": c + spread,
+                        "low": c - spread, "close": c, "isOpen": False})
+        return out
+
+    def test_missing_frame_fails_open(self):
+        fs = bot.filter_status("long", [])
+        self.assertTrue(fs["ok"])
+        self.assertEqual(fs["failed"], [])
+
+    def test_default_gate_set_is_adx_and_atr(self):
+        # The two that helped on both the study and the bot's own replay.
+        self.assertEqual(bot.DEFAULT_GATES, {"adx", "atr"})
+
+    def test_a_disabled_gate_never_blocks(self):
+        bot.FILTER_GATES = {"adx"}
+        # A relentless rise pins RSI high and the MACD histogram flat, but with
+        # only ADX live neither can hold the trade back.
+        closes = [4000 * (1.01 ** i) for i in range(120)]
+        fs = bot.filter_status("long", self._bars(closes, spread=0.5))
+        self.assertNotIn("RSI", fs["failed"])
+        self.assertNotIn("MACD", fs["failed"])
+
+    def test_a_strong_trend_passes_the_adx_band(self):
+        # A clean staircase: ADX well above 20, ATR% inside the band.
+        closes = [4000 + i * 2 for i in range(120)]
+        fs = bot.filter_status("long", self._bars(closes, spread=1.5))
+        self.assertIsNotNone(fs["readings"]["adx"])
+        self.assertGreaterEqual(fs["readings"]["adx"], bot.ADX_MIN)
+
+    def test_rsi_out_of_band_blocks_a_long(self):
+        # A relentless rise pins RSI high; the long band is 35-58.
+        closes = [4000 * (1.01 ** i) for i in range(120)]
+        fs = bot.filter_status("long", self._bars(closes, spread=0.5))
+        self.assertIn("RSI", fs["failed"])
+        self.assertFalse(fs["ok"])
+
+    def test_macd_must_turn_the_entrys_way(self):
+        # An accelerating rise lifts the histogram, so the long's MACD gate
+        # (histogram rising) is satisfied.
+        closes = [4000 + i * i * 0.05 for i in range(120)]
+        fs = bot.filter_status("long", self._bars(closes, spread=1.0))
+        self.assertNotIn("MACD", fs["failed"])
+
+    def test_gate_blocks_plan_but_toggle_restores_raw_tilt(self):
+        # Six frames up, price above EMA20, but a dead-flat tape (ATR% ~ 0)
+        # fails the ATR band -> no plan while the gate is on.
+        rising = list(range(4000, 4060))
+        closes = {tf: rising for tf in bot.FRAMES}
+        with FakeFeed(mid=4059.0, closes=closes):
+            self.assertIsNone(bot.plan())
+            saved = bot.FILTERS_ON
+            bot.FILTERS_ON = False
+            try:
+                self.assertIsNotNone(bot.plan())
+            finally:
+                bot.FILTERS_ON = saved
+
+
+class IndicatorTest(unittest.TestCase):
+    """The series helpers the gate leans on: alignment and warm-up."""
+
+    def test_ema_series_matches_ema_at_the_tail(self):
+        vals = [4000 + i for i in range(80)]
+        s = bot.ema_series(vals, 20)
+        self.assertEqual(s[-1], bot.ema(vals, 20))
+
+    def test_adx_series_is_none_before_warmup(self):
+        bars = [{"openTime": _iso(i), "open": 4000 + i, "high": 4001 + i,
+                 "low": 3999 + i, "close": 4000 + i, "isOpen": False}
+                for i in range(60)]
+        a = bot.adx_series(bars)
+        self.assertIsNone(a[0])
+        self.assertIsNotNone(a[-1])
+        self.assertGreaterEqual(a[-1], 0.0)
+
+    def test_macd_hist_series_positive_on_a_rising_tape(self):
+        bars = [{"openTime": _iso(i), "open": 4000 + i, "high": 4001 + i,
+                 "low": 3999 + i, "close": 4000 + i, "isOpen": False}
+                for i in range(120)]
+        h = bot.macd_hist_series(bars)
+        self.assertIsNotNone(h[-1])
+        self.assertGreater(h[-1], 0)
 
 
 class _DbCase(unittest.TestCase):
