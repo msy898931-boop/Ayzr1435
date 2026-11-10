@@ -839,15 +839,15 @@ class FullCardTest(unittest.TestCase):
     def test_it_carries_every_section(self):
         with self._feed():
             t = bot.card_full()
-        for marker in ("قراءتي للسوق", "الاتجاه", "الزخم", "البنية",
-                       "نطاق اليوم", "فيبوناتشي", "المناطق",
-                       "قراءتي وتوصيتي"):
+        for marker in ("قراءتي للذهب", "الصورة", "الفريمات", "الزخم",
+                       "البنية", "الدعوم والمقاومات", "فيبوناتشي",
+                       "المناطق", "السيناريوهات", "قراءتي وتوصيتي"):
             self.assertIn(marker, t)
 
     def test_it_gives_a_concrete_call(self):
         with self._feed():
             t = bot.card_full()
-        self.assertTrue("ادخل" in t or "اشترِ" in t)
+        self.assertTrue("دخول" in t or "اشترِ" in t or "بيع عند" in t)
 
     def test_it_is_wired_to_the_menu_and_dispatch(self):
         with self._feed():

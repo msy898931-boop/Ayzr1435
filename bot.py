@@ -1948,117 +1948,182 @@ def _fib_retr(hi: float, lo: float, up: bool) -> list[tuple[str, float]]:
 
 
 def card_full() -> str:
-    """MY OWN read of the tape -- not the desk's verdict.
+    """MY OWN read of the market -- the agent's analysis, not the desk's verdict.
 
-    The owner asked for the agent's analysis inside the bot, in one tap. This
-    is a technical read computed at the instant of the tap: the trend across
-    every frame, momentum (RSI extremes), the 1h structure, the day range,
-    Fibonacci retracements of the day's leg, the buy/sell zones, and MY call --
-    when to buy and when to sell, with levels and the owner's $9/$20 sizing.
-
-    It deliberately does NOT print the desk's gate ("wait for ADX...") -- the
-    owner wants a read of the market, not the desk's permission. The numbers it
-    quotes for any trade come from _sized, so they still respect the account.
+    Every tap goes to the live feed (read_market -> biquote, the same source the
+    desk trades on) and rebuilds the whole read from scratch: the day's leg, the
+    trend on every frame, momentum with saturation flags, the 1h structure, the
+    support/resistance ladder around the price, Fibonacci retracements, the
+    buy/sell zones, and MY call -- when to buy and when to sell, with the
+    owner's $9/$20 sizing. It never prints the desk's gate; the owner asked for
+    a read of the market, not the desk's permission.
     """
     m = read_market()
     live = m["live"]
     q = m["q"]
+    atrs = m["atrs"]
+    rsis = m["rsis"]
     names = {"1d": "يومي", "4h": "4س", "1h": "1س", "30m": "30د",
              "15m": "15د", "5m": "5د"}
     icon = {1: "🟢", -1: "🔴", 0: "⚪"}
-    state = "مفتوح ✅" if market_open(q) else "مسكّر ⛔"
     up = sum(1 for tf in FRAMES if m["trends"].get(tf) == 1)
     dn = sum(1 for tf in FRAMES if m["trends"].get(tf) == -1)
+    down = dn >= 4
+    up_trend = up >= 4
 
-    L = [f"🧠 <b>قراءتي للسوق</b> — {SYMBOL}",
-         f"السعر <b>{num(live)}</b> · السوق {state}"]
+    try:
+        day_open = float(bars("1d", 5)[-1]["open"])
+    except Exception:  # noqa: BLE001
+        day_open = live
 
-    L.append("\n<b>1️⃣ الاتجاه — كل الفريمات:</b>")
-    L.append("  " + " · ".join(
-        f"{names[tf]} {icon[m['trends'].get(tf, 0)]}" for tf in FRAMES))
-    if dn >= 4:
-        L.append(f"  → <b>هابط</b> ({dn} من 6)")
-    elif up >= 4:
-        L.append(f"  → <b>صاعد</b> ({up} من 6)")
+    L = [f"🥇 <b>قراءتي للذهب</b> — لحظياً",
+         f"السعر <b>{num(live)}</b> · السوق "
+         f"{'مفتوح ✅' if market_open(q) else 'مسكّر ⛔'}"]
+
+    # ---- 1. the day's picture -------------------------------------------
+    hi, lo = q.get("high"), q.get("low")
+    if isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
+        drop = hi - lo
+        pct = drop / hi * 100 if hi else 0
+        L.append("\n<b>📉 الصورة:</b>")
+        L.append(f"  فتح {num(day_open)} · قمة {num(hi)} · قاع {num(lo)}")
+        L.append(f"  النطاق {drop:.0f} نقطة ({pct:.1f}%) · السعر عند "
+                 f"<b>{(live - lo) / drop * 100:.0f}%</b> منه")
+
+    # ---- 2. the frames ---------------------------------------------------
+    L.append("\n<b>📊 الفريمات:</b>")
+    for tf in FRAMES:
+        r = rsis.get(tf)
+        rt = f"RSI {r:.0f}" if isinstance(r, (int, float)) else "RSI —"
+        L.append(f"  {names[tf]}: {icon[m['trends'].get(tf, 0)]} {rt}")
+    if down:
+        L.append(f"  → <b>هابط</b> ({dn}/6)")
+    elif up_trend:
+        L.append(f"  → <b>صاعد</b> ({up}/6)")
     else:
-        L.append("  → <b>عرضي</b> (بلا اتجاه واضح)")
+        L.append("  → <b>عرضي</b> (بلا اتجاه)")
 
-    r15 = m["rsis"].get("15m")
-    r1h = m["rsis"].get("1h")
+    r15 = rsis.get("15m")
+    r1h = rsis.get("1h")
     if isinstance(r15, (int, float)):
         if r15 <= 30:
-            mom = "تشبّع بيعي — احتمال ارتداد لفوق ⚠️"
+            mom = ("تشبّع بيعي قوي — الهبوط متعب، احتمال ارتداد ⚠️"
+                   if down else "تشبّع بيعي — احتمال ارتداد لفوق")
         elif r15 >= 70:
-            mom = "تشبّع شرائي — احتمال تصحيح ⚠️"
+            mom = ("تشبّع شرائي قوي — الصعود متعب، احتمال تصحيح ⚠️"
+                   if up_trend else "تشبّع شرائي — احتمال تصحيح")
         elif r15 >= 55:
             mom = "زخم صاعد"
         elif r15 <= 45:
             mom = "زخم هابط"
         else:
-            mom = "زخم محايد"
-        r1 = f" · 1س RSI {r1h:.0f}" if isinstance(r1h, (int, float)) else ""
-        L.append(f"\n<b>2️⃣ الزخم:</b> 15د RSI {r15:.0f}{r1} — <b>{mom}</b>")
+            mom = "محايد"
+        r1 = f" · 1س {r1h:.0f}" if isinstance(r1h, (int, float)) else ""
+        L.append(f"\n<b>⚡ الزخم:</b> 15د {r15:.0f}{r1} — <b>{mom}</b>")
 
     st = _structure_read()
     if st:
-        L.append(f"\n<b>3️⃣ البنية:</b> {st}")
+        L.append(f"\n<b>🧱 البنية:</b> {st}")
 
-    hi, lo = q.get("high"), q.get("low")
+    # ---- 3. the ladder around the price ---------------------------------
+    ls = _levels_with_strength(live)
+    if ls:
+        L.append("\n<b>🎯 الدعوم والمقاومات:</b>")
+        for x in ls:
+            L.append(f"  {x}")
+
+    # ---- 4. fibonacci of the day's leg ----------------------------------
     if isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
-        pos = (live - lo) / (hi - lo) * 100
-        L.append(f"\n<b>4️⃣ نطاق اليوم:</b> {num(lo)} — {num(hi)} · "
-                 f"السعر عند <b>{pos:.0f}%</b> منه")
         chg = q.get("dayDiffPercent")
-        if isinstance(chg, (int, float)):
-            up_day = chg >= 0
-        else:
-            up_day = live >= (hi + lo) / 2
-        leg = "صعود" if up_day else "هبوط"
-        L.append(f"\n<b>5️⃣ فيبوناتشي ({leg} اليوم):</b>")
-        L.append("  " + " · ".join(f"{lab} {num(v)}"
-                                   for lab, v in _fib_retr(hi, lo, up_day)))
+        up_day = (chg >= 0) if isinstance(chg, (int, float)) else (live >= day_open)
+        fibs = _fib_retr(hi, lo, up_day)
+        L.append(f"\n<b>📐 فيبوناتشي ({'صعود' if up_day else 'هبوط'} اليوم):</b>")
+        L.append("  " + " · ".join(f"{lab} {num(v)}" for lab, v in fibs))
+        near = min(fibs, key=lambda kv: abs(kv[1] - live))
+        if abs(near[1] - live) <= max(3.0, (atrs.get("1h") or 10) * 0.4):
+            L.append(f"  ⭐ السعر قريب من فيبوناتشي <b>{near[0]}</b> "
+                     f"({num(near[1])}) — منطقة قرار")
 
+    # ---- 5. zones --------------------------------------------------------
     sell, buy = _zones(live)
-    L.append("\n<b>6️⃣ المناطق:</b>")
+    L.append("\n<b>🧭 المناطق:</b>")
     if sell:
-        L.append("  🔴 بيع فوق: " + " · ".join(num(z) for z, _ in sell[:3]))
+        L.append("  🔴 بيع فوق: " + " · ".join(f"{num(z)} ({n})"
+                                               for z, n in sell[:3]))
     if buy:
-        L.append("  🟢 شراء تحت: " + " · ".join(num(z) for z, _ in buy[:3]))
+        L.append("  🟢 شراء تحت: " + " · ".join(f"{num(z)} ({n})"
+                                                for z, n in buy[:3]))
     if not sell and not buy:
         L.append("  — ما في مناطق واضحة قريبة")
 
-    # ---- MY call ---------------------------------------------------------
-    L.append("\n<b>7️⃣ قراءتي وتوصيتي:</b>")
-    if dn >= 4:
-        L.append("  الاتجاه هابط → <b>الأفضل تبيع القوة</b> (ارتداد لفوق)")
-        entry = sell[0][0] if sell else live + (m["atrs"].get("1h") or 10) * 0.5
+    # ---- 6. scenarios (probability from frame agreement, tempered by RSI)
+    strength = abs(dn - up)
+    p_trend = 50 + 6 * strength
+    sat = (isinstance(r15, (int, float))
+           and ((down and r15 <= 30) or (up_trend and r15 >= 70)))
+    if sat:
+        p_trend -= 15
+    p_trend = max(50, min(85, p_trend))
+    L.append("\n<b>🔀 السيناريوهات:</b>")
+    if down:
+        L.append(f"  <b>A</b> ارتداد لفوق — ~{100 - p_trend}% · المفتاح: صمود "
+                 f"{num(lo)}")
+        L.append(f"  <b>B</b> استمرار هبوط — ~{p_trend}% · المفتاح: كسر "
+                 f"{num(lo)}")
+    elif up_trend:
+        L.append(f"  <b>A</b> استمرار صعود — ~{p_trend}% · المفتاح: ثبات فوق "
+                 f"{num(lo)}")
+        L.append(f"  <b>B</b> تصحيح — ~{100 - p_trend}% · المفتاح: كسر "
+                 f"{num(lo)}")
+    else:
+        L.append(f"  <b>A</b> صعود — ~50% · فوق {num(live)}")
+        L.append(f"  <b>B</b> هبوط — ~50% · تحت {num(live)}")
+    L.append("  <i>(الاحتمال من اتفاق الفريمات + الزخم — قراءة، مو قياس)</i>")
+
+    # ---- 7. MY call ------------------------------------------------------
+    L.append("\n<b>🎬 قراءتي وتوصيتي:</b>")
+    if down:
+        L.append("  الاتجاه هابط → <b>بيع القوة</b> (مع الاتجاه)")
+        entry = sell[0][0] if sell else live + (atrs.get("1h") or 10) * 0.5
         p = _sized(entry, "short", entry)
-        L.append(f"  📍 ادخل بيع عند <b>{num(entry)}</b>")
-        L.append(f"  🛡 وقف {num(p['stop'])} (−${p['risk_usd']:.0f}) · "
-                 f"🎯 هدف {num(p['target'])} (+${p['gain_usd']:.0f})")
+        L.append(f"  🔴 بيع: دخول <b>{num(entry)}</b> · وقف {num(p['stop'])} "
+                 f"(−${p['risk_usd']:.0f}) · هدف {num(p['target'])} "
+                 f"(+${p['gain_usd']:.0f})")
         if buy:
             b = _sized(buy[0][0], "long", buy[0][0])
-            L.append(f"  🟢 فرصة معاكسة: صمد فوق {num(buy[0][0])} → شراء سريع "
-                     f"(وقف {num(b['stop'])} · هدف {num(b['target'])})")
-    elif up >= 4:
-        L.append("  الاتجاه صاعد → <b>الأفضل تشتري الانخفاض</b>")
-        entry = buy[0][0] if buy else live - (m["atrs"].get("1h") or 10) * 0.5
+            L.append(f"  🟢 فرصة معاكسة: صمد فوق <b>{num(buy[0][0])}</b> → "
+                     f"شراء سريع (وقف {num(b['stop'])} · هدف {num(b['target'])})")
+    elif up_trend:
+        L.append("  الاتجاه صاعد → <b>شراء الانخفاض</b> (مع الاتجاه)")
+        entry = buy[0][0] if buy else live - (atrs.get("1h") or 10) * 0.5
         p = _sized(entry, "long", entry)
-        L.append(f"  📍 ادخل شراء عند <b>{num(entry)}</b>")
-        L.append(f"  🛡 وقف {num(p['stop'])} (−${p['risk_usd']:.0f}) · "
-                 f"🎯 هدف {num(p['target'])} (+${p['gain_usd']:.0f})")
+        L.append(f"  🟢 شراء: دخول <b>{num(entry)}</b> · وقف {num(p['stop'])} "
+                 f"(−${p['risk_usd']:.0f}) · هدف {num(p['target'])} "
+                 f"(+${p['gain_usd']:.0f})")
         if sell:
             s = _sized(sell[0][0], "short", sell[0][0])
-            L.append(f"  🔴 فرصة معاكسة: رفض {num(sell[0][0])} → بيع سريع "
-                     f"(وقف {num(s['stop'])} · هدف {num(s['target'])})")
+            L.append(f"  🔴 فرصة معاكسة: رفض <b>{num(sell[0][0])}</b> → "
+                     f"بيع سريع (وقف {num(s['stop'])} · هدف {num(s['target'])})")
     else:
         L.append("  السوق عرضي → <b>اشترِ عند الدعم · بِع عند المقاومة</b>")
         if buy:
-            L.append(f"  🟢 شراء عند {num(buy[0][0])}")
+            b = _sized(buy[0][0], "long", buy[0][0])
+            L.append(f"  🟢 شراء عند <b>{num(buy[0][0])}</b> · وقف "
+                     f"{num(b['stop'])} · هدف {num(b['target'])}")
         if sell:
-            L.append(f"  🔴 بيع عند {num(sell[0][0])}")
+            s = _sized(sell[0][0], "short", sell[0][0])
+            L.append(f"  🔴 بيع عند <b>{num(sell[0][0])}</b> · وقف "
+                     f"{num(s['stop'])} · هدف {num(s['target'])}")
 
-    L.append("\n<i>قراءتي الفنية — مو وعد ربح. الوقف إلزامي.</i>")
+    # ---- 8. honest close -------------------------------------------------
+    vol = atrs.get("1h")
+    L.append("\n<b>⚠️ كلمة صريحة:</b>")
+    if isinstance(vol, (int, float)) and live:
+        vp = vol / live * 100
+        L.append(f"  تقلّب 1س {vol:.1f} نقطة ({vp:.2f}%) — "
+                 f"{'عالي، خطر مرتفع' if vp > 0.6 else 'معتدل'}")
+    L.append("  الالتزام بالوقف ($9) أهم من أي توصية.")
+    L.append("\n<i>قراءتي الفنية من بيانات السوق الحيّة — مو وعد ربح.</i>")
     return "\n".join(L)
 
 
