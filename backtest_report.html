@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="utf-8">
+<title>تقرير المكتب — اختبار على السوق الحقيقي</title>
+<style>
+  :root{--bg:#0b1220;--card:#141d2e;--ink:#e7eefc;--dim:#8fa3c4;--grn:#22c55e;--red:#ef4444;--gold:#f5c451;--line:#22314c}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;padding:24px;line-height:1.7}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:16px}
+  .card h2{font-size:17px;margin:0 0 12px;color:var(--gold)}
+  table{width:100%;border-collapse:collapse;font-size:15px}
+  th,td{padding:9px 8px;text-align:right;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600;font-size:13px}
+  .g{color:var(--grn);font-weight:700}.r{color:var(--red);font-weight:700}
+  .big{font-size:30px;font-weight:800}
+  .hero{background:linear-gradient(135deg,#14261c,#141d2e);border-color:#1f4d33}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:6px}
+  .stat{background:#0f1728;border:1px solid var(--line);border-radius:10px;padding:12px;text-align:center}
+  .stat .n{font-size:24px;font-weight:800}
+  .stat .l{color:var(--dim);font-size:12px;margin-top:2px}
+  .warn{background:linear-gradient(135deg,#2a1717,#141d2e);border-color:#5b2222}
+  .note{color:var(--dim);font-size:13px;margin-top:10px}
+  ul{margin:6px 0;padding-inline-start:20px}
+  li{margin:4px 0}
+</style>
+</head>
+<body><div class="wrap">
+  <h1>📊 تقرير المكتب — اختبار على السوق الحقيقي</h1>
+  <div class="sub">XAUUSD · حساب 200$ · لوت 0.01 · وقف 9$ · هدف 19.8$ · إعدادات البوت الكاملة</div>
+
+  <div class="card hero">
+    <h2>⭐ آخر 5 أيام (2 — 6 تشرين الثاني)</h2>
+    <div class="big g">+102.6$ <span style="font-size:16px;color:var(--dim)">على حساب 200$ (+51%)</span></div>
+    <div class="grid">
+      <div class="stat"><div class="n">43</div><div class="l">صفقة</div></div>
+      <div class="stat"><div class="n g">17</div><div class="l">رابحة</div></div>
+      <div class="stat"><div class="n r">26</div><div class="l">خاسرة</div></div>
+    </div>
+    <div class="note">نسبة الفوز 39.5% — لكن الربح أكبر من الخسارة (19.8$ مقابل 9$).</div>
+  </div>
+
+  <div class="card">
+    <h2>🔼 صعود مقابل 🔽 هبوط (نفس الفترة)</h2>
+    <table>
+      <tr><th>النوع</th><th>صفقات</th><th>ربح</th><th>خسر</th><th>صافي</th></tr>
+      <tr><td>شراء (صعود)</td><td>26</td><td class="g">11</td><td class="r">15</td><td class="g">+82.8$</td></tr>
+      <tr><td>بيع (هبوط)</td><td>17</td><td class="g">6</td><td class="r">11</td><td class="g">+19.8$</td></tr>
+      <tr><td><b>الإجمالي</b></td><td><b>43</b></td><td class="g"><b>17</b></td><td class="r"><b>26</b></td><td class="g"><b>+102.6$</b></td></tr>
+    </table>
+    <div class="note">المكتب ربح بالاتجاهين — بس الصعود كان أقوى.</div>
+  </div>
+
+  <div class="card">
+    <h2>⚖️ الفحص العادل — فترات ما ضبطت عليها</h2>
+    <table>
+      <tr><th>الفترة</th><th>صفقات</th><th>فوز%</th><th>صافي</th></tr>
+      <tr><td>آخر 5 أيام (ضُبطت عليها)</td><td>43</td><td>39.5%</td><td class="g">+102.6$</td></tr>
+      <tr><td>5 أيام قبلها (جديدة)</td><td>38</td><td>36.8%</td><td class="g">+61.2$</td></tr>
+      <tr><td>5 أيام حزيران (جديدة)</td><td>57</td><td>43.9%</td><td class="g">+207.0$</td></tr>
+      <tr><td>5 أيام آب (جديدة)</td><td>46</td><td>28.3%</td><td class="r">−39.6$</td></tr>
+    </table>
+    <div class="note">3 من 4 فترات رابحة — بس آب خسرت. يعني <b>مو كل أسبوع ربح</b>.</div>
+  </div>
+
+  <div class="card warn">
+    <h2>⚠️ التحذير الأهم — خطر الحساب</h2>
+    <ul>
+      <li>أطول سلسلة خسارة في السنة: <b>16 صفقة متتالية</b> = <b>−144$</b> (72% من الحساب)</li>
+      <li>أقصى تراجع: <b>−211$</b> — يعني الحساب <b>وقع تحت 200$</b> بأوقات</li>
+      <li>على سنة كاملة، الحساب نجح ووصل <b>+3,882$</b> — بس مرّ بلحظات عصيبة</li>
+    </ul>
+    <div class="note">⚠️ 200$ حساب <b>صغير جداً</b> لهذه الاستراتيجية. احتمال كبير تمر بفترة تخسر فيها نصّ الحساب قبل ما تربح.</div>
+  </div>
+
+  <div class="card">
+    <h2>📅 السنة كاملة (251 يوم)</h2>
+    <table>
+      <tr><td>صفقات</td><td><b>2,937</b></td></tr>
+      <tr><td>نسبة الفوز</td><td>37.3%</td></tr>
+      <tr><td>صافي (ناقص سبريد)</td><td class="g"><b>+3,882$</b></td></tr>
+      <tr><td>أقصى تراجع</td><td class="r">−211$</td></tr>
+    </table>
+    <div class="note">أرقام السنة نظرية (ما تحسب التقلب الحقيقي ولا الانزلاق السعري).</div>
+  </div>
+
+  <div class="card">
+    <h2>🎯 الخلاصة</h2>
+    <ul>
+      <li>✅ المكتب <b>يشتغل ويربح</b> — بالصعود والهبوط</li>
+      <li>✅ 3 من 4 أسابيع جديدة كانت رابحة (فحص عادل)</li>
+      <li>⚠️ بس <b>يتوقع تخسر كتير</b> — نسبة الفوز 37-40%</li>
+      <li>⚠️ 200$ <b>صغيرة</b> — تحتاج تحمّل فترة صعبة</li>
+    </ul>
+  </div>
+</div></body></html>

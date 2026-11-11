@@ -2065,9 +2065,90 @@ def _fib_retr(hi: float, lo: float, up: bool) -> list[tuple[str, float]]:
     return out
 
 
+def _zigzag(h: list, l: list, thr: float) -> list[tuple[int, float, bool]]:
+    """Alternating swing pivots (idx, price, is_high), moves smaller than `thr`
+    ignored.
+
+    A pivot from a fixed window (the k-th bar being the local max) turns every
+    quiet stretch into a "swing", so a 6-point chop named a leg while a real
+    135-point drop was ignored. A threshold makes a pivot mean a MOVE.
+    """
+    if len(h) < 2:
+        return []
+    out: list[tuple[int, float, bool]] = []
+    up: bool | None = None
+    ei, ext = 0, l[0]
+    for i in range(1, len(h)):
+        if up is None:
+            if h[i] - l[ei] >= thr:
+                up, ei, ext = True, i, h[i]
+            elif l[ei] - l[i] >= thr:
+                up, ei, ext = False, i, l[i]
+        elif up:
+            if h[i] > ext:
+                ei, ext = i, h[i]
+            elif ext - l[i] >= thr:
+                out.append((ei, ext, True))
+                up, ei, ext = False, i, l[i]
+        else:
+            if l[i] < ext:
+                ei, ext = i, l[i]
+            elif h[i] - ext >= thr:
+                out.append((ei, ext, False))
+                up, ei, ext = True, i, h[i]
+    out.append((ei, ext, bool(up)))
+    return out
+
+
+def _big_leg(live: float) -> tuple[float, float, bool, float] | None:
+    """The most recent multi-day swing: high, low, is it a DOWN leg, and where
+    the price sits in it (0 = at the low, 1 = at the high).
+
+    The day's range is not the leg. After a 135-point drop the next day's range
+    is 40 points, so a retracement measured on the day says nothing -- the card
+    read 'range' while the price sat at 38.2% of a real drop. Measuring the leg
+    the owner can see on his chart is the difference between a read and a report.
+
+    It takes the last two ALTERNATING swing pivots (a thresholded zigzag on 4h),
+    not the window's global extremes: over ten days the extremes can be an old
+    crash low and a later high, which names a leg the price has already left.
+    The last swing is the one still in play.
+    """
+    try:
+        b = bars("4h", 90)          # ~15 days
+        if len(b) < 20:
+            return None
+        h = [x["high"] for x in b]
+        l = [x["low"] for x in b]
+    except Exception:  # noqa: BLE001 - a missing frame must not kill the card
+        return None
+    thr = 0.005 * (live or h[-1])   # 0.5%: noise stays out, real legs stay in
+    piv = _zigzag(h, l, thr)
+    if len(piv) < 2:
+        return None
+    # The LAST leg is often just a retracement of the one before it. The big
+    # picture is the dominant swing, so when the current move is the smaller
+    # counter-move, anchor to the prior leg -- that is the drop the owner sees
+    # and the retracement he is trading against.
+    if len(piv) >= 3:
+        (_, pa, a_high), (_, pb, _b_high), (_, pc, _c_high) = (
+            piv[-3], piv[-2], piv[-1])
+        if abs(pc - pb) < abs(pb - pa):
+            hi, lo = (pa, pb) if a_high else (pb, pa)
+            if hi > lo:
+                return hi, lo, a_high, (live - lo) / (hi - lo)
+    (_pi, pp, p_high), (_ci, cp, c_high) = piv[-2], piv[-1]
+    if p_high == c_high:            # not an alternating pair -- no clean leg
+        return None
+    hi, lo = (pp, cp) if p_high else (cp, pp)
+    if hi <= lo:
+        return None
+    return hi, lo, p_high, (live - lo) / (hi - lo)
+
+
 def _opinion(live: float, side: str | None, agree: int,
              sell: list, buy: list, r15: float | None,
-             mixed: bool) -> list[str]:
+             mixed: bool, big: tuple | None = None) -> list[str]:
     """The honest stance, up front: what I would DO, how sure, what flips me.
 
     This is the difference between a report and a view. It can say "wait" or
@@ -2080,6 +2161,11 @@ def _opinion(live: float, side: str | None, agree: int,
     structure read as choppy. A tired move (15m RSI saturated) or a mixed
     structure drops the confidence a notch -- an honest read gets quieter when
     the tape does not support it.
+
+    `big` is the multi-day swing (hi, lo, is_down, where price sits in it). When
+    the frames disagree but the price sits at the edge of a real multi-day leg,
+    "range, stay out" is wrong: the price is at a DECISION point, and the card
+    must say which level decides it. That is the read the owner gets in words.
     """
     conf = "متوسطة"
     if agree >= 5:
@@ -2091,6 +2177,35 @@ def _opinion(live: float, side: str | None, agree: int,
         conf = {"عالية": "متوسطة", "متوسطة": "منخفضة"}.get(conf, conf)
 
     if side is None:
+        # A range on the frames can still be a DECISION on the chart: if the
+        # price is retracing a real multi-day leg, name the fib wall and the
+        # break, instead of a flat "stay out" that hides the setup.
+        if big is not None:
+            bhi, blo, bdown, pos = big
+            if bdown and 0.25 <= pos <= 0.62:
+                span = bhi - blo
+                wall = blo + span * 0.382
+                nxt = blo + span * 0.5
+                return [f"\n⚖️ <b>موقفي: بستنى — مو عرضي</b> — ارتداد داخل "
+                        f"هبوط (السعر عند <b>{pos * 100:.0f}%</b> من هبوط "
+                        f"{span:.0f} نقطة).",
+                        f"  الجدار <b>{num(wall)}</b> (فيبو 38.2%) هو يلي "
+                        f"بيحسم: يرتد منه → <i>بيع</i> · إغلاق 1س فوقه → "
+                        f"<i>انقلاب</i> لـ {num(nxt)}.",
+                        f"  الثقة <b>{conf}</b> · 🔄 بيلغي نظريتي: إغلاق 1س فوق "
+                        f"{num(wall)} يلغي الهبوط."]
+            if not bdown and 0.38 <= pos <= 0.75:
+                span = bhi - blo
+                wall = bhi - span * 0.382
+                nxt = bhi - span * 0.5
+                return [f"\n⚖️ <b>موقفي: بستنى — مو عرضي</b> — تصحيح داخل "
+                        f"صعود (السعر عند <b>{pos * 100:.0f}%</b> من صعود "
+                        f"{span:.0f} نقطة).",
+                        f"  الجدار <b>{num(wall)}</b> (فيبو 38.2%) هو يلي "
+                        f"بيحسم: يثبت فوقه → <i>شراء</i> · إغلاق 1س تحته → "
+                        f"<i>انقلاب</i> لـ {num(nxt)}.",
+                        f"  الثقة <b>{conf}</b> · 🔄 بيلغي نظريتي: إغلاق 1س تحت "
+                        f"{num(wall)} يلغي الصعود."]
         return ["\n🚫 <b>موقفي: ما بتداول هلّق</b> — السوق عرضي بلا اتجاه "
                 "واضح.",
                 f"  الثقة <b>{conf}</b> · اقعد برا واستنى اتجاه — التداول "
@@ -2171,7 +2286,8 @@ def card_full() -> str:
     agree = dn if down else (up if up_trend else 0)
     st = _structure_read()
     mixed = bool(st and "مختلطة" in st)
-    L += _opinion(live, trend_side, agree, sell, buy, rsis.get("15m"), mixed)
+    big = _big_leg(live)
+    L += _opinion(live, trend_side, agree, sell, buy, rsis.get("15m"), mixed, big)
 
     # ---- 1. the day's picture -------------------------------------------
     hi, lo = q.get("high"), q.get("low")
@@ -2182,6 +2298,23 @@ def card_full() -> str:
         L.append(f"  فتح {num(day_open)} · قمة {num(hi)} · قاع {num(lo)}")
         L.append(f"  النطاق {drop:.0f} نقطة ({pct:.1f}%) · السعر عند "
                  f"<b>{(live - lo) / drop * 100:.0f}%</b> منه")
+
+    # ---- 1b. the BIG picture: the multi-day leg the day's range hides ----
+    # A 40-point day range inside a 135-point drop is not a range -- it is a
+    # retracement, and its fib levels are what decide the next move. Without
+    # this line the card called a real decision point "عرضي".
+    if big is not None:
+        bhi, blo, bdown, pos = big
+        span = bhi - blo
+        if span >= 3 * (atrs.get("1d") or 1.0) * 0.4:
+            leg = "هبوط" if bdown else "صعود"
+            a, b_ = (bhi, blo) if bdown else (blo, bhi)
+            L.append("\n<b>🗻 الصورة الكبيرة:</b>")
+            L.append(f"  آخر موجة <b>{leg}</b>: {num(a)} → {num(b_)} "
+                     f"({span:.0f} نقطة) · السعر عند <b>{pos * 100:.0f}%</b> منها")
+            fibs = _fib_retr(bhi, blo, not bdown)
+            L.append("  فيبو: " + " · ".join(f"{k} <b>{num(v)}</b>"
+                                             for k, v in fibs))
 
     # ---- 2. the frames ---------------------------------------------------
     L.append("\n<b>📊 الفريمات:</b>")
@@ -2304,10 +2437,42 @@ def card_full() -> str:
                  f"<i>(إغلاق، مو مجرد لمس)</i> → هدف <b>{num(rev_t)}</b> · "
                  f"<i>وقّف الشراء</i>")
     else:
-        L.append(f"  <b>A</b> صعود: فوق <b>{num(live)}</b> → "
-                 f"{num(live + atr1)}")
-        L.append(f"  <b>B</b> هبوط: تحت <b>{num(live)}</b> → "
-                 f"{num(live - atr1)}")
+        # Not a clean trend -- but not necessarily a flat range either. If the
+        # price is retracing a real multi-day leg, the DECISION is the fib wall
+        # and the break of it, not an arbitrary "above/below the price" line.
+        _big_ok = False
+        if big is not None:
+            bhi, blo, bdown, pos = big
+            span = bhi - blo
+            if span >= 3 * (atrs.get("1d") or 1.0) * 0.4 and 0.2 <= pos <= 0.75:
+                _big_ok = True
+                if bdown:
+                    wall = blo + span * 0.382
+                    nxt = blo + span * 0.5
+                    L.append(f"  <b>A</b> الارتداد يكمل: إغلاق 1س فوق "
+                             f"<b>{num(wall)}</b> → هدف <b>{num(nxt)}</b>")
+                    L.append(f"  <b>B</b> الجدار يصمد: يلمس <b>{num(wall)}</b> "
+                             f"ويرتد منها → رجوع للقاع <b>{num(blo)}</b> · "
+                             f"<i>فرصة بيع</i>")
+                    L.append(f"  <b>C</b> استمرار الهبوط: إغلاق 1س <b>تحت</b> "
+                             f"<b>{num(blo)}</b> → هدف <b>{num(blo - atr1)}</b> · "
+                             f"<i>وقّف الشراء</i>")
+                else:
+                    wall = bhi - span * 0.382
+                    nxt = bhi - span * 0.5
+                    L.append(f"  <b>A</b> التصحيح يكمل: إغلاق 1س تحت "
+                             f"<b>{num(wall)}</b> → هدف <b>{num(nxt)}</b>")
+                    L.append(f"  <b>B</b> الجدار يصمد: يلمس <b>{num(wall)}</b> "
+                             f"ويرتد منها → رجوع للقمة <b>{num(bhi)}</b> · "
+                             f"<i>فرصة شراء</i>")
+                    L.append(f"  <b>C</b> استمرار الصعود: إغلاق 1س <b>فوق</b> "
+                             f"<b>{num(bhi)}</b> → هدف <b>{num(bhi + atr1)}</b> · "
+                             f"<i>وقّف البيع</i>")
+        if not _big_ok:
+            L.append(f"  <b>A</b> صعود: فوق <b>{num(live)}</b> → "
+                     f"{num(live + atr1)}")
+            L.append(f"  <b>B</b> هبوط: تحت <b>{num(live)}</b> → "
+                     f"{num(live - atr1)}")
     L.append("  <i>مستويات قرار بأهدافها — مو احتمالات.</i>")
 
     # ---- 7. THE PLAN: the whole ladder of entries, sized, plus account ---
@@ -2329,7 +2494,12 @@ def card_full() -> str:
                 else "شراء الانخفاض")
         L.append(f"  الاتجاه صاعد → <b>{kind}</b>")
     else:
-        L.append("  السوق عرضي → <b>اشترِ عند الدعم · بِع عند المقاومة</b>")
+        if big is not None and big[2] and 0.25 <= big[3] <= 0.62:
+            wall = big[1] + (big[0] - big[1]) * 0.382
+            L.append(f"  ارتداد داخل هبوط → بِع عند الجدار <b>{num(wall)}</b> · "
+                     f"لا تشتري الارتداد")
+        else:
+            L.append("  السوق عرضي → <b>اشترِ عند الدعم · بِع عند المقاومة</b>")
 
     fibs_d: dict[str, float] = {}
     fibs_u: dict[str, float] = {}

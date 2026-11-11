@@ -938,6 +938,38 @@ class FullCardTest(unittest.TestCase):
         self.assertIn("الحافة الزمنية", s)
         self.assertIn("المعايرة", s)
 
+    def test_a_retracement_is_not_called_a_range(self):
+        # The owner's complaint: the card said "عرضي, stay out" while the price
+        # was retracing a real multi-day drop -- hiding the decision point. A
+        # range on the frames must not swallow a leg the chart shows.
+        up = [4000 + (4148 - 4000) * (i / 29) for i in range(30)]
+        dn = [4148 - (4148 - 4013) * (i / 24) for i in range(25)]
+        chop = [4065 + (3 if i % 2 else -3) for i in range(20)]  # range tail
+        with FakeFeed(mid=4065.0, closes={tf: up + dn + chop
+                                          for tf in bot.FRAMES}):
+            leg = bot._big_leg(4065.0)
+            t = bot.card_full()
+        # The leg is the DROP the chart shows, and the price is retracing it...
+        self.assertIsNotNone(leg)
+        assert leg is not None
+        self.assertTrue(leg[2])                      # a down leg
+        self.assertLess(leg[3], 0.62)                # still inside the retrace
+        # ...so the card names it, and the stance is a decision, not "range".
+        self.assertIn("الصورة الكبيرة", t)
+        self.assertIn("فيبو", t)
+
+    def test_a_range_stance_yields_to_a_real_leg(self):
+        # Direct check on the stance: frames say range (side=None), but the
+        # price sits mid-retrace of a real drop -> the wall must be named.
+        big = (4148.0, 4013.0, True, 0.39)
+        lines = bot._opinion(4065.0, None, 0, [], [], 55.0, False, big)
+        text = " ".join(lines)
+        self.assertIn("مو عرضي", text)
+        self.assertIn("38.2%", text)
+        # With no leg, the same range is a plain "stay out".
+        plain = " ".join(bot._opinion(4065.0, None, 0, [], [], 55.0, False))
+        self.assertIn("عرضي", plain)
+
     def test_it_gives_a_concrete_call(self):
         with self._feed():
             t = bot.card_full()
