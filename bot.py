@@ -1236,6 +1236,91 @@ def _ema_last(vals: list[float], n: int) -> float | None:
     return s[-1] if s else None
 
 
+def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
+                 plan_d: dict | None, adx_v: float | None) -> dict:
+    """The analysis layer the owner asked for: a stated bias, named scenarios,
+    a buy/sell playbook, and a plain-spoken verdict.
+
+    Every price here comes from _sized() -- the desk's single sizing rule -- so
+    this layer can never quote a trade the Telegram cards would not. It invents
+    no probability and states no conviction the desk does not have; the "three
+    scenarios" are the desk's own bull / bear / range, named.
+    """
+    trends = m["trends"]
+    rsis = m.get("rsis") or {}
+    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
+    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
+    r15 = rsis.get("15m")
+
+    if dn >= 5:
+        bias, bside = "هابط", "sell"
+    elif up >= 5:
+        bias, bside = "صاعد", "buy"
+    elif dn > up:
+        bias, bside = "مائل للهبوط", "sell"
+    elif up > dn:
+        bias, bside = "مائل للصعود", "buy"
+    else:
+        bias, bside = "عرضي", None
+
+    # --- the three named scenarios, priced by _sized() ---
+    scen: list[dict] = []
+    if sup:
+        trig = sup[0] - 0.5
+        s = _sized(trig, "short", sup[0])
+        scen.append({"side": "short", "name": "استمرار الهبوط",
+                     "trigger": trig, "targets": sup[1:4], **s})
+    if res:
+        trig = res[0] + 0.5
+        s = _sized(trig, "long", res[0])
+        scen.append({"side": "long", "name": "انعكاس صاعد",
+                     "trigger": trig, "targets": res[1:4], **s})
+    if isinstance(adx_v, (int, float)) and adx_v < ADX_MIN and res and sup:
+        scen.append({"side": "range", "name": "عرضي (بلا ترند)",
+                     "lo": sup[0], "hi": res[0], "adx": adx_v})
+
+    # --- the playbook: WHEN to sell and WHEN to buy, each priced ---
+    sell: list[dict] = []
+    buy: list[dict] = []
+    if res:
+        s = _sized(res[0], "short", res[0])
+        sell.append({"kind": "بيع ارتداد (متحفّظ)",
+                     "when": f"لمس {num(res[0])} ورفض", **s})
+    if sup:
+        s = _sized(sup[0] - 0.5, "short", sup[0])
+        sell.append({"kind": "بيع كسر (اختراقي) ⭐",
+                     "when": f"كسر {num(sup[0])} بإغلاق", **s})
+    if plan_d and plan_d.get("direction") == "short":
+        s = _sized(live, "short", min(res) if res else None)
+        sell.append({"kind": "بيع فوري (مع الاتجاه)",
+                     "when": "بالسعر الحالي", **s})
+    if sup:
+        s = _sized(sup[0], "long", sup[0])
+        buy.append({"kind": "شراء عند الدعم",
+                     "when": f"لمس {num(sup[0])} ورفض", **s})
+    if res:
+        s = _sized(res[0] + 0.5, "long", res[0])
+        buy.append({"kind": "شراء اختراق",
+                     "when": f"إغلاق فوق {num(res[0])}", **s})
+
+    # --- the plain-spoken verdict ---
+    if bside == "sell" and isinstance(r15, (int, float)) and r15 <= 30:
+        verdict = ("الاتجاه معك للبيع، بس السعر واقف عند القاع ومتشبّع — "
+                   "الأحلى بيع ارتداد، مو بيع فوري هون.")
+    elif bside == "sell":
+        verdict = "الاتجاه هابط بوضوح — البيع مع الاتجاه هو الأفضل إحصائياً."
+    elif bside == "buy" and isinstance(r15, (int, float)) and r15 >= 70:
+        verdict = ("الاتجاه صاعد، بس السعر متشبّع شراء — "
+                   "الأحلى شراء عند ارتداد، مو مطاردة.")
+    elif bside == "buy":
+        verdict = "الاتجاه صاعد بوضوح — الشراء مع الاتجاه هو الأفضل إحصائياً."
+    else:
+        verdict = "التايب مذبذب بلا اتجاه واضح — الأفضل الوقوف جانباً أو اللعب عالنطاق."
+
+    return {"bias": bias, "side": bside, "verdict": verdict,
+            "scenarios": scen, "sell": sell, "buy": buy}
+
+
 def map_payload() -> dict:
     """Every number the live map page needs, in ONE read.
 
@@ -1305,6 +1390,11 @@ def map_payload() -> dict:
     except Exception:  # noqa: BLE001
         adx_v = None
 
+    # The analysis layer: bias, named scenarios, the buy/sell playbook, verdict.
+    analysis = None
+    with suppress(Exception):
+        analysis = map_analysis(m, live, res, sup, p, adx_v)
+
     return {
         "symbol": SYMBOL,
         "live": live,
@@ -1324,6 +1414,7 @@ def map_payload() -> dict:
         "plan_side": side,
         "late_note": note,
         "scenarios": scen,
+        "analysis": analysis,
         "adx": adx_v,
         "news": news,
         "clock": _clock(datetime.now(UTC)),

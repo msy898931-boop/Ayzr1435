@@ -75,6 +75,8 @@
 
   <div id="planbox"></div>
 
+  <div id="verdict"></div>
+
   <h2>🗺️ خريطة المستويات</h2>
   <div class="card"><div id="ladder">—</div></div>
 
@@ -95,6 +97,18 @@
 
   <h2>🎬 السيناريوهات</h2>
   <div id="scen">—</div>
+
+  <h2>⏰ إيمتى تشتري وإيمتى تبيع</h2>
+  <div class="grid">
+    <div class="card">
+      <h2 style="margin-top:0; color:#f85149">🔴 البيع (مع الاتجاه)</h2>
+      <div id="sellplay" class="muted">—</div>
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0; color:#3fb950">🟢 الشراء (مضاد — بحذر)</h2>
+      <div id="buyplay" class="muted">—</div>
+    </div>
+  </div>
 
   <div class="muted" style="margin-top:24px; text-align:center">
     كل الأرقام من محرك المكتب نفسه (نفس دوال بطاقات تلغرام). ليست نصيحة مالية · الوقف إلزامي.
@@ -172,6 +186,32 @@ function render(d){
       <div class="kv"><b>الوقف:</b> ${F(s.stop)} · <b>الهدف:</b> ${F(s.target)} · R:R ${s.rr?.toFixed(2)} (مخاطرة $${s.risk_usd?.toFixed(0)})</div>
     </div>`;
   }).join("") || "—";
+
+  // the analysis layer: verdict, named scenarios, buy/sell playbook
+  const a = d.analysis;
+  if (a){
+    const cls = a.side==="sell"?"bear":"warn";
+    document.getElementById("verdict").innerHTML =
+      `<div class="${cls}" style="margin-top:12px"><b>🎯 الحكم:</b> ${a.verdict}</div>`;
+
+    document.getElementById("scen").innerHTML = (a.scenarios||[]).map(s=>{
+      if (s.side==="range")
+        return `<div class="sc" style="border-color:#e3b341">
+          <h3>⚪ ${s.name}</h3>
+          <div class="kv"><b>النطاق:</b> ${F(s.lo)} ↔ ${F(s.hi)} <span class="muted">(ADX ${s.adx?.toFixed(0)} — بلا ترند)</span></div>
+          <div class="kv muted">اللعب: اشترِ عند الدعم إذا صمد · بِع عند المقاومة إذا رفض</div></div>`;
+      const isLong = s.side==="long";
+      return `<div class="sc ${isLong?'long':'short'}">
+        <h3>${isLong?"🟢":"🔴"} ${s.name}</h3>
+        <div class="kv"><b>المشغّل:</b> ${isLong?"اختراق":"كسر"} <b>${F(s.trigger)}</b>${(s.targets&&s.targets.length)?` · الأهداف ${s.targets.map(F).join(" ← ")}`:""}</div>
+        <div class="kv"><b>الوقف:</b> ${F(s.stop)} · <b>الهدف:</b> ${F(s.target)} · R:R ${s.rr?.toFixed(2)}</div>
+      </div>`;
+    }).join("") || "—";
+
+    const playRow = s => `<div class="kv">• <b>${s.kind}:</b> ${s.when}<br><span class="muted">دخول ${F(s.entry)} · وقف ${F(s.stop)} · هدف ${F(s.target)} · R:R ${s.rr?.toFixed(2)}</span></div>`;
+    document.getElementById("sellplay").innerHTML = (a.sell||[]).map(playRow).join("") || "— ما في نمط بيع واضح";
+    document.getElementById("buyplay").innerHTML = (a.buy||[]).map(playRow).join("") || "— ما في نمط شراء واضح";
+  }
 }
 
 async function tick(){
