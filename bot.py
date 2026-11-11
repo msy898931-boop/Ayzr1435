@@ -144,7 +144,12 @@ SUPPORT_BREAK_PTS = 3.0          # a 15m close this far under = broken
 # moves well away from them). A crossing of ANY of these speaks once. 4138 and
 # 4108 are the owner's two triggers (breakout / breakdown); the owner can extend
 # the set at deploy time with DESK_WATCH_LEVELS=4138,4108,4200,...
+# Refreshed 2026-11-11: price fell to ~3987, so the old set (all above 4055) held
+# nothing near the price. Added the levels that matter on the way down -- today's
+# low 3982.5, the 61.8% fib 3976.5, the nearest real support 3937.5, the 50% fib
+# 4009.5 and today's open 4038.5 -- so a break or a bounce at these speaks.
 WATCH_LEVELS: tuple[float, ...] = (
+    3937.5, 3976.5, 3982.5, 4009.5, 4038.5,
     4055.0, 4070.0, 4084.0, 4096.0, 4108.0,
     4119.0, 4132.0, 4138.0, 4147.0, 4168.0, 4192.0)
 _extra = os.environ.get("DESK_WATCH_LEVELS", "").strip()
