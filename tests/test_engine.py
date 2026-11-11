@@ -1173,6 +1173,66 @@ class OpinionTest(unittest.TestCase):
         text = "\n".join(lines)
         self.assertNotIn("%", text)
 
+    def test_a_late_sell_says_so_without_blocking_the_trade(self):
+        # Selling into a washed-out tape (15m RSI 21) is a LATE entry: the desk
+        # still takes the trade (the trend is real) but must say the move is
+        # mostly done -- the owner's own read of the tape, in words. This is the
+        # 'be like me' ask: honest words, no blocked trade.
+        p = {"entry": 4000.0, "stop": 4012.0, "target": 3976.0,
+             "risk_usd": 12.0, "gain_usd": 20.0, "rr": 1.67, "direction": "short"}
+        text = "\n".join(bot._opinion(4000.0, "sell", 6, [(4005.0, 3)], [],
+                                      21.0, False, plan=p))
+        self.assertIn("دخول متأخر", text)
+        # The decision and every number are untouched -- nothing is blocked.
+        self.assertIn("أبيع الآن", text)
+        self.assertIn("4,000", text)
+        self.assertIn("4,012", text)
+
+    def test_a_clean_sell_says_nothing_about_being_late(self):
+        # 15m RSI 45 on a sell: the move has room. No late caveat, and the
+        # confidence stays where the frame count put it.
+        p = {"entry": 4000.0, "stop": 4012.0, "target": 3976.0,
+             "risk_usd": 12.0, "gain_usd": 20.0, "rr": 1.67, "direction": "short"}
+        text = "\n".join(bot._opinion(4000.0, "sell", 6, [(4005.0, 3)], [],
+                                      45.0, False, plan=p))
+        self.assertNotIn("دخول متأخر", text)
+        self.assertIn("عالية", text)
+
+    def test_a_late_buy_says_so_too(self):
+        # The mirror image: buying with 15m RSI 78 is chasing an overbought
+        # tape. Same honest caveat, same untouched decision.
+        p = {"entry": 4000.0, "stop": 3988.0, "target": 4024.0,
+             "risk_usd": 12.0, "gain_usd": 20.0, "rr": 1.67, "direction": "long"}
+        text = "\n".join(bot._opinion(4000.0, "buy", 6, [], [(3990.0, 3)],
+                                      78.0, False, plan=p))
+        self.assertIn("دخول متأخر", text)
+        self.assertIn("أشتري الآن", text)
+
+    def test_the_late_threshold_is_the_measured_one(self):
+        # Pinned to the level the year-long study found: below CHASE_RSI a sell
+        # is late. A change to the constant must fail here first.
+        self.assertEqual(bot.CHASE_RSI, 30.0)
+
+    def test_plan_is_never_blocked_by_the_late_read(self):
+        # The whole point: the caveat is words, not a gate. plan() must still
+        # return a sized trade when the frames agree, however stretched the RSI.
+        m = {"q": {"marketState": "open", "mid": 4000.0},
+             "live": 4000.0, "trends": {tf: -1 for tf in bot.FRAMES}}
+        p = bot.plan(m)
+        self.assertIsNotNone(p)
+        self.assertEqual(p["direction"], "short")
+
+    def test_the_late_helper_is_the_one_source_for_both_cards(self):
+        # _late_entry is what the opinion card AND the action card read, so the
+        # two can never disagree about whether the entry is late.
+        self.assertTrue(bot._late_entry("sell", 20.0))
+        self.assertTrue(bot._late_entry("sell", bot.CHASE_RSI))
+        self.assertFalse(bot._late_entry("sell", bot.CHASE_RSI + 0.1))
+        self.assertTrue(bot._late_entry("buy", 80.0))
+        self.assertFalse(bot._late_entry("buy", 50.0))
+        self.assertFalse(bot._late_entry(None, 20.0))
+        self.assertFalse(bot._late_entry("sell", None))
+
 
 class TrendWatchTest(unittest.TestCase):
     """trend_watch is the one alert that fires on the market alone: the owner

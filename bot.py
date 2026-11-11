@@ -87,6 +87,15 @@ SHOW_STUDY = os.environ.get("DESK_SHOW_STUDY", "1").strip().lower() not in \
 CONFIRM_FRAMES = 4               # a direction needs this many of 6 frames
 STRONG_FRAMES = 5                # ...and this many to allow a SECOND trade
 MAX_OPEN = 1                     # one trade at a time (raise to 2 to stack)
+# A late entry: the frames agree on a trend but the 15m RSI is already
+# stretched AGAINST it (selling into a washed-out tape, or buying into an
+# overbought one). Measured on the full 2026 sample this is the WORST bucket to
+# enter: shorts taken with 15m RSI < 30 win 33% against 37% for the rest, and
+# buys taken with RSI > 70 are the worst buys of all. The desk does NOT block
+# these -- the trend trade is still valid and blocking it threw away real
+# winners -- but it SAYS SO, the way the owner reads the tape himself. This is
+# the RSI level past which the entry is "late"; the caveat names it.
+CHASE_RSI = 30.0                 # 15m RSI <= this when selling = a late entry
 # The entry must agree with the 15m candle, not just the frame tilt: a long
 # taken while price sits UNDER the 15m EMA20 is buying into a falling tape.
 # On the owner's own journal this filter allowed every winner (#1-6) and
@@ -1564,8 +1573,11 @@ def card_recommend() -> str:
                 f"({CONFIRM_FRAMES}/6 مطلوبة).\n"
                 f"ميل القراءة: {mark} <b>{lean}</b>\n\n"
                 "<i>ما بعطي إشارة لما السوق محتار.</i>")
+    note = _late_note("sell" if p["direction"] == "short" else "buy",
+                      m["rsis"].get("15m"))
+    tail = f"\n⚠️ {note}" if note else ""
     return ("🎯 <b>التوصية</b> — " + SYMBOL + "\n" +
-            "\n".join(_plan_lines(p)) + "\n\n"
+            "\n".join(_plan_lines(p)) + tail + "\n\n"
             "<i>التزام بالمخاطرة — كل صفقة على حسابك.</i>")
 
 
@@ -2134,8 +2146,12 @@ def card_action() -> str:
                 "<i>لا تزيد على نفس الاتجاه إلا لما تسكّرها.</i>")
 
     if v["state"] == "enter":
+        p = v["plan"]
+        note = _late_note("sell" if p["direction"] == "short" else "buy",
+                          m["rsis"].get("15m"))
+        tail = f"\n⚠️ {note}" if note else ""
         return (head + "🟢 <b>ادخل صفقة الآن</b> — الشروط مكتملة:\n" +
-                "\n".join(_plan_lines(v["plan"])) + "\n\n"
+                "\n".join(_plan_lines(p)) + tail + "\n\n"
                 "<i>سجّلها بالبوت أو بمنصتك — الوقف إلزامي.</i>")
 
     # wait: say why, and the single condition that flips it.
@@ -2289,6 +2305,33 @@ def _wall_trigger(live: float,
     return None
 
 
+def _late_entry(side: str | None, r15) -> bool:
+    """Is this entry joining a move that has mostly happened?
+
+    The frames say buy/sell, but the 15m RSI is already stretched the OTHER way
+    (selling a washed-out tape, buying an overbought one). ONE source for the
+    caveat, so the action card and the opinion card cannot disagree about
+    whether the entry is late -- the same reason plan() is one engine.
+    """
+    if not isinstance(r15, (int, float)):
+        return False
+    if side == "sell":
+        return r15 <= CHASE_RSI
+    if side == "buy":
+        return r15 >= 100.0 - CHASE_RSI
+    return False
+
+
+def _late_note(side: str | None, r15) -> str:
+    """The one-line honest caveat for a late entry, or '' when it is not late.
+    Every card that shows a trade reads this, so none of them can show a late
+    entry without saying so."""
+    if not _late_entry(side, r15) or not isinstance(r15, (int, float)):
+        return ""
+    return (f"<b>دخول متأخر</b> — 15د RSI {r15:.0f}: الحركة مشيت أكترها. "
+            "الصفقة صحيحة بس متأخرة — خفّف الحجم أو اقعد برا.")
+
+
 def _opinion(live: float, side: str | None, agree: int,
              sell: list, buy: list, r15: float | None,
              mixed: bool, big: tuple | None = None,
@@ -2316,14 +2359,17 @@ def _opinion(live: float, side: str | None, agree: int,
     conf = "متوسطة"
     if agree >= 5:
         conf = "عالية"
-    tired = (isinstance(r15, (int, float))
-             and ((side == "sell" and r15 <= 30)
-                  or (side == "buy" and r15 >= 70)))
+    # `late` = the frames say sell/buy but the 15m RSI is already stretched the
+    # other way, so this entry is joining a move that has mostly happened. The
+    # desk still takes it (the trend is real, and blocking it threw away real
+    # winners) -- but it drops the confidence AND says the entry is late, which
+    # is the owner's own read of the tape.
+    late = _late_entry(side, r15)
     # `thin` = price is resting on the averages, so the tilt is a hair-trigger.
     # It softens the WORD only; the decision is untouched. A "high confidence"
     # sell whose stop is the same 8 points that would flip the trend is not high
     # confidence -- it is a coin toss wearing a label.
-    if tired or mixed or thin:
+    if late or mixed or thin:
         conf = {"عالية": "متوسطة", "متوسطة": "منخفضة"}.get(conf, conf)
 
     if side is None:
@@ -2393,6 +2439,8 @@ def _opinion(live: float, side: str | None, agree: int,
                f"<b>{num(plan['stop'])}</b> · هدف <b>{num(plan['target'])}</b> "
                f"(−${plan['risk_usd']:.0f}/+${plan['gain_usd']:.0f}).",
                f"  الثقة <b>{conf}</b>{caveat}"]
+        if late:
+            out.append("  ⚠️ " + _late_note(side, r15))
         if thin:
             out.append(f"  ⚠️ السعر ملاصق للمتوسطات — الاتجاه هامشي: حركة "
                        f"صغيرة بتقلبه. القرار ماشي، بس حجمك صغير.")
