@@ -110,8 +110,10 @@
     </div>
   </div>
 
+  <div id="honesty"></div>
+
   <div class="muted" style="margin-top:24px; text-align:center">
-    كل الأرقام من محرك المكتب نفسه (نفس دوال بطاقات تلغرام). ليست نصيحة مالية · الوقف إلزامي.
+    قراءة آلية من بيانات السوق الحيّة — مو نصيحة مالية · الوقف إلزامي دايماً.
   </div>
 </div>
 <script>
@@ -149,12 +151,12 @@ function render(d){
     const lbl = isShort?"بيع 🔴":"شراء 🟢";
     document.getElementById("planbox").innerHTML = `
       <div class="${isShort?'bear':'warn'}" style="margin-top:16px">
-        <b>🧭 المكتب هلّق:</b> ${lbl} · دخول <b>${F(p.entry)}</b> · وقف <b>${F(p.stop)}</b> · هدف <b>${F(p.target)}</b>
+        <b>🧭 التوصية هلّق:</b> ${lbl} · دخول <b>${F(p.entry)}</b> · وقف <b>${F(p.stop)}</b> · هدف <b>${F(p.target)}</b>
         · R:R ${p.rr?.toFixed(2)} · مخاطرة $${p.risk_usd?.toFixed(0)}
         ${d.late_note?`<div style="margin-top:8px">⚠️ ${d.late_note}</div>`:""}
       </div>`;
   } else {
-    document.getElementById("planbox").innerHTML = `<div class="warn" style="margin-top:16px"><b>🧭 المكتب هلّق:</b> بلا صفقة مؤكدة — قراءة بلا دخول.</div>`;
+    document.getElementById("planbox").innerHTML = `<div class="warn" style="margin-top:16px"><b>🧭 التوصية هلّق:</b> بلا صفقة مؤكدة — قراءة بلا دخول.</div>`;
   }
 
   const lv=[];
@@ -187,7 +189,7 @@ function render(d){
     </div>`;
   }).join("") || "—";
 
-  // the analysis layer: verdict, named scenarios, buy/sell playbook
+  // the analysis layer: verdict, named scenarios, buy/sell playbook, honesty
   const a = d.analysis;
   if (a){
     const cls = a.side==="sell"?"bear":"warn";
@@ -195,14 +197,9 @@ function render(d){
       `<div class="${cls}" style="margin-top:12px"><b>🎯 الحكم:</b> ${a.verdict}</div>`;
 
     document.getElementById("scen").innerHTML = (a.scenarios||[]).map(s=>{
-      if (s.side==="range")
-        return `<div class="sc" style="border-color:#e3b341">
-          <h3>⚪ ${s.name}</h3>
-          <div class="kv"><b>النطاق:</b> ${F(s.lo)} ↔ ${F(s.hi)} <span class="muted">(ADX ${s.adx?.toFixed(0)} — بلا ترند)</span></div>
-          <div class="kv muted">اللعب: اشترِ عند الدعم إذا صمد · بِع عند المقاومة إذا رفض</div></div>`;
       const isLong = s.side==="long";
       return `<div class="sc ${isLong?'long':'short'}">
-        <h3>${isLong?"🟢":"🔴"} ${s.name}</h3>
+        <h3>${isLong?"🟢":"🔴"} ${s.name} <span class="pill">${s.tag||""}</span></h3>
         <div class="kv"><b>المشغّل:</b> ${isLong?"اختراق":"كسر"} <b>${F(s.trigger)}</b>${(s.targets&&s.targets.length)?` · الأهداف ${s.targets.map(F).join(" ← ")}`:""}</div>
         <div class="kv"><b>الوقف:</b> ${F(s.stop)} · <b>الهدف:</b> ${F(s.target)} · R:R ${s.rr?.toFixed(2)}</div>
       </div>`;
@@ -211,6 +208,9 @@ function render(d){
     const playRow = s => `<div class="kv">• <b>${s.kind}:</b> ${s.when}<br><span class="muted">دخول ${F(s.entry)} · وقف ${F(s.stop)} · هدف ${F(s.target)} · R:R ${s.rr?.toFixed(2)}</span></div>`;
     document.getElementById("sellplay").innerHTML = (a.sell||[]).map(playRow).join("") || "— ما في نمط بيع واضح";
     document.getElementById("buyplay").innerHTML = (a.buy||[]).map(playRow).join("") || "— ما في نمط شراء واضح";
+
+    document.getElementById("honesty").innerHTML = a.honesty
+      ? `<div class="warn" style="margin-top:16px"><b>⚠️ ملاحظة الصدق:</b> ${a.honesty}</div>` : "";
   }
 }
 

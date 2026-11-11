@@ -1238,13 +1238,14 @@ def _ema_last(vals: list[float], n: int) -> float | None:
 
 def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
                  plan_d: dict | None, adx_v: float | None) -> dict:
-    """The analysis layer the owner asked for: a stated bias, named scenarios,
-    a buy/sell playbook, and a plain-spoken verdict.
+    """The analysis the owner asked for -- the SAME shape as the read I write by
+    hand: a stated bias, THREE named scenarios (continuation / retrace /
+    reversal), a when-to-buy / when-to-sell playbook, and an honest note.
 
-    Every price here comes from _sized() -- the desk's single sizing rule -- so
-    this layer can never quote a trade the Telegram cards would not. It invents
-    no probability and states no conviction the desk does not have; the "three
-    scenarios" are the desk's own bull / bear / range, named.
+    It is deliberately NOT the desk's card. The card shows two conditional
+    breakouts; this names the three ways the tape can go and prices each one,
+    the way a person would talk it through. Prices still come from _sized() so
+    nothing here is a number the desk would not stand behind.
     """
     trends = m["trends"]
     rsis = m.get("rsis") or {}
@@ -1262,22 +1263,40 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
         bias, bside = "مائل للصعود", "buy"
     else:
         bias, bside = "عرضي", None
+    down = dn >= up
 
-    # --- the three named scenarios, priced by _sized() ---
+    # --- the three named scenarios: continuation, retrace, reversal ---
     scen: list[dict] = []
-    if sup:
-        trig = sup[0] - 0.5
-        s = _sized(trig, "short", sup[0])
-        scen.append({"side": "short", "name": "استمرار الهبوط",
-                     "trigger": trig, "targets": sup[1:4], **s})
-    if res:
-        trig = res[0] + 0.5
-        s = _sized(trig, "long", res[0])
-        scen.append({"side": "long", "name": "انعكاس صاعد",
-                     "trigger": trig, "targets": res[1:4], **s})
-    if isinstance(adx_v, (int, float)) and adx_v < ADX_MIN and res and sup:
-        scen.append({"side": "range", "name": "عرضي (بلا ترند)",
-                     "lo": sup[0], "hi": res[0], "adx": adx_v})
+    if down:
+        if sup:
+            s = _sized(sup[0] - 0.5, "short", sup[0])
+            scen.append({"side": "short", "name": "استمرار الهبوط",
+                         "tag": "مع الاتجاه · الأرجح", "trigger": sup[0] - 0.5,
+                         "targets": sup[1:4], **s})
+            s = _sized(live, "long", sup[0])
+            scen.append({"side": "long", "name": "ارتداد تصحيحي (قصير)",
+                         "tag": "مضاد · نصّ الحجم", "trigger": live,
+                         "targets": ([res[0]] if res else []), **s})
+        if res:
+            s = _sized(res[0] + 0.5, "long", res[0])
+            scen.append({"side": "long", "name": "انعكاس صاعد",
+                         "tag": "يحتاج إثبات", "trigger": res[0] + 0.5,
+                         "targets": res[1:4], **s})
+    else:
+        if res:
+            s = _sized(res[0] + 0.5, "long", res[0])
+            scen.append({"side": "long", "name": "استمرار الصعود",
+                         "tag": "مع الاتجاه · الأرجح", "trigger": res[0] + 0.5,
+                         "targets": res[1:4], **s})
+            s = _sized(live, "short", res[0])
+            scen.append({"side": "short", "name": "ارتداد تصحيحي (قصير)",
+                         "tag": "مضاد · نصّ الحجم", "trigger": live,
+                         "targets": ([sup[0]] if sup else []), **s})
+        if sup:
+            s = _sized(sup[0] - 0.5, "short", sup[0])
+            scen.append({"side": "short", "name": "انكاس هابط",
+                         "tag": "يحتاج إثبات", "trigger": sup[0] - 0.5,
+                         "targets": sup[1:4], **s})
 
     # --- the playbook: WHEN to sell and WHEN to buy, each priced ---
     sell: list[dict] = []
@@ -1316,8 +1335,24 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
         verdict = "الاتجاه صاعد بوضوح — الشراء مع الاتجاه هو الأفضل إحصائياً."
     else:
         verdict = "التايب مذبذب بلا اتجاه واضح — الأفضل الوقوف جانباً أو اللعب عالنطاق."
+    if isinstance(adx_v, (int, float)) and adx_v < ADX_MIN:
+        verdict = ("ADX منخفض — بلا ترند واضح. الأفضل اللعب عالنطاق "
+                   "(اشترِ عند الدعم · بِع عند المقاومة) أو الوقوف جانباً.")
 
-    return {"bias": bias, "side": bside, "verdict": verdict,
+    # --- the honest note (the owner's one non-negotiable) ---
+    if isinstance(r15, (int, float)) and r15 <= 30 and bside == "sell":
+        honesty = (f"السوق متشبّع بيع بشدّة (RSI 15د {r15:.0f}). البيع مع الاتجاه "
+                   "رابح إحصائياً، بس الدخول عند RSI تحت 30 هو أضعف شريحة. يعني: "
+                   "البيع صحيح بس متأخر — خفّف الحجم أو اقعد برا.")
+    elif isinstance(r15, (int, float)) and r15 >= 70 and bside == "buy":
+        honesty = (f"السوق متشبّع شراء بشدّة (RSI 15د {r15:.0f}). الشراء مع الاتجاه "
+                   "رابح إحصائياً، بس الدخول عند RSI فوق 70 هو أضعف شريحة. يعني: "
+                   "الشراء صحيح بس متأخر — خفّف الحجم أو اقعد برا.")
+    else:
+        honesty = ("ما في ضمان — هاد قراءة آلية من بيانات السوق الحيّة، "
+                   "والقرار قرارك. الوقف إلزامي دايماً.")
+
+    return {"bias": bias, "side": bside, "verdict": verdict, "honesty": honesty,
             "scenarios": scen, "sell": sell, "buy": buy}
 
 
