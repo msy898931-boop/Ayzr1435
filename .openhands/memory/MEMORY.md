@@ -814,3 +814,27 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   TELEGRAM/GITHUB/Render_api_key inject fine. **Fastest no-secret deploy: paste
   the Deploy Hook URL straight into a browser.** `$Render_api_key` is the OLD
   account's key (0 services); the live service is on the new account.
+
+## MarketDesk — Task D: capital ledger + daily close report (2026-11-07)
+
+- ⭐ **A report fired "at the close" describes the SESSION that ended, not the
+  calendar day.** Gold closes **21:00 UTC = 00:00 local (UTC+3)**, so the clock
+  at the close is a brand-new empty day. `_session_day(now)` steps back one day
+  within 2h of the close; the window is `_closed_since(start)`. A naive
+  `date()==today` filter would print "no trades today" over a full session.
+- ⭐ **One balance, one function.** `equity_now()` = START_CAPITAL ($200) + every
+  CLOSED trade's money (open trades excluded — unrealised P&L is a guess). It
+  drives the stats block, open card, close card and daily report. The close card
+  had said `ACCOUNT_USD + this trade` and disagreed with the report as soon as a
+  second trade closed; it now uses `_equity_after(t)`.
+- ⭐ **A same-direction 2nd signal is CONFIRMATION, not a warning** — the owner
+  asked to hear "the first is still on track, direction right". `_no_second`
+  branches: same direction → ✅ + the first trade's MEASURED status
+  (`_winning`/`_in_profit`, never a promise it hits target); opposite → the old
+  🛑. Capital/daily live in `data/daily.json` (carried in the Telegram backup).
+- ⚠ **Never exercise the engine against the real `data/journal.db`.** A manual
+  smoke test left 2 phantom trades that failed an unrelated card test. Rebind
+  `bot.DB_PATH` + `bot.DAILY_PATH` to a temp dir first (`_DbCase` does this).
+- The download link the owner sent (work-1-**shocrkxozkaqdglp**…) 404s on curl
+  and the browser; it is a different sandbox host from this session's
+  (work-1-**vdueockkqyznsbyj**). A fresh link is needed.
