@@ -2161,7 +2161,8 @@ def _wall_trigger(live: float,
 def _opinion(live: float, side: str | None, agree: int,
              sell: list, buy: list, r15: float | None,
              mixed: bool, big: tuple | None = None,
-             trig: tuple | None = None) -> list[str]:
+             trig: tuple | None = None,
+             plan: dict | None = None) -> list[str]:
     """The honest stance, up front: what I would DO, how sure, what flips me.
 
     This is the difference between a report and a view. It can say "wait" or
@@ -2243,12 +2244,29 @@ def _opinion(live: float, side: str | None, agree: int,
                 f"  الثقة <b>{conf}</b> · اقعد برا واستنى اتجاه — التداول "
                 "بالعرضي هوّ يلي ياكل الحساب."]
 
+    if plan is not None:
+        # A confirmed trend IS the trade: plan() opens it at market right now,
+        # so the card must show plan()'s OWN numbers and say "now" -- never
+        # "wait for the candle", which was the card and the desk disagreeing.
+        d = "🔴 <b>أبيع الآن</b>" if side == "sell" else "🟢 <b>أشتري الآن</b>"
+        way = "هابط" if side == "sell" else "صاعد"
+        flip = "فوق" if side == "sell" else "تحت"
+        caveat = " · خفّف الحجم أو اقعد برا" if conf == "منخفضة" else ""
+        return [f"\n🎯 <b>موقفي:</b> {d} — الاتجاه {way} ({agree}/6 فريمات).",
+                f"  دخول <b>{num(plan['entry'])}</b> · وقف "
+                f"<b>{num(plan['stop'])}</b> · هدف <b>{num(plan['target'])}</b> "
+                f"(−${plan['risk_usd']:.0f}/+${plan['gain_usd']:.0f}).",
+                f"  الثقة <b>{conf}</b>{caveat}",
+                f"  🔄 بيلغي نظريتي: إغلاق 1س {flip} {num(plan['stop'])}."]
+
+    # No confirmed trend (or the market is closed / a trade is held): name the
+    # zone we would act on, if there is one.
     if side == "sell":
         zone = sell[0][0] if sell else None
         near = zone is not None and abs(live - zone) <= ENTRY_NEAR_PTS
         if near:
-            head = f"🔴 <b>أبيع الآن</b> — السعر عالمنطقة {num(zone)}"
-            how = "بيع كسر مع الاتجاه · استنى تأكيد الشمعة"
+            head = f"⏸️ <b>بستنى</b> — السعر عالمنطقة {num(zone)}، بدي إغلاق تأكيد"
+            how = "بيع كسر مع الاتجاه"
         elif zone:
             head = f"⏸️ <b>بستنى أبيع</b> — يرتد لفوق لـ {num(zone)}"
             how = "بيع القوة (مع الاتجاه) — مو بيع كسر"
@@ -2260,8 +2278,8 @@ def _opinion(live: float, side: str | None, agree: int,
         zone = buy[0][0] if buy else None
         near = zone is not None and abs(live - zone) <= ENTRY_NEAR_PTS
         if near:
-            head = f"🟢 <b>أشتري الآن</b> — السعر عالمنطقة {num(zone)}"
-            how = "شراء مع الاتجاه · استنى تأكيد الشمعة"
+            head = f"⏸️ <b>بستنى</b> — السعر عالمنطقة {num(zone)}، بدي إغلاق تأكيد"
+            how = "شراء مع الاتجاه"
         elif zone:
             head = f"⏸️ <b>بستنى أشتري</b> — ينزل لـ {num(zone)}"
             how = "شراء الانخفاض (مع الاتجاه)"
@@ -2321,8 +2339,9 @@ def card_full() -> str:
     mixed = bool(st and "مختلطة" in st)
     big = _big_leg(live)
     trig = _wall_trigger(live, big)
+    pnow = plan(m)
     L += _opinion(live, trend_side, agree, sell, buy, rsis.get("15m"), mixed,
-                  big, trig)
+                  big, trig, pnow)
 
     # ---- 1. the day's picture -------------------------------------------
     hi, lo = q.get("high"), q.get("low")
@@ -2415,7 +2434,7 @@ def card_full() -> str:
         near = min(fibs, key=lambda kv: abs(kv[1] - live))
         if abs(near[1] - live) <= max(3.0, (atrs.get("1h") or 10) * 0.4):
             L.append(f"  ⭐ السعر قريب من فيبو <b>{near[0]}</b> "
-                     f"({num(near[1])}) — منطقة قرار")
+                     f"({num(near[1])}) — منطقة قرار <i>(نطاق اليوم)</i>")
 
     # ---- 5b. the raw swings, minus anything already named as a level -----
     tol_sw = max(1.0, (atrs.get("1h") or 10.0) * 0.25)
@@ -2519,11 +2538,25 @@ def card_full() -> str:
     # there was simply wrong.
     L.append("\n<b>🎬 خطتي — كل الدخولات (لحظي من السوق):</b>")
 
-    def _entry_line(entry: float, side: str, tag: str) -> str:
-        s = _sized(entry, side, entry)
+    prim: list[dict] = []          # the priority entry's sizing, for the account line
+
+    def _entry_line(entry: float, side: str, tag: str,
+                    stop_level: float | None = None) -> str:
+        s = _sized(entry, side, stop_level if stop_level is not None else entry)
+        if not prim:
+            prim.append(s)
         return (f"    • {tag}: <b>{num(entry)}</b> · وقف {num(s['stop'])} · "
                 f"هدف {num(s['target'])} <i>(−${s['risk_usd']:.0f}/"
                 f"+${s['gain_usd']:.0f})</i>")
+
+    def _plan_line(p: dict, tag: str) -> str:
+        # The priority entry IS the trade plan() is opening -- printed from
+        # plan()'s own dict, never re-priced, so the card cannot quote a stop
+        # the desk is not using.
+        prim.append(p)
+        return (f"    • {tag}: <b>{num(p['entry'])}</b> · وقف "
+                f"{num(p['stop'])} · هدف {num(p['target'])} "
+                f"<i>(−${p['risk_usd']:.0f}/+${p['gain_usd']:.0f})</i>")
 
     def _ladder(tags: list[tuple[float, str]], side: str) -> list[str]:
         out: list[str] = []
@@ -2535,28 +2568,28 @@ def card_full() -> str:
             out.append(_entry_line(e, side, tag))
         return out
 
-    if down or (trig is not None and trig[0] == "short"):
-        # The sell is THE trade -- with the trend, or the wall rejection that is
-        # the whole stance. It is listed first and, when the trigger has fired,
-        # at the SAME entry plan() just sized, so the card and the desk read as
-        # one voice.
+    if pnow is not None:
+        # One trade, one set of numbers: the priority line is plan()'s trade.
+        if pnow["direction"] == "short":
+            L.append("  🔴 <b>البيع (الأولوية):</b>")
+            basis = ("مع الاتجاه الهابط" if down else "الجدار (انرفض)")
+        else:
+            L.append("  🟢 <b>الشراء (الأولوية):</b>")
+            basis = ("مع الاتجاه الصاعد" if up_trend else "الجدار (ثبت)")
+        L.append(_plan_line(pnow, basis))
+    elif down or (trig is not None and trig[0] == "short"):
+        # No trade fired, but the bias is down: show the zones a sell would use.
         L.append("  🔴 <b>البيع (الأولوية):</b>")
-        if trig is not None and trig[0] == "short":
-            L += [_entry_line(live, "short", "الجدار (انرفض)")]
-        elif down:
-            s_tags = [(sell[i][0], f"منطقة بيع {i + 1}")
-                      for i in range(min(2, len(sell)))]
-            if isinstance(lo, (int, float)):
-                s_tags.append((lo, "بيع كسر تحت القاع"))
-            L += _ladder(s_tags, "short")
+        s_tags = [(sell[i][0], f"منطقة بيع {i + 1}")
+                  for i in range(min(2, len(sell)))]
+        if isinstance(lo, (int, float)):
+            s_tags.append((lo, "بيع كسر تحت القاع"))
+        L += _ladder(s_tags, "short")
     elif up_trend or (trig is not None and trig[0] == "long"):
         L.append("  🟢 <b>الشراء (الأولوية):</b>")
-        if trig is not None and trig[0] == "long":
-            L += [_entry_line(live, "long", "الجدار (ثبت)")]
-        else:
-            b_tags = [(buy[i][0], f"منطقة شراء {i + 1}")
-                      for i in range(min(2, len(buy)))]
-            L += _ladder(b_tags, "long")
+        b_tags = [(buy[i][0], f"منطقة شراء {i + 1}")
+                  for i in range(min(2, len(buy)))]
+        L += _ladder(b_tags, "long")
     elif big is not None and big[2] and 0.25 <= big[3] <= 0.62:
         wall = big[1] + (big[0] - big[1]) * 0.382
         L.append(f"  ارتداد داخل هبوط → بِع عند الجدار <b>{num(wall)}</b> · "
@@ -2571,10 +2604,19 @@ def card_full() -> str:
         L.append("  السوق عرضي → <b>اشترِ عند الدعم · بِع عند المقاومة</b>")
 
     # -- account ---------------------------------------------------------
-    L.append(f"  💰 <b>حسابك ${ACCOUNT_USD:.0f} · {LOT} لوت:</b> نقطة = "
-             f"${POINT_VALUE:.0f} · خطر ${STOP_PICK_USD:.0f} "
-             f"({STOP_PICK_USD / ACCOUNT_USD * 100:.1f}%) · مكسب "
-             f"${STOP_PICK_USD * TARGET_RR:.0f} · R:R {TARGET_RR:.1f}")
+    # The numbers here MUST be the priority entry's own, not the config
+    # defaults: a $9 line beside a −$12 entry is the card contradicting itself.
+    if prim:
+        s = prim[0]
+        L.append(f"  💰 <b>حسابك ${ACCOUNT_USD:.0f} · {LOT} لوت:</b> نقطة = "
+                 f"${POINT_VALUE:.0f} · خطر ${s['risk_usd']:.0f} "
+                 f"({s['risk_usd'] / ACCOUNT_USD * 100:.1f}%) · مكسب "
+                 f"${s['gain_usd']:.0f} · R:R {s['rr']:.1f}")
+    else:
+        L.append(f"  💰 <b>حسابك ${ACCOUNT_USD:.0f} · {LOT} لوت:</b> نقطة = "
+                 f"${POINT_VALUE:.0f} · خطر ${STOP_PICK_USD:.0f} "
+                 f"({STOP_PICK_USD / ACCOUNT_USD * 100:.1f}%) · مكسب "
+                 f"${STOP_PICK_USD * TARGET_RR:.0f} · R:R {TARGET_RR:.1f}")
     L.append("  ⚠️ <i>صفقة واحدة فقط · الوقف مقدّس</i>")
 
     # ---- 8. the news that moves gold vs the dollar ----------------------
@@ -2606,7 +2648,8 @@ def card_full() -> str:
         vp = vol / live * 100
         L.append(f"  تقلّب 1س {vol:.1f} نقطة ({vp:.2f}%) — "
                  f"{'عالي، خطر مرتفع' if vp > 0.6 else 'معتدل'}")
-    L.append("  الالتزام بالوقف ($9) أهم من أي توصية.")
+    _stop_usd = f"${prim[0]['risk_usd']:.0f}" if prim else f"${STOP_PICK_USD:.0f}"
+    L.append(f"  الالتزام بالوقف ({_stop_usd}) أهم من أي توصية.")
     # The win-rate line: the owner's OWN closed trades first (the live truth),
     # and only when he has none does the desk's backtest stand in -- labelled as
     # a backtest, so a study figure is never read as a measured one.

@@ -1007,6 +1007,32 @@ class FullCardTest(unittest.TestCase):
             self.assertIn("البيع", plan)
             self.assertNotIn("شراء (عكس الاتجاه", plan)
 
+    def test_the_card_quotes_the_plans_own_numbers(self):
+        # The whole point: when plan() fires, the card's priority line and the
+        # account line must be plan()'s OWN entry/stop/target -- not a second
+        # calculation that can drift. A card quoting a stop the desk is not
+        # using is the contradiction the owner keeps catching.
+        feed = self._leg_feed([4056, 4060, 4058, 4066.2, 4058.0])
+        with FakeFeed(mid=4058.0, closes=feed):
+            p = bot.plan()
+            t = bot.card_full()
+        self.assertIsNotNone(p)
+        assert p is not None
+        for v in (p["entry"], p["stop"], p["target"]):
+            self.assertIn(f"{v:,.2f}", t)
+
+    def test_the_card_does_not_say_buy_now_without_a_plan(self):
+        # No confirmed trend and no wall trigger -> plan() is None -> the card
+        # must NOT announce a live entry. "أبيع الآن" beside a desk that did not
+        # fire is the exact lie the owner caught.
+        feed = self._leg_feed([4040, 4042, 4041, 4043, 4042.0])
+        with FakeFeed(mid=4058.0, closes=feed):
+            self.assertIsNone(bot.plan())
+            t = bot.card_full()
+        self.assertNotIn("أبيع الآن", t)
+        self.assertNotIn("أشتري الآن", t)
+        self.assertIn("بستنى", t)
+
     def test_the_desk_waits_while_the_card_waits(self):
         # The price is retracing the leg but has NOT reached the wall yet: the
         # card says "wait", so plan() must return None. A desk that opened here
@@ -1087,12 +1113,29 @@ class OpinionTest(unittest.TestCase):
         self.assertIn("بستنى أبيع", text)
         self.assertIn("بيع القوة", text)
 
-    def test_a_zone_under_the_price_is_called_a_break_sell(self):
+    def test_a_zone_at_the_price_waits_for_a_confirming_close(self):
+        # Price sitting on the sell zone, but no confirmed entry: the card
+        # waits for a close, and names it a break-sell (not sell-the-strength).
+        # Saying "أبيع الآن" here while the desk did not fire was the
+        # contradiction the owner caught.
         lines = bot._opinion(4080.0, "sell", 5, [(4080.5, 4)], [], 50.0, False)
         text = "\n".join(lines)
-        self.assertIn("أبيع الآن", text)
+        self.assertIn("بستنى", text)
+        self.assertIn("إغلاق تأكيد", text)
         self.assertIn("بيع كسر", text)
         self.assertNotIn("بيع القوة", text)
+
+    def test_a_confirmed_plan_is_said_now_with_the_plan_numbers(self):
+        # When plan() has fired, the card must say "now" and print plan()'s OWN
+        # entry/stop/target -- the exact numbers the desk is trading.
+        p = {"entry": 4080.0, "stop": 4090.0, "target": 4055.0,
+             "risk_usd": 10.0, "gain_usd": 20.0, "rr": 2.0, "direction": "short"}
+        lines = bot._opinion(4080.0, "sell", 5, [(4080.5, 4)], [], 50.0, False,
+                             plan=p)
+        text = "\n".join(lines)
+        self.assertIn("أبيع الآن", text)
+        self.assertIn("4,090", text)          # plan's stop, not the zone
+        self.assertIn("بيلغي نظريتي", text)
 
     def test_confidence_drops_when_the_move_is_tired(self):
         # 5/6 frames but 15m RSI saturated: high confidence is not honest here.
