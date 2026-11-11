@@ -828,25 +828,23 @@ def _verdict(m: dict) -> dict:
     up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
     lean, mark = _bias(trends)
-    try:
-        b15 = closed(bars(TREND_FILTER_TF, 300), TREND_FILTER_TF)
-        e = ema([x["close"] for x in b15], 20)
-    except Exception:  # noqa: BLE001 - the filter is a guard, not a blocker
-        b15, e = [], None
-    # Why no plan? The frames may agree yet a quality gate (or the EMA20) may
-    # hold the trade back -- name the blocker so the desk never looks broken.
-    blocked = None
-    direction = "long" if up >= CONFIRM_FRAMES else \
-        ("short" if dn >= CONFIRM_FRAMES else None)
-    if direction and FILTERS_ON:
-        fs = filter_status(direction, b15)
-        if not fs["ok"]:
-            blocked = _filter_line(fs)
-        elif e is not None and not frame_agrees(direction, m["live"], b15):
-            blocked = f"فلتر EMA20 ({TREND_FILTER_TF})"
-    return {"state": "wait", "up": up, "dn": dn, "ema": e,
-            "lean": lean, "mark": mark, "blocked": blocked,
-            "direction": direction}
+    # plan() is now MY read with no quality gate. A confirmed trend is a trade,
+    # so a "wait" here means one of two things: the price is retracing a real
+    # leg and has not reached the wall yet, or the frames simply disagree.
+    # Carry the wall so the 'شو تعمل' card can name the level it is waiting for.
+    wall = None
+    big = _big_leg(m["live"])
+    if big is not None:
+        bhi, blo, bdown, pos = big
+        span = bhi - blo
+        if bdown and 0.25 <= pos <= 0.62:
+            wall = blo + span * 0.382
+        elif not bdown and 0.38 <= pos <= 0.75:
+            wall = bhi - span * 0.382
+    return {"state": "wait", "up": up, "dn": dn, "wall": wall,
+            "lean": lean, "mark": mark,
+            "direction": "long" if up >= CONFIRM_FRAMES else
+            ("short" if dn >= CONFIRM_FRAMES else None)}
 
 
 def _headline(v: dict) -> str:
@@ -863,13 +861,13 @@ def _headline(v: dict) -> str:
         d = "شراء" if p["direction"] == "long" else "بيع"
         return (f"🟢 ادخل {d} — دخول {num(p['entry'])} · "
                 f"وقف {num(p['stop'])} · هدف {num(p['target'])}")
-    if v.get("blocked"):
-        way = "صاعد" if v.get("direction") == "long" else "هابط"
-        return f"⏸️ استنى — الاتجاه {way} بس الفلتر مانع ({v['blocked']})"
+    if v.get("wall"):
+        d = "بيع" if v.get("direction") == "short" else "شراء"
+        return f"⏸️ استنى — لمس الجدار {num(v['wall'])} ثم {d}"
     if v["up"] >= CONFIRM_FRAMES:
-        return "⏸️ استنى — الاتجاه صاعد بس السعر تحت الفلتر"
+        return "⏸️ استنى — الاتجاه صاعد بس ما في دخول مؤكد"
     if v["dn"] >= CONFIRM_FRAMES:
-        return "⏸️ استنى — الاتجاه هابط بس السعر فوق الفلتر"
+        return "⏸️ استنى — الاتجاه هابط بس ما في دخول مؤكد"
     return f"⏸️ استنى — السوق محتار ({v['up']}ص · {v['dn']}هـ)"
 
 
@@ -879,24 +877,24 @@ def _verdict_detail(v: dict) -> str:
     if st == "closed":
         return "⛔ السوق مسكّر — ما في قراءة حيّة."
     if st == "hold":
-        return (f"📂 صفقة مفتوحة #{v['trade']['id']} — المكتب يديرها، "
-                "ما يفتح جديدة الآن.")
+        return (f"📂 صفقة مفتوحة #{v['trade']['id']} — أنا بيديرها، "
+                "ما بفتح جديدة الآن.")
     if st == "enter":
         p = v["plan"]
         d = "شراء 🟢" if p["direction"] == "long" else "بيع 🔴"
         return (f"✅ صفقة جاهزة — {d} · دخول {num(p['entry'])} · "
                 f"وقف {num(p['stop'])} · هدف {num(p['target'])} · "
                 f"R:R {p['rr']:.2f}")
-    if v.get("blocked"):
-        way = "صاعد" if v.get("direction") == "long" else "هابط"
-        return (f"⏸️ الاتجاه <b>{way}</b> بس <b>فلتر الجودة مانع</b>: "
-                f"{v['blocked']}. المكتب ما ياخد إلا الصفقات النظيفة.")
+    if v.get("wall"):
+        d = "بيع" if v.get("direction") == "short" else "شراء"
+        return (f"⏸️ السعر بيمشي عكس موجة كبيرة — <b>بستنى يلمس الجدار "
+                f"{num(v['wall'])}</b> ثم يغلق 1س {d}، وبعدها أدخل.")
     if v["up"] >= CONFIRM_FRAMES:
-        return (f"⏸️ الاتجاه <b>صاعد</b> ({v['up']}/6) بس الفلتر مو موافق — "
-                "استنى التأكيد.")
+        return (f"⏸️ الاتجاه <b>صاعد</b> ({v['up']}/6) — بس السعر لسا ما وصل "
+                "لزناد الدخول.")
     if v["dn"] >= CONFIRM_FRAMES:
-        return (f"⏸️ الاتجاه <b>هابط</b> ({v['dn']}/6) بس الفلتر مو موافق — "
-                "استنى التأكيد.")
+        return (f"⏸️ الاتجاه <b>هابط</b> ({v['dn']}/6) — بس السعر لسا ما وصل "
+                "لزناد الدخول.")
     return (f"⏸️ ما في صفقة — الفريمات ما اتفقت ({v['up']}ص · {v['dn']}هـ). "
             f"الميل: {v['mark']} <b>{v['lean']}</b>")
 
@@ -965,10 +963,10 @@ def card_analysis() -> str:
         b15f, ef = [], None
     if ef is not None:
         pos = "فوق ✅" if live > ef else "تحت ⬇️"
-        lines.append(f"فلتر EMA20 ({names[TREND_FILTER_TF]}): السعر {pos} "
+        lines.append(f"EMA20 ({names[TREND_FILTER_TF]}): السعر {pos} "
                      f"({num(ef)})")
 
-    # ---- the quality gate (the combo filters) ---------------------------
+    # ---- indicators (shown as information, NOT a gate) ------------------
     if FILTERS_ON:
         r = filter_status("long", b15f)["readings"]
 
@@ -977,13 +975,9 @@ def card_analysis() -> str:
 
         adx_v, atr_p, rsi_v, macd_v = (r["adx"], r["atr_pct"],
                                        r["rsi"], r["macd_hist"])
-        adx_ok = "✅" if (adx_v is None or ADX_MIN <= adx_v <= ADX_MAX) else "❌"
-        atr_ok = "✅" if (atr_p is None
-                         or ATR_MIN_PCT <= atr_p <= ATR_MAX_PCT) else "❌"
         macd_ico = "📈" if (macd_v or 0) > 0 else "📉"
-        lines.append(f"فلتر الجودة: ADX {_fmt(adx_v, 0)} {adx_ok} · "
-                     f"ATR {_fmt(atr_p * 100 if atr_p else None, 2, '%')} "
-                     f"{atr_ok}")
+        lines.append(f"المؤشرات: ADX {_fmt(adx_v, 0)} · "
+                     f"ATR {_fmt(atr_p * 100 if atr_p else None, 2, '%')}")
         lines.append(f"  RSI {_fmt(rsi_v, 0)} · MACD hist "
                      f"{_fmt(macd_v, 2)} {macd_ico}")
 
@@ -1004,7 +998,7 @@ def card_analysis() -> str:
 
     # ---- verdict: the desk's own conclusion -----------------------------
     lines.append("")
-    lines.append("<b>حكم المكتب:</b>")
+    lines.append("<b>حكمي:</b>")
     lines.append(_verdict_detail(v))
     lines.append("\n<i>قراءة تحليلية لحظية — مو وعد ربح.</i>")
     return "\n".join(lines)
@@ -1087,7 +1081,7 @@ def card_scenarios() -> str:
                   f"  الوقف: {num(p['stop'])} · الهدف: {num(p['target'])}",
                   f"  R:R ≈ {p['rr']:.2f} (مخاطرة ${p['risk_usd']:.0f})", ""]
     lines.append("<i>سيناريوهات مشروطة — ما تنفّذ إلا لما يتحقق المشغّل. "
-                 f"الوقف والهدف من قواعد المكتب (مخاطرة ${STOP_MIN_USD:.0f}-"
+                 f"الوقف والهدف من قواعدي (مخاطرة ${STOP_MIN_USD:.0f}-"
                  f"${STOP_MAX_USD:.0f}، R:R {TARGET_RR}).</i>")
     # A third, honest case: when the trend is absent the desk's own gate says
     # "no trade" -- say so, and give the range instead of a fake breakout.
@@ -1103,7 +1097,7 @@ def card_scenarios() -> str:
             lines.append(f"  النطاق: {num(sup[0])} ↔ {num(res[0])} "
                          f"(ADX {adx_v:.0f} — بلا ترند)")
             lines.append("  اللعب: اشترِ عند الدعم إذا صمد · بِع عند المقاومة إذا رفض")
-            lines.append("  <i>المكتب ما ياخد صفقة ترند لما ADX تحت 20.</i>")
+            lines.append("  <i>ما باخد صفقة ترند لما ADX تحت 20.</i>")
     return "\n".join(lines)
 
 
@@ -1248,7 +1242,7 @@ def card_news() -> str:
             stamp = f"  <i>({when})</i>" if when else ""
             lines.append(f"• {tag} {esc(title)}{stamp}")
     lines.append("")
-    lines.append("<i>⚠️ معلومة فقط — مو إشارة. المكتب ما يفتح صفقة على الخبر، "
+    lines.append("<i>⚠️ معلومة فقط — مو إشارة. ما بفتح صفقة على الخبر، "
                  "وقواعد الدخول ما تتأثر فيه. القرار الخبري إلك.</i>")
     return "\n".join(lines)
 
@@ -1468,16 +1462,21 @@ def _filter_line(fs: dict) -> str:
 
 
 def plan(m: dict | None = None) -> dict | None:
-    """The desk's one decision engine: a sized, valid plan or None.
+    """MY read, sized into a trade -- the desk's one decision engine.
 
-    One source for both the button and the auto-desk -- two copies of this logic
+    The owner asked for MY reading to decide, not the desk's gate, so the
+    quality gate (EMA20 + ADX/ATR/MACD/RSI) is GONE from this path: a confirmed
+    trend is now a trade, and the direction is read the way the card reads it --
+    frames first, then the retracement of a dominant multi-day leg.
+
+    One source for the card and the auto-desk still: two copies of this logic
     would drift, and a card that disagreed with the trade it opened would be the
     worst kind of bug.
 
     Returns a dict with direction, entry, stop, target, rr, risk_usd, risk_pts,
-    gain_usd, up/dn frame counts, and whether the direction is merely confirmed
-    (CONFIRM_FRAMES) or strong (STRONG_FRAMES) -- the auto-desk needs that last
-    bit to decide whether a second trade is allowed.
+    gain_usd, up/dn frame counts, and whether the direction is strong
+    (STRONG_FRAMES) -- the auto-desk needs that last bit to decide whether a
+    second trade is allowed.
     """
     m = m or read_market()
     q, live, trends = m["q"], m["live"], m["trends"]
@@ -1487,36 +1486,34 @@ def plan(m: dict | None = None) -> dict | None:
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
     res, sup = _levels(live)
 
-    def sized(direction: str) -> dict:
+    def sized(direction: str, level: float | None = None) -> dict:
         # A long's stop belongs just BELOW the nearest support; a short's just
-        # ABOVE the nearest resistance.
-        level = (max(sup) if sup else None) if direction == "long" \
-            else (min(res) if res else None)
+        # ABOVE the nearest resistance. `level` overrides that when the caller
+        # knows the exact wall the trade is betting against.
+        if level is None:
+            level = (max(sup) if sup else None) if direction == "long" \
+                else (min(res) if res else None)
         p = _sized(live, direction, level)
         p["up"], p["dn"] = up, dn
         p["strong"] = (up if direction == "long" else dn) >= STRONG_FRAMES
         return p
 
-    try:
-        b15 = bars(TREND_FILTER_TF, 300) if TREND_FILTER_TF else None
-    except Exception:  # noqa: BLE001 - a broken feed must not kill the plan
-        b15 = None
-
-    def gated(direction: str) -> dict | None:
-        if not frame_agrees(direction, live, b15):
-            return None
-        if FILTERS_ON and not filter_status(direction, b15)["ok"]:
-            return None
-        return sized(direction)
-
+    # 1. A confirmed trend. The frames agree -- my read and the old desk read
+    #    agree on the threshold, so this is an entry at market. The gate that
+    #    used to sit here is deliberately not applied.
     if up >= CONFIRM_FRAMES:
-        p = gated("long")
-        if p is not None:
-            return p
+        return sized("long")
     if dn >= CONFIRM_FRAMES:
-        p = gated("short")
-        if p is not None:
-            return p
+        return sized("short")
+
+    # 2. No trend, but the price is retracing a dominant multi-day leg. MY read
+    #    is the fib wall, and the trade is the REJECTION of it -- the same
+    #    trigger the card prints, from the same helper, so the desk and the card
+    #    can never disagree about whether the moment has come.
+    trig = _wall_trigger(live)
+    if trig is not None:
+        direction, wall, _nxt = trig
+        return sized(direction, wall)
     return None
 
 
@@ -1536,35 +1533,21 @@ def card_recommend() -> str:
     if p is None:
         if not market_open(m["q"]):
             return ("🎯 <b>التوصية</b> — XAUUSD\n<b>لا صفقة</b> — السوق مسكّر.\n\n"
-                    "<i>المكتب ما يعطي إشارة على سعر ميت.</i>")
-        lean, mark = _bias(m["trends"])
+                    "<i>ما بعطي إشارة على سعر ميت.</i>")
         up = sum(1 for tf in FRAMES if m["trends"].get(tf) == 1)
         dn = sum(1 for tf in FRAMES if m["trends"].get(tf) == -1)
+        lean, mark = _bias(m["trends"])
         if up >= CONFIRM_FRAMES or dn >= CONFIRM_FRAMES:
-            direction = "long" if up >= CONFIRM_FRAMES else "short"
-            way = "صاعد" if direction == "long" else "هابط"
-            try:
-                b15 = bars(TREND_FILTER_TF, 300)
-            except Exception:  # noqa: BLE001
-                b15 = []
-            if FILTERS_ON:
-                fs = filter_status(direction, b15)
-                if not fs["ok"]:
-                    return ("🎯 <b>التوصية</b> — XAUUSD\n"
-                            f"<b>لا صفقة</b> — الاتجاه {way} بس <b>فلتر "
-                            f"الجودة مانع</b>:\n{_filter_line(fs)}\n\n"
-                            "<i>المكتب ما ياخد إلا الصفقات النظيفة.</i>")
-            if not frame_agrees(direction, m["live"], b15):
-                return ("🎯 <b>التوصية</b> — XAUUSD\n"
-                        f"<b>لا صفقة</b> — الاتجاه {way} بس السعر "
-                        f"{'تحت' if direction == 'long' else 'فوق'} "
-                        f"EMA20 ({TREND_FILTER_TF}).\n"
-                        "<i>المكتب ما ياخد عكس الزخم القصير — استنى يرجع.</i>")
+            way = "صاعد" if up >= CONFIRM_FRAMES else "هابط"
+            return ("🎯 <b>التوصية</b> — XAUUSD\n"
+                    f"<b>لا صفقة</b> — الاتجاه {way} بس السعر لسا ما وصل "
+                    "لزناد الدخول.\n\n"
+                    "<i>ما بدخل عالملاحقة — استنى يرتد للجدار.</i>")
         return ("🎯 <b>التوصية</b> — XAUUSD\n"
                 f"<b>لا صفقة</b> — الفريمات ما اتفقت "
                 f"({CONFIRM_FRAMES}/6 مطلوبة).\n"
                 f"ميل القراءة: {mark} <b>{lean}</b>\n\n"
-                "<i>المكتب ما يعطي إشارة لما السوق محتار.</i>")
+                "<i>ما بعطي إشارة لما السوق محتار.</i>")
     return ("🎯 <b>التوصية</b> — " + SYMBOL + "\n" +
             "\n".join(_plan_lines(p)) + "\n\n"
             "<i>التزام بالمخاطرة — كل صفقة على حسابك.</i>")
@@ -1822,7 +1805,7 @@ def card_open() -> str:
     rows = open_trades()
     if not rows:
         return ("📂 <b>الصفقات المفتوحة</b>\n"
-                "ما في صفقة مفتوحة هلّق — المكتب ما بحمل شي حالياً.")
+                "ما في صفقة مفتوحة هلّق — ما بحمل شي حالياً.")
     L = [f"📂 <b>الصفقات المفتوحة</b> — العدد <b>{len(rows)}</b>", ""]
     L += ["  " + _line(t) for t in rows]
     L.append("")
@@ -1968,11 +1951,11 @@ def help_text() -> str:
     return ("❓ <b>مساعدة</b>\n"
             "أنا مكتب تحليل للذهب (XAUUSD). أقرأ السوق، وأبعتلك <b>صفقة "
             "مناسبة لحسابك</b> (لوت 0.01، $200): ربح $15-20 وخسارة $8-10، "
-            "مع الوقف والهدف. المكتب <b>يسجّلها ويسجّل نتيجتها لحاله</b> — "
+            "مع الوقف والهدف. <b>بسجّلها وبسجّل نتيجتها لحالي</b> — "
             "ما في داعي تسجّل شي.\n\n"
             "<b>قواعد الصفقات:</b>\n"
             "• صفقة أولى لمّا يتأكد الاتجاه (4/6 فريمات).\n"
-            "• <b>صفقة وحدة بأي وقت</b> — المكتب ما بيفتح تانية إلا لما "
+            "• <b>صفقة وحدة بأي وقت</b> — ما بفتح تانية إلا لما "
             "تنسكّر الأولى (وقف أو هدف).\n"
             "• إذا كانت الإشارة قوية وبدك تزيد، سكّر الأولى بيدك أولاً.\n\n"
             "<b>بتقدر تسكّر صفقة بيدك</b> (لما تشوف السوق انقلب):\n"
@@ -2025,23 +2008,18 @@ def card_action() -> str:
                 "<i>سجّلها بالبوت أو بمنصتك — الوقف إلزامي.</i>")
 
     # wait: say why, and the single condition that flips it.
-    tf_ar = {"1d": "يومي", "4h": "4س", "1h": "1س", "30m": "30د",
-             "15m": "15د", "5m": "5د"}.get(TREND_FILTER_TF, TREND_FILTER_TF)
-    e = v["ema"]
-    if v.get("blocked"):
-        way = "صاعد" if v.get("direction") == "long" else "هابط"
-        why = f"الاتجاه {way}، بس فلتر الجودة مانع: {v['blocked']}."
-        todo = ("⏸️ <b>استنى</b> يتحسّن الفلتر (اتجاه واضح + زخم مؤيد).")
+    if v.get("wall"):
+        want = "بيع" if v.get("direction") == "short" else "شراء"
+        why = (f"السعر بيمشي عكس موجة كبيرة — لسا ما لمس الجدار "
+               f"<b>{num(v['wall'])}</b>.")
+        todo = (f"⏸️ <b>استنى</b> يلمس <b>{num(v['wall'])}</b> ويغلق 1س {want}، "
+                "وبعدها ادخل.")
     elif v["up"] >= CONFIRM_FRAMES:
-        why = ("الاتجاه صاعد، بس السعر تحت EMA20 "
-               f"({tf_ar}) — الدخول عكس الزخم.")
-        todo = (f"⏸️ <b>استنى</b> شمعة {tf_ar} تسكّر فوق "
-                f"<b>{num(e)}</b>." if e else "⏸️ <b>استنى</b> تأكيد الزخم.")
+        why = "الاتجاه صاعد، بس لسا ما في دخول مؤكد."
+        todo = "⏸️ <b>استنى</b> إغلاق 1س يثبّت الاتجاه."
     elif v["dn"] >= CONFIRM_FRAMES:
-        why = ("الاتجاه هابط، بس السعر فوق EMA20 "
-               f"({tf_ar}) — الدخول عكس الزخم.")
-        todo = (f"⏸️ <b>استنى</b> شمعة {tf_ar} تسكّر تحت "
-                f"<b>{num(e)}</b>." if e else "⏸️ <b>استنى</b> تأكيد الزخم.")
+        why = "الاتجاه هابط، بس لسا ما في دخول مؤكد."
+        todo = "⏸️ <b>استنى</b> إغلاق 1س يثبّت الاتجاه."
     else:
         why = f"الفريمات ما اتفقت ({v['up']}ص · {v['dn']}هـ) — السوق محتار."
         todo = "⏸️ <b>استنى</b> يتفق 4 من 6 فريمات على اتجاه."
@@ -2146,9 +2124,44 @@ def _big_leg(live: float) -> tuple[float, float, bool, float] | None:
     return hi, lo, p_high, (live - lo) / (hi - lo)
 
 
+def _wall_trigger(live: float,
+                  big: tuple | None = None) -> tuple[str, float, float] | None:
+    """The wall trade, or None -- ONE trigger, so plan() and the card cannot
+    disagree about whether the retracement has been rejected yet.
+
+    Returns (direction, wall, next_level). The rule is the one the card prints:
+    the price must have TOUCHED the fib wall and the last closed 1h bar must
+    have closed back on the leg's side of it. That is the "بيع عند الجدار"
+    moment; before it, the stance is to wait -- and a desk that opened at market
+    would be exactly the disagreement the owner keeps catching.
+    """
+    big = big if big is not None else _big_leg(live)
+    if big is None:
+        return None
+    bhi, blo, bdown, pos = big
+    span = bhi - blo
+    try:
+        b1 = closed(bars("1h", 300), "1h")
+    except Exception:  # noqa: BLE001 - a broken feed must not kill the read
+        return None
+    if not b1:
+        return None
+    last = b1[-1]
+    if bdown and 0.25 <= pos <= 0.62:
+        wall = blo + span * 0.382
+        if last["high"] >= wall - ENTRY_NEAR_PTS and last["close"] < wall:
+            return "short", wall, blo + span * 0.5
+    elif not bdown and 0.38 <= pos <= 0.75:
+        wall = bhi - span * 0.382
+        if last["low"] <= wall + ENTRY_NEAR_PTS and last["close"] > wall:
+            return "long", wall, bhi - span * 0.5
+    return None
+
+
 def _opinion(live: float, side: str | None, agree: int,
              sell: list, buy: list, r15: float | None,
-             mixed: bool, big: tuple | None = None) -> list[str]:
+             mixed: bool, big: tuple | None = None,
+             trig: tuple | None = None) -> list[str]:
     """The honest stance, up front: what I would DO, how sure, what flips me.
 
     This is the difference between a report and a view. It can say "wait" or
@@ -2177,6 +2190,25 @@ def _opinion(live: float, side: str | None, agree: int,
         conf = {"عالية": "متوسطة", "متوسطة": "منخفضة"}.get(conf, conf)
 
     if side is None:
+        # The wall trade fires the moment the rejection closes -- say so, and
+        # with the SAME numbers plan() would size, because the desk is opening
+        # it now. Anything else here is the card and the desk disagreeing.
+        if trig is not None:
+            d, wall, _nxt = trig
+            s = _sized(live, d, wall)
+            flip = ("فوق" if d == "short" else "تحت")
+            if d == "short":
+                head = (f"\n🔴 <b>موقفي: أبيع الآن</b> — الجدار "
+                        f"<b>{num(wall)}</b> انرفض (إغلاق 1س تحته).")
+            else:
+                head = (f"\n🟢 <b>موقفي: أشتري الآن</b> — الجدار "
+                        f"<b>{num(wall)}</b> ثبت (إغلاق 1س فوقه).")
+            return [head,
+                    f"  دخول <b>{num(s['entry'])}</b> · وقف "
+                    f"<b>{num(s['stop'])}</b> · هدف <b>{num(s['target'])}</b> "
+                    f"(−${s['risk_usd']:.0f}/+${s['gain_usd']:.0f}).",
+                    f"  الثقة <b>{conf}</b> · 🔄 بيلغي نظريتي: إغلاق 1س "
+                    f"{flip} {num(wall)}."]
         # A range on the frames can still be a DECISION on the chart: if the
         # price is retracing a real multi-day leg, name the fib wall and the
         # break, instead of a flat "stay out" that hides the setup.
@@ -2288,7 +2320,9 @@ def card_full() -> str:
     st = _structure_read()
     mixed = bool(st and "مختلطة" in st)
     big = _big_leg(live)
-    L += _opinion(live, trend_side, agree, sell, buy, rsis.get("15m"), mixed, big)
+    trig = _wall_trigger(live, big)
+    L += _opinion(live, trend_side, agree, sell, buy, rsis.get("15m"), mixed,
+                  big, trig)
 
     # ---- 1. the day's picture -------------------------------------------
     hi, lo = q.get("high"), q.get("low")
@@ -2484,30 +2518,6 @@ def card_full() -> str:
     # at a zone the price is already on is "بيع كسر" -- naming it "بيع القوة"
     # there was simply wrong.
     L.append("\n<b>🎬 خطتي — كل الدخولات (لحظي من السوق):</b>")
-    wall_sell: float | None = None
-    if down:
-        kind = ("بيع كسر (السعر عالمنطقة)" if sell
-                and abs(live - sell[0][0]) <= ENTRY_NEAR_PTS
-                else "بيع القوة (ارتداد)")
-        L.append(f"  الاتجاه هابط → <b>{kind}</b>")
-    elif up_trend:
-        kind = ("شراء كسر (السعر عالمنطقة)" if buy
-                and abs(live - buy[0][0]) <= ENTRY_NEAR_PTS
-                else "شراء الانخفاض")
-        L.append(f"  الاتجاه صاعد → <b>{kind}</b>")
-    else:
-        if big is not None and big[2] and 0.25 <= big[3] <= 0.62:
-            wall_sell = big[1] + (big[0] - big[1]) * 0.382
-            L.append(f"  ارتداد داخل هبوط → بِع عند الجدار <b>{num(wall_sell)}</b> · "
-                     f"لا تشتري الارتداد")
-        else:
-            L.append("  السوق عرضي → <b>اشترِ عند الدعم · بِع عند المقاومة</b>")
-
-    fibs_d: dict[str, float] = {}
-    fibs_u: dict[str, float] = {}
-    if isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
-        fibs_d = dict(_fib_retr(hi, lo, False))
-        fibs_u = dict(_fib_retr(hi, lo, True))
 
     def _entry_line(entry: float, side: str, tag: str) -> str:
         s = _sized(entry, side, entry)
@@ -2525,46 +2535,40 @@ def card_full() -> str:
             out.append(_entry_line(e, side, tag))
         return out
 
-    # -- sell ladder (with the trend when down, or as a fade when up) -----
-    if down:
-        s_tags = [(sell[i][0], f"منطقة بيع {i + 1}")
-                  for i in range(min(2, len(sell)))]
-        if fibs_d:
-            s_tags.append((fibs_d["38.2%"], "فيبو 38.2%"))
-        if isinstance(lo, (int, float)):
-            s_tags.append((lo, "بيع كسر تحت القاع"))
-        lines = _ladder(s_tags, "short")
-        if lines:
-            L.append("  🔴 <b>البيع (مع الاتجاه):</b>")
-            L += lines
-    elif up_trend and sell:
-        L.append("  🔴 <b>بيع (عكس الاتجاه — سكالب):</b>")
-        L += _ladder([(z, f"منطقة بيع {i + 1}")
-                      for i, (z, _n) in enumerate(sell[:2])], "short")
-
-    # -- the retracement sell: the wall is the entry the stance named, so the
-    #    plan must carry it as a SIZED trade. Leaving only the counter-trend
-    #    buy ladder here contradicted the header line ("sell the wall") -- the
-    #    card said sell and then listed only buys whose target sat BEYOND the
-    #    wall, i.e. trades that needed the wall to break. ------------------
-    if wall_sell is not None and not down:
-        L.append("  🔴 <b>البيع (مع الموجة الكبيرة — الأولوية):</b>")
-        L += _ladder([(wall_sell, "الجدار (فيبو 38.2%)")], "short")
-
-    # -- buy ladder ------------------------------------------------------
-    if up_trend:
-        b_tags = [(buy[i][0], f"منطقة شراء {i + 1}")
-                  for i in range(min(2, len(buy)))]
-        if fibs_u:
-            b_tags.append((fibs_u["38.2%"], "فيبو 38.2%"))
-        lines = _ladder(b_tags, "long")
-        if lines:
-            L.append("  🟢 <b>الشراء (مع الاتجاه):</b>")
-            L += lines
-    elif buy and wall_sell is None:
-        L.append("  🟢 <b>شراء (عكس الاتجاه — حذر، نصّ الحجم):</b>")
-        L += _ladder([(z, f"منطقة شراء {i + 1}")
-                      for i, (z, _n) in enumerate(buy[:2])], "long")
+    if down or (trig is not None and trig[0] == "short"):
+        # The sell is THE trade -- with the trend, or the wall rejection that is
+        # the whole stance. It is listed first and, when the trigger has fired,
+        # at the SAME entry plan() just sized, so the card and the desk read as
+        # one voice.
+        L.append("  🔴 <b>البيع (الأولوية):</b>")
+        if trig is not None and trig[0] == "short":
+            L += [_entry_line(live, "short", "الجدار (انرفض)")]
+        elif down:
+            s_tags = [(sell[i][0], f"منطقة بيع {i + 1}")
+                      for i in range(min(2, len(sell)))]
+            if isinstance(lo, (int, float)):
+                s_tags.append((lo, "بيع كسر تحت القاع"))
+            L += _ladder(s_tags, "short")
+    elif up_trend or (trig is not None and trig[0] == "long"):
+        L.append("  🟢 <b>الشراء (الأولوية):</b>")
+        if trig is not None and trig[0] == "long":
+            L += [_entry_line(live, "long", "الجدار (ثبت)")]
+        else:
+            b_tags = [(buy[i][0], f"منطقة شراء {i + 1}")
+                      for i in range(min(2, len(buy)))]
+            L += _ladder(b_tags, "long")
+    elif big is not None and big[2] and 0.25 <= big[3] <= 0.62:
+        wall = big[1] + (big[0] - big[1]) * 0.382
+        L.append(f"  ارتداد داخل هبوط → بِع عند الجدار <b>{num(wall)}</b> · "
+                 f"لا تشتري الارتداد")
+        L.append(f"    • الزناد: لمس <b>{num(wall)}</b> + إغلاق 1س تحته")
+    elif big is not None and not big[2] and 0.38 <= big[3] <= 0.75:
+        wall = big[0] - (big[0] - big[1]) * 0.382
+        L.append(f"  تصحيح داخل صعود → اشترِ عند الجدار <b>{num(wall)}</b> · "
+                 f"لا تبيع التصحيح")
+        L.append(f"    • الزناد: لمس <b>{num(wall)}</b> + إغلاق 1س فوقه")
+    else:
+        L.append("  السوق عرضي → <b>اشترِ عند الدعم · بِع عند المقاومة</b>")
 
     # -- account ---------------------------------------------------------
     L.append(f"  💰 <b>حسابك ${ACCOUNT_USD:.0f} · {LOT} لوت:</b> نقطة = "
@@ -2770,13 +2774,13 @@ def card_score() -> str:
 def alerts_guide() -> str:
     """The map of every alert the desk sends and what to do about each."""
     return ("🔔 <b>دليل التنبيهات</b> — " + SYMBOL + "\n"
-            "هاي كل رسالة رح يبعتها المكتب، وشو تعمل معها 👇\n\n"
-            "<b>1️⃣ صفقة جديدة</b> — «المكتب لقط صفقة»\n"
+            "هاي كل رسالة رح ابعتها، وشو تعمل معها 👇\n\n"
+            "<b>1️⃣ صفقة جديدة</b> — «لقطت صفقة»\n"
             "  يعني: الشروط اكتملت وفتح صفقة.\n"
-            "  👉 <i>ما تعمل شي — المكتب بيديرها. لو بدك، سجّلها بمنصتك.</i>\n\n"
+            "  👉 <i>ما تعمل شي — أنا بيديرها. لو بدك، سجّلها بمنصتك.</i>\n\n"
             "<b>2️⃣ انحسمت صفقة</b> — هدف / وقف / يدوي\n"
             "  يعني: الصفقة سكّرت والنتيجة محسوبة بالـR.\n"
-            "  👉 <i>راجع النتيجة، والمكتب رح يفتح جديدة إذا تجددت الشروط.</i>\n\n"
+            "  👉 <i>راجع النتيجة، وأنا رح افتح جديدة إذا تجددت الشروط.</i>\n\n"
             "<b>3️⃣ قرب الهدف</b> 🎯\n"
             "  يعني: السعر قرّب من هدف صفقة مفتوحة.\n"
             "  👉 <i>لك الخيار: خذ الربح الآن، أو خلّي الهدف يشتغل.</i>\n\n"
@@ -2796,10 +2800,10 @@ def alerts_guide() -> str:
             "  يعني: السعر تعدّى مستوى من قائمة المراقبة (منها 4,138 و4,108).\n"
             "  👉 <i>مستوى مراقب اتكسر — راقب التأكيد قبل الدخول.</i>\n\n"
             "<b>8️⃣ باب الشراء / البيع انفتح</b> 🟢🔴\n"
-            "  يعني: شمعة 15د سكّرت فوق/تحت EMA20 (فلتر المكتب).\n"
+            "  يعني: شمعة 15د سكّرت فوق/تحت EMA20 (فلتري).\n"
             "  👉 <i>إذا الاتجاه العام بنفس الجهة = فرصة دخول.</i>\n\n"
             "<b>9️⃣ رفض صفقة</b> ⚠️\n"
-            "  يعني: إشارة جديدة بس المكتب ما دخل (الكتاب ممتلئ، أو "
+            "  يعني: إشارة جديدة بس ما دخلت (الكتاب ممتلئ، أو "
             "الصفقة الحالية متقدمة/رابحة).\n"
             "  👉 <i>ما تعمل شي — حماية من المخاطرة، مو خطأ.</i>\n\n"
             "<b>🔟 تغيّر الاتجاه</b> 🔄\n"
@@ -2808,7 +2812,7 @@ def alerts_guide() -> str:
             "  👉 <i>حدّث نظرتك: صاعد = شراء الانخفاض · هابط = بيع القوة. "
             "(تنبيه وحدة كل 20 دقيقة كحد أقصى.)</i>\n\n"
             "<b>1️⃣1️⃣ قرب منطقة دخول</b> 🎯\n"
-            "  يعني: السعر وصل قرب منطقة بيع أو شراء من مناطق المكتب.\n"
+            "  يعني: السعر وصل قرب منطقة بيع أو شراء من مناطق قراءتي.\n"
             "  👉 <i>جهّز أمرك: الرسالة فيها الدخول والوقف والهدف. استنى "
             "تأكيد الشمعة — الوقف إلزامي.</i>\n\n"
             "📌 <b>القاعدة الذهبية:</b> كل تنبيه بيقوللك «شو تعمل» بسطر — "
@@ -3116,10 +3120,10 @@ def _winning(t) -> bool:
 
 
 def _open_card(p: dict, t=None) -> str:
-    e = ("⚡ صفقة قوية" if p.get("strong") else "🎯 المكتب لقط صفقة")
+    e = ("⚡ صفقة قوية" if p.get("strong") else "🎯 لقطت صفقة")
     head = f"{e} — {SYMBOL}" + (f"  ·  #{t['id']}" if t is not None else "")
     return "\n".join([head] + _plan_lines(p) +
-                     ["", "<i>المكتب سجّلها ورح يتابعها لحالها.</i>"])
+                     ["", "<i>سجّلتها ورح تابعها لحالي.</i>"])
 
 
 def _close_card(t) -> str:
@@ -3192,7 +3196,7 @@ def _no_second(p: dict, t, why: str) -> str:
     d = "شراء" if p["direction"] == "long" else "بيع"
     frm = "شراء 🟢" if t["direction"] == "long" else "بيع 🔴"
     tail = {
-        "full": (f"المكتب بيحمل <b>صفقة وحدة</b> بأي وقت — "
+        "full": (f"بحمل <b>صفقة وحدة</b> بأي وقت — "
                  f"#{t['id']} {frm} لسا مفتوحة."),
         "weak": (f"الإشارة مو قوية كفاية للتانية (بدها 5/6) — "
                  f"#{t['id']} {frm} لسا مفتوحة."),

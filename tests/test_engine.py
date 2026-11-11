@@ -103,13 +103,18 @@ class PlanGateTest(unittest.TestCase):
                               for tf in bot.FRAMES}):
             self.assertIsNone(bot.plan())
 
-    def test_long_requires_price_above_the_filter_ema(self):
-        # Six frames all up, but the live price sits UNDER the 15m EMA20.
+    def test_a_confirmed_trend_is_a_trade_whatever_the_price(self):
+        # The owner asked for MY read to decide: the EMA20 quality gate is gone
+        # from plan(), so six up frames ARE a trade even with the price under
+        # the 15m EMA20. (The filter helpers still exist; they are just no
+        # longer in the decision path.)
         rising = list(range(4000, 4060))
         closes = {tf: rising for tf in bot.FRAMES}
         with FakeFeed(mid=4000.0, closes=closes):
             self.assertFalse(bot.frame_agrees("long", 4000.0))
-            self.assertIsNone(bot.plan())
+            p = bot.plan()
+            self.assertIsNotNone(p)
+            self.assertEqual(p["direction"], "long")
 
     def test_a_confirmed_long_with_the_filter_passes(self):
         # The frame tilt + EMA20 rule in isolation: the quality gate is turned
@@ -192,19 +197,17 @@ class FilterStatusTest(unittest.TestCase):
         fs = bot.filter_status("long", self._bars(closes, spread=1.0))
         self.assertNotIn("MACD", fs["failed"])
 
-    def test_gate_blocks_plan_but_toggle_restores_raw_tilt(self):
+    def test_the_gate_no_longer_holds_a_plan_back(self):
         # Six frames up, price above EMA20, but a dead-flat tape (ATR% ~ 0)
-        # fails the ATR band -> no plan while the gate is on.
+        # would have failed the ATR band. The owner took the gate OUT of the
+        # decision path, so the plan stands regardless of FILTERS_ON. The gate
+        # still MEASURES (filter_status is tested above); it just no longer
+        # blocks.
         rising = list(range(4000, 4060))
         closes = {tf: rising for tf in bot.FRAMES}
         with FakeFeed(mid=4059.0, closes=closes):
-            self.assertIsNone(bot.plan())
-            saved = bot.FILTERS_ON
-            bot.FILTERS_ON = False
-            try:
-                self.assertIsNotNone(bot.plan())
-            finally:
-                bot.FILTERS_ON = saved
+            self.assertIsNotNone(bot.plan())
+            self.assertFalse(bot.filter_status("long")["ok"])
 
 
 class IndicatorTest(unittest.TestCase):
@@ -615,14 +618,20 @@ class NewsTest(unittest.TestCase):
 
     def test_news_times_are_shown_in_the_owner_clock(self):
         # Google stamps headlines in GMT; the owner reads Syria time (UTC+3),
-        # so a headline is shown three hours later than its GMT stamp.
-        from datetime import UTC, datetime
-        noon_gmt = datetime(2026, 11, 10, 9, 0, tzinfo=UTC)
+        # so a headline is shown three hours later than its GMT stamp. Use a
+        # stamp built from NOW so the test does not rot: a fixed date passes
+        # only on the day it was written.
+        from datetime import UTC, datetime, timedelta
+        tz = bot.timezone(timedelta(hours=bot.TZ_OFFSET_H))
+        today_utc = datetime.now(UTC).astimezone(tz).date()
+        # 09:00 UTC on the owner's today -> 12:00 in his clock, no date shown.
+        noon_gmt = datetime(today_utc.year, today_utc.month, today_utc.day,
+                            9, 0, tzinfo=UTC)
         self.assertEqual(bot._clock(noon_gmt), "12:00")
         # A headline from another day carries the date, so it is not mistaken
         # for today's tape.
-        old = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
-        self.assertIn("01/11", bot._clock(old))
+        old = noon_gmt - timedelta(days=9)
+        self.assertIn(old.astimezone(tz).strftime("%d/%m"), bot._clock(old))
 
     def test_news_card_shows_the_owner_clock_label(self):
         saved_items, saved_live = bot.NEWS_ITEMS, bot.NEWS_LIVE
@@ -857,6 +866,17 @@ class FullCardTest(unittest.TestCase):
         return FakeFeed(mid=wave[-1],
                         closes={tf: wave for tf in bot.FRAMES})
 
+    def _leg_feed(self, last_1h):
+        # A real multi-day down leg (rise then a 135-pt drop) with a flat tail,
+        # plus a caller-supplied 1h ending. The wall is the 38.2% fib of the
+        # drop; `last_1h` decides whether the trigger has fired.
+        rise = [4000 + (4148 - 4000) * (i / 19) for i in range(20)]
+        drop = [4148 - (4148 - 4013) * (i / 24) for i in range(25)]
+        flat = [4058.0] * 30
+        h1 = [4030 + i * 0.3 for i in range(20)] + last_1h
+        return {"1d": flat, "4h": rise + drop, "1h": h1,
+                "30m": flat, "15m": flat, "5m": flat}
+
     def test_it_stays_inside_the_telegram_limit(self):
         with self._feed():
             t = bot.card_full()
@@ -986,6 +1006,29 @@ class FullCardTest(unittest.TestCase):
             # ...then a SIZED sell must be there, and no counter-trend buy.
             self.assertIn("البيع", plan)
             self.assertNotIn("شراء (عكس الاتجاه", plan)
+
+    def test_the_desk_waits_while_the_card_waits(self):
+        # The price is retracing the leg but has NOT reached the wall yet: the
+        # card says "wait", so plan() must return None. A desk that opened here
+        # would front-run the very trigger the card names -- the disagreement
+        # the owner keeps catching.
+        feed = self._leg_feed([4040, 4042, 4041, 4043, 4042.0])
+        with FakeFeed(mid=4058.0, closes=feed):
+            self.assertIsNone(bot.plan())
+            t = bot.card_full()
+        self.assertIn("بستنى", t)
+
+    def test_the_desk_sells_the_wall_the_card_sells(self):
+        # The last closed 1h bar touched the wall and closed back below it: the
+        # card says "sell now", so plan() must size that same sell -- one voice.
+        feed = self._leg_feed([4056, 4060, 4058, 4066.2, 4058.0])
+        with FakeFeed(mid=4058.0, closes=feed):
+            p = bot.plan()
+            t = bot.card_full()
+        self.assertIsNotNone(p)
+        assert p is not None
+        self.assertEqual(p["direction"], "short")
+        self.assertIn("أبيع الآن", t)
 
     def test_it_gives_a_concrete_call(self):
         with self._feed():
