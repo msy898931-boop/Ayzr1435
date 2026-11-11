@@ -1230,6 +1230,107 @@ def card_map() -> str:
     return "\n".join(lines)
 
 
+def _ema_last(vals: list[float], n: int) -> float | None:
+    """The last EMA of a series, or None when there is not enough history."""
+    s = ema_series(vals, n)
+    return s[-1] if s else None
+
+
+def map_payload() -> dict:
+    """Every number the live map page needs, in ONE read.
+
+    The web page must not re-derive anything: supply/demand zones, liquidity,
+    the scenario trades and the plan all come from the same functions the
+    Telegram cards call, so the page can never disagree with the bot. The page
+    is a VIEW of the desk, not a second engine.
+
+    Everything is JSON-serialisable (plain floats/strings/lists) and every
+    sub-read is individually guarded: one dead frame or feed degrades that
+    section to an empty list, it never blanks the page.
+    """
+    m = read_market()
+    q, live = m["q"], m["live"]
+    res, sup = _levels(live) if live > 0 else ([], [])
+    sell_z, buy_z = _zones(live) if live > 0 else ([], [])
+    liq_hi, liq_lo = _liquidity(live) if live > 0 else ([], [])
+
+    # The live plan (the same dict the action card shows), if one exists now.
+    p = None
+    with suppress(Exception):
+        p = plan(m)
+
+    # Scenario trades, priced by _sized() exactly as card_scenarios does.
+    scen: list[dict] = []
+    if live > 0:
+        if res:
+            trig = res[0] + 0.5
+            s = _sized(trig, "long", res[0])
+            scen.append({"side": "long", "trigger": trig, "level": res[0],
+                         "next": res[1] if len(res) > 1 else None, **s})
+        if sup:
+            trig = sup[0] - 0.5
+            s = _sized(trig, "short", sup[0])
+            scen.append({"side": "short", "trigger": trig, "level": sup[0],
+                         "next": sup[1] if len(sup) > 1 else None, **s})
+
+    # EMAs per frame -- the levels the owner reads against the price.
+    emas: dict = {}
+    for tf in FRAMES:
+        with suppress(Exception):
+            b = bars(tf, 300)
+            c = [x["close"] for x in b]
+            emas[tf] = {"e20": _ema_last(c, 20), "e50": _ema_last(c, 50)}
+
+    # The late-entry caveat for the live plan, from the ONE helper every card
+    # uses, so the page cannot show a late entry without saying so.
+    side = None
+    if p:
+        side = "sell" if p["direction"] == "short" else "buy"
+    note = _late_note(side, (m.get("rsis") or {}).get("15m"))
+
+    # News: information only, same source the news card shows.
+    news: list[dict] = []
+    with suppress(Exception):
+        items = list(_news_fetch()) if NEWS_LIVE else []
+        items += [tuple(x) for x in NEWS_ITEMS]
+        for it in items[:8]:
+            if len(it) == 3:
+                news.append({"tag": it[0], "title": it[1], "when": it[2]})
+            elif len(it) == 2:
+                news.append({"tag": it[0], "title": it[1], "when": ""})
+
+    try:
+        b15 = closed(bars("15m", 300), "15m")
+        adx_v = adx_series(b15)[-1] if b15 else None
+    except Exception:  # noqa: BLE001
+        adx_v = None
+
+    return {
+        "symbol": SYMBOL,
+        "live": live,
+        "state": q.get("marketState"),
+        "dayDiffPercent": q.get("dayDiffPercent"),
+        "spread": q.get("spread"),
+        "trends": m["trends"],
+        "rsis": m["rsis"],
+        "atrs": m["atrs"],
+        "emas": emas,
+        "res": res[:6],
+        "sup": sup[:6],
+        "sell_zones": [{"price": z, "touches": n} for z, n in sell_z[:5]],
+        "buy_zones": [{"price": z, "touches": n} for z, n in buy_z[:5]],
+        "liquidity": {"above": liq_hi[:3], "below": liq_lo[:3]},
+        "plan": p,
+        "plan_side": side,
+        "late_note": note,
+        "scenarios": scen,
+        "adx": adx_v,
+        "news": news,
+        "clock": _clock(datetime.now(UTC)),
+        "tz": TZ_LABEL,
+    }
+
+
 def card_news() -> str:
     """The news layer -- INFORMATION ONLY, never a trade input.
 

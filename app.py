@@ -39,6 +39,33 @@ FIRST_PING_S = 60   # ping soon after boot, then settle into the 8-minute beat
 PING_RETRY_S = 45   # a failed beat is retried quickly, not after a full interval
 PING_TRIES = 3
 RESTORE_WAIT_S = 60  # never let a slow Telegram delay the bot for longer than this
+MAP_CACHE_S = 15     # the live map is a heavy read; serve it from a short cache
+MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "map.html")
+
+# The live map: /map serves the page, /map.json serves the numbers. The numbers
+# come from bot.map_payload() -- the SAME functions the Telegram cards call --
+# so the page can never disagree with the bot. Cached for MAP_CACHE_S seconds
+# because map_payload() reads six frames plus the news feed; without the cache
+# a page open on a phone would hammer the free instance every few seconds.
+_MAP_CACHE: dict = {"at": 0.0, "body": b""}
+_MAP_LOCK = threading.Lock()
+
+
+def map_json() -> bytes:
+    now = time.monotonic()
+    with _MAP_LOCK:
+        if _MAP_CACHE["body"] and now - _MAP_CACHE["at"] < MAP_CACHE_S:
+            return _MAP_CACHE["body"]
+    # Build OUTSIDE the lock: a slow read must not block a second caller, and
+    # two readers racing simply produce the same payload.
+    try:
+        body = json.dumps(desk.map_payload(), ensure_ascii=False).encode()
+    except Exception as exc:  # noqa: BLE001 - a failed read must not 500 the page
+        print(f"map payload failed: {exc}", flush=True)
+        return json.dumps({"error": "read failed"}).encode()
+    with _MAP_LOCK:
+        _MAP_CACHE["at"], _MAP_CACHE["body"] = now, body
+    return body
 
 
 class Health(BaseHTTPRequestHandler):
@@ -50,8 +77,26 @@ class Health(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _send_raw(self, code: int, ctype: str, raw: bytes) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
     def do_GET(self) -> None:  # noqa: N802 - http.server API
         path = self.path.split("?")[0].rstrip("/") or "/"
+        if path == "/map.json":
+            self._send_raw(200, "application/json; charset=utf-8", map_json())
+            return
+        if path == "/map":
+            try:
+                with open(MAP_PATH, "rb") as fh:
+                    self._send_raw(200, "text/html; charset=utf-8", fh.read())
+            except Exception as exc:  # noqa: BLE001
+                self._send(500, {"error": f"map page missing: {exc}"})
+            return
         if path in ("/", "/health"):
             # Liveness is the whole point of this endpoint, so it must answer
             # even while the database is busy: a health check that can block is

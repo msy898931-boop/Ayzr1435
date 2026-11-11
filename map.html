@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>خريطة XAUUSD — لحظية</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui,"Segoe UI",Tahoma,sans-serif;
+         background:#0b0f14; color:#e6edf3; padding:20px; line-height:1.6; }
+  .wrap { max-width:1100px; margin:0 auto; }
+  h1 { font-size:22px; margin:0; display:inline-block; }
+  .top { display:flex; align-items:center; justify-content:space-between;
+         flex-wrap:wrap; gap:10px; margin-bottom:6px; }
+  .live { font-size:13px; color:#8b949e; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%;
+         background:#3fb950; margin-inline-end:5px; animation:p 1.6s infinite; }
+  @keyframes p { 0%,100%{opacity:1} 50%{opacity:.25} }
+  h2 { font-size:17px; margin:24px 0 10px; padding-bottom:6px;
+       border-bottom:1px solid #21262d; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:780px){ .grid { grid-template-columns:1fr; } }
+  .card { background:#161b22; border:1px solid #30363d; border-radius:12px; padding:16px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th,td { padding:6px 9px; text-align:right; border-bottom:1px solid #21262d; }
+  th { color:#8b949e; }
+  .res { color:#f85149; } .sup { color:#3fb950; }
+  .price { color:#e3b341; font-weight:700; font-size:20px; }
+  .muted { color:#8b949e; font-size:13px; }
+  .lvl { display:flex; align-items:center; gap:10px; padding:5px 10px;
+         border-radius:8px; margin:3px 0; font-size:14px; }
+  .lvl .tag { flex:1; } .lvl .val { font-variant-numeric:tabular-nums; font-weight:600; }
+  .lvl .dist { color:#8b949e; font-size:12px; min-width:62px; text-align:left; }
+  .r2 { background:rgba(248,81,73,.10); border-right:3px solid #f85149; }
+  .r1 { background:rgba(248,81,73,.05); border-right:3px solid #6e2b28; }
+  .s1 { background:rgba(63,185,80,.05); border-right:3px solid #245c30; }
+  .s2 { background:rgba(63,185,80,.10); border-right:3px solid #3fb950; }
+  .now { background:linear-gradient(90deg,#e3b341,#f0c955); color:#0b0f14;
+         font-weight:700; border-right:4px solid #e3b341; }
+  .now .dist { color:#0b0f14; }
+  .sc { border-right:4px solid; padding:10px 14px; border-radius:8px; margin:8px 0;
+        background:#12171e; }
+  .sc.long { border-color:#3fb950; } .sc.short { border-color:#f85149; }
+  .sc h3 { margin:0 0 5px; font-size:15px; }
+  .kv { font-size:13px; margin:2px 0; }
+  .warn { background:rgba(227,179,65,.10); border:1px solid #6b5a1f;
+          border-radius:10px; padding:11px 15px; font-size:14px; margin:12px 0; }
+  .bear { background:rgba(248,81,73,.10); border:1px solid #6e2b28;
+          border-radius:10px; padding:11px 15px; font-size:14px; margin:12px 0; }
+  ul { padding-inline-start:18px; margin:6px 0; }
+  li { margin:3px 0; font-size:14px; }
+  code { background:#21262d; padding:1px 6px; border-radius:5px; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>🥇 خريطة <span id="sym">XAUUSD</span> — لحظية</h1>
+    <div class="live"><span class="dot"></span>يتحدّث كل 30 ثانية · آخر قراءة <b id="clock">—</b> <span id="tz"></span></div>
+  </div>
+  <div class="price" id="live">—</div>
+  <div class="muted" id="state">—</div>
+
+  <div class="grid" style="margin-top:16px">
+    <div class="card">
+      <h2 style="margin-top:0">اللقطة السريعة</h2>
+      <table id="snap"><tr><td>—</td></tr></table>
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0">الفريمات (ميل · RSI · ATR)</h2>
+      <table id="frames"><tr><td>—</td></tr></table>
+    </div>
+  </div>
+
+  <div id="planbox"></div>
+
+  <h2>🗺️ خريطة المستويات</h2>
+  <div class="card"><div id="ladder">—</div></div>
+
+  <div class="grid">
+    <div class="card">
+      <h2 style="margin-top:0">🔴 مناطق البيع (فوق)</h2>
+      <div id="sellz" class="muted">—</div>
+      <h2>💧 سيولة</h2>
+      <div id="liq" class="muted">—</div>
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0">🟢 مناطق الشراء (تحت)</h2>
+      <div id="buyz" class="muted">—</div>
+      <h2>📰 الأخبار</h2>
+      <div id="news" class="muted">—</div>
+    </div>
+  </div>
+
+  <h2>🎬 السيناريوهات</h2>
+  <div id="scen">—</div>
+
+  <div class="muted" style="margin-top:24px; text-align:center">
+    كل الأرقام من محرك المكتب نفسه (نفس دوال بطاقات تلغرام). ليست نصيحة مالية · الوقف إلزامي.
+  </div>
+</div>
+<script>
+const F = v => v==null ? "—" : (Math.round(v*100)/100).toLocaleString("en-US");
+const P = v => v==null ? "—" : (v>0?"+":"") + (Math.round(v*10)/10);
+const T = { "1d":"1د","4h":"4س","1h":"1س","30m":"30د","15m":"15د","5m":"5د" };
+const trendCell = t => t==1?'<span class="sup">صاعد ▲</span>':(t==-1?'<span class="res">هابط ▼</span>':'<span class="muted">عرضي ●</span>');
+
+function render(d){
+  document.getElementById("sym").textContent = d.symbol;
+  document.getElementById("live").textContent = F(d.live);
+  const dd = d.dayDiffPercent;
+  document.getElementById("state").innerHTML =
+    (d.state==="open"?"🟢 السوق مفتوح":"🔴 السوق مسكّر") +
+    (dd!=null?` · اليوم <span class="${dd<0?'res':'sup'}">${P(dd)}%</span>`:"") +
+    (d.spread!=null?` · سبريد ${F(d.spread)}`:"");
+  document.getElementById("clock").textContent = d.clock;
+  document.getElementById("tz").textContent = d.tz;
+
+  const up = Object.values(d.trends).filter(x=>x==1).length;
+  const dn = Object.values(d.trends).filter(x=>x==-1).length;
+  document.getElementById("snap").innerHTML = `
+    <tr><th>الاتجاه</th><td>${dn>up?`<span class="res">هابط ${dn}/6</span>`:(up>dn?`<span class="sup">صاعد ${up}/6</span>`:"عرضي")}</td></tr>
+    <tr><th>ADX (15د)</th><td>${d.adx==null?"—":d.adx.toFixed(0)}</td></tr>
+    <tr><th>RSI 15د / 1س</th><td>${d.rsis["15m"]?.toFixed(0)??"—"} / ${d.rsis["1h"]?.toFixed(0)??"—"}</td></tr>
+    <tr><th>ATR 15د / 1س</th><td>${d.atrs["15m"]?.toFixed(1)??"—"} / ${d.atrs["1h"]?.toFixed(1)??"—"}</td></tr>`;
+
+  document.getElementById("frames").innerHTML = ["1d","4h","1h","30m","15m","5m"].map(tf=>{
+    const e = d.emas[tf]||{};
+    return `<tr><td>${T[tf]}</td><td>${trendCell(d.trends[tf])}</td><td>${d.rsis[tf]?.toFixed(0)??"—"}</td><td>${d.atrs[tf]?.toFixed(1)??"—"}</td><td class="muted">${F(e.e20)}</td></tr>`;
+  }).join("");
+
+  if (d.plan){
+    const p = d.plan, isShort = p.direction==="short";
+    const lbl = isShort?"بيع 🔴":"شراء 🟢";
+    document.getElementById("planbox").innerHTML = `
+      <div class="${isShort?'bear':'warn'}" style="margin-top:16px">
+        <b>🧭 المكتب هلّق:</b> ${lbl} · دخول <b>${F(p.entry)}</b> · وقف <b>${F(p.stop)}</b> · هدف <b>${F(p.target)}</b>
+        · R:R ${p.rr?.toFixed(2)} · مخاطرة $${p.risk_usd?.toFixed(0)}
+        ${d.late_note?`<div style="margin-top:8px">⚠️ ${d.late_note}</div>`:""}
+      </div>`;
+  } else {
+    document.getElementById("planbox").innerHTML = `<div class="warn" style="margin-top:16px"><b>🧭 المكتب هلّق:</b> بلا صفقة مؤكدة — قراءة بلا دخول.</div>`;
+  }
+
+  const lv=[];
+  (d.res||[]).slice().reverse().forEach((x,i)=>lv.push({v:x,t:"مقاومة",c:(i<2?"r2":"r1")}));
+  lv.push({now:true,v:d.live});
+  (d.sup||[]).forEach((x,i)=>lv.push({v:x,t:"دعم",c:(i<2?"s2":"s1")}));
+  document.getElementById("ladder").innerHTML = lv.map(x=>{
+    if(x.now) return `<div class="lvl now"><span class="tag">📍 السعر الحالي</span><span class="val">${F(x.v)}</span><span class="dist">—</span></div>`;
+    const dist = x.v - d.live;
+    return `<div class="lvl ${x.c}"><span class="tag">${x.t==="مقاومة"?"🔺":"🔻"} ${x.t}</span><span class="val">${F(x.v)}</span><span class="dist">${dist>0?"+":""}${dist.toFixed(0)}</span></div>`;
+  }).join("");
+
+  const zl = z => (z&&z.length)? z.map(x=>`🔺 ${F(x.price)} <span class="muted">(${x.touches} لمسة)</span>`).join("<br>") : "— ما في منطقة قريبة";
+  const zl2 = z => (z&&z.length)? z.map(x=>`🔻 ${F(x.price)} <span class="muted">(${x.touches} لمسة)</span>`).join("<br>") : "— ما في منطقة قريبة";
+  document.getElementById("sellz").innerHTML = zl(d.sell_zones);
+  document.getElementById("buyz").innerHTML = zl2(d.buy_zones);
+  const lq = d.liquidity||{};
+  document.getElementById("liq").innerHTML =
+    "فوق: " + ((lq.above||[]).map(F).join(" · ")||"—") + "<br>تحت: " + ((lq.below||[]).map(F).join(" · ")||"—");
+  document.getElementById("news").innerHTML = (d.news||[]).length
+    ? d.news.map(n=>`• ${n.tag} ${n.title}${n.when?` <span class="muted">(${n.when})</span>`:""}`).join("<br>")
+    : "— ما في أخبار";
+
+  document.getElementById("scen").innerHTML = (d.scenarios||[]).map(s=>{
+    const isLong = s.side==="long";
+    return `<div class="sc ${isLong?'long':'short'}">
+      <h3>${isLong?"🟢 سيناريو صعود":"🔴 سيناريو هبوط"}</h3>
+      <div class="kv"><b>المشغّل:</b> ${isLong?"اختراق":"كسر"} <b>${F(s.trigger)}</b> ${s.next?`· التالي ${F(s.next)}`:""}</div>
+      <div class="kv"><b>الوقف:</b> ${F(s.stop)} · <b>الهدف:</b> ${F(s.target)} · R:R ${s.rr?.toFixed(2)} (مخاطرة $${s.risk_usd?.toFixed(0)})</div>
+    </div>`;
+  }).join("") || "—";
+}
+
+async function tick(){
+  try {
+    const r = await fetch("map.json?_=" + Date.now());
+    if (r.ok) render(await r.json());
+  } catch(e){}
+}
+tick();
+setInterval(tick, 30000);
+</script>
+</body>
+</html>
