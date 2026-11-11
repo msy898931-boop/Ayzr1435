@@ -2483,6 +2483,7 @@ def card_full() -> str:
     # at a zone the price is already on is "بيع كسر" -- naming it "بيع القوة"
     # there was simply wrong.
     L.append("\n<b>🎬 خطتي — كل الدخولات (لحظي من السوق):</b>")
+    wall_sell: float | None = None
     if down:
         kind = ("بيع كسر (السعر عالمنطقة)" if sell
                 and abs(live - sell[0][0]) <= ENTRY_NEAR_PTS
@@ -2495,8 +2496,8 @@ def card_full() -> str:
         L.append(f"  الاتجاه صاعد → <b>{kind}</b>")
     else:
         if big is not None and big[2] and 0.25 <= big[3] <= 0.62:
-            wall = big[1] + (big[0] - big[1]) * 0.382
-            L.append(f"  ارتداد داخل هبوط → بِع عند الجدار <b>{num(wall)}</b> · "
+            wall_sell = big[1] + (big[0] - big[1]) * 0.382
+            L.append(f"  ارتداد داخل هبوط → بِع عند الجدار <b>{num(wall_sell)}</b> · "
                      f"لا تشتري الارتداد")
         else:
             L.append("  السوق عرضي → <b>اشترِ عند الدعم · بِع عند المقاومة</b>")
@@ -2540,6 +2541,15 @@ def card_full() -> str:
         L += _ladder([(z, f"منطقة بيع {i + 1}")
                       for i, (z, _n) in enumerate(sell[:2])], "short")
 
+    # -- the retracement sell: the wall is the entry the stance named, so the
+    #    plan must carry it as a SIZED trade. Leaving only the counter-trend
+    #    buy ladder here contradicted the header line ("sell the wall") -- the
+    #    card said sell and then listed only buys whose target sat BEYOND the
+    #    wall, i.e. trades that needed the wall to break. ------------------
+    if wall_sell is not None and not down:
+        L.append("  🔴 <b>البيع (مع الموجة الكبيرة — الأولوية):</b>")
+        L += _ladder([(wall_sell, "الجدار (فيبو 38.2%)")], "short")
+
     # -- buy ladder ------------------------------------------------------
     if up_trend:
         b_tags = [(buy[i][0], f"منطقة شراء {i + 1}")
@@ -2550,7 +2560,7 @@ def card_full() -> str:
         if lines:
             L.append("  🟢 <b>الشراء (مع الاتجاه):</b>")
             L += lines
-    elif buy:
+    elif buy and wall_sell is None:
         L.append("  🟢 <b>شراء (عكس الاتجاه — حذر، نصّ الحجم):</b>")
         L += _ladder([(z, f"منطقة شراء {i + 1}")
                       for i, (z, _n) in enumerate(buy[:2])], "long")
@@ -2709,13 +2719,17 @@ def card_score() -> str:
         honest += 1
     rows.append((f"الصدق ({honest}/4)", 15 * honest / 4, 15))
 
-    # -- 6. SIZED PLAN: at least two entries, each with a stop and a target,
-    #       and the account block. -------------------------------------------
+    # -- 6. SIZED PLAN: every entry carries BOTH a stop and a target, and the
+    #       account block is there. "A trade without a stop is not a trade", so
+    #       the invariant is per-ENTRY, not a count of two -- the desk's own
+    #       rule is ONE trade at a time, and a single sized entry is complete.
+    #       (The old ">=2 entries" proxy contradicted that rule.) -------------
     plan = plain.split("خطتي")[-1].split("الأخبار")[0]
-    n_stop = plan.count("وقف")
-    n_tgt = plan.count("هدف")
-    plan_ok = (n_stop >= 2 and n_tgt >= 2 and "حسابك" in plan and "R:R" in plan)
-    rows.append((f"الخطة مسعّرة (وقف {n_stop} · هدف {n_tgt})",
+    bullets = [ln for ln in plan.splitlines() if ln.strip().startswith("•")]
+    each_ok = bool(bullets) and all("وقف" in b and "هدف" in b for b in bullets)
+    plan_ok = each_ok and "حسابك" in plan and "R:R" in plan
+    n_stop = sum(1 for b in bullets if "وقف" in b)
+    rows.append((f"الخطة مسعّرة ({len(bullets)} دخول · {n_stop} بوقف وهدف)",
                  15 if plan_ok else 0, 15))
 
     got = sum(r[1] for r in rows)

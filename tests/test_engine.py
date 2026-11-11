@@ -970,6 +970,23 @@ class FullCardTest(unittest.TestCase):
         plain = " ".join(bot._opinion(4065.0, None, 0, [], [], 55.0, False))
         self.assertIn("عرضي", plain)
 
+    def test_the_plan_agrees_with_the_stance(self):
+        # The owner caught it: the header said "بِع عند الجدار" and then the
+        # ladder listed only BUYS, whose target sat BEYOND the wall -- trades
+        # that needed the wall to break, the exact thing the card forbids. The
+        # plan must not contradict the stance it just printed.
+        up = [4000 + (4148 - 4000) * (i / 29) for i in range(30)]
+        dn = [4148 - (4148 - 4013) * (i / 24) for i in range(25)]
+        chop = [4060 + (3 if i % 2 else -3) for i in range(20)]
+        with FakeFeed(mid=4058.0, closes={tf: up + dn + chop
+                                          for tf in bot.FRAMES}):
+            t = bot.card_full()
+        plan = t.split("خطتي")[-1].split("الأخبار")[0]
+        if "بِع عند الجدار" in plan:
+            # ...then a SIZED sell must be there, and no counter-trend buy.
+            self.assertIn("البيع", plan)
+            self.assertNotIn("شراء (عكس الاتجاه", plan)
+
     def test_it_gives_a_concrete_call(self):
         with self._feed():
             t = bot.card_full()
