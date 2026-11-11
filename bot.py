@@ -2278,7 +2278,8 @@ def card_full() -> str:
 
     L = [f"🥇 <b>قراءتي للذهب</b> — لحظياً",
          f"السعر <b>{num(live)}</b> · السوق "
-         f"{'مفتوح ✅' if market_open(q) else 'مسكّر ⛔'}"]
+         f"{'مفتوح ✅' if market_open(q) else 'مسكّر ⛔'} · 🕒 "
+         f"{_clock(datetime.now(UTC))} {TZ_LABEL}"]
 
     # ---- 0. MY stance, up front: what I would do, how sure, what flips me -
     sell, buy = _zones(live)
