@@ -1521,6 +1521,12 @@ def plan(m: dict | None = None) -> dict | None:
         p = _sized(live, direction, level)
         p["up"], p["dn"] = up, dn
         p["strong"] = (up if direction == "long" else dn) >= STRONG_FRAMES
+        # Carry the 15m RSI so the open card can say the entry is late, the
+        # same way every other card does. The plan dict is never persisted
+        # (_write_plan stores only entry/stop/target), so this is a view field.
+        # Fail open on a partial market dict: a missing RSI means no caveat,
+        # never a broken plan.
+        p["r15"] = (m.get("rsis") or {}).get("15m")
         return p
 
     # 1. A confirmed trend. The frames agree -- my read and the old desk read
@@ -3366,7 +3372,10 @@ def _winning(t) -> bool:
 def _open_card(p: dict, t=None) -> str:
     e = ("⚡ صفقة قوية" if p.get("strong") else "🎯 لقطت صفقة")
     head = f"{e} — {SYMBOL}" + (f"  ·  #{t['id']}" if t is not None else "")
-    return "\n".join([head] + _plan_lines(p) +
+    side = "sell" if p["direction"] == "short" else "buy"
+    note = _late_note(side, p.get("r15"))
+    tail = [f"\n⚠️ {note}"] if note else []
+    return "\n".join([head] + _plan_lines(p) + tail +
                      ["", "<i>سجّلتها ورح تابعها لحالي.</i>"])
 
 

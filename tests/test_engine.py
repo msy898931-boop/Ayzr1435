@@ -1233,6 +1233,30 @@ class OpinionTest(unittest.TestCase):
         self.assertFalse(bot._late_entry(None, 20.0))
         self.assertFalse(bot._late_entry("sell", None))
 
+    def test_the_open_card_carries_the_late_caveat(self):
+        # The open-trade notification is the surface the owner actually gets
+        # pushed. A late auto-entry must say so there too -- plan() carries the
+        # 15m RSI so the card can.
+        p = {"direction": "short", "entry": 4000.0, "stop": 4012.0,
+             "target": 3976.0, "risk_pts": 12.0, "risk_usd": 12.0,
+             "gain_usd": 20.0, "rr": 1.67, "strong": True, "r15": 22.0}
+        text = bot._open_card(p)
+        self.assertIn("دخول متأخر", text)
+
+    def test_the_open_card_is_silent_on_a_clean_entry(self):
+        p = {"direction": "short", "entry": 4000.0, "stop": 4012.0,
+             "target": 3976.0, "risk_pts": 12.0, "risk_usd": 12.0,
+             "gain_usd": 20.0, "rr": 1.67, "strong": True, "r15": 45.0}
+        self.assertNotIn("دخول متأخر", bot._open_card(p))
+
+    def test_plan_carries_the_rsi_for_the_open_card(self):
+        m = {"q": {"marketState": "open", "mid": 4000.0}, "live": 4000.0,
+             "trends": {tf: -1 for tf in bot.FRAMES},
+             "rsis": {tf: 20.0 for tf in bot.FRAMES}}
+        p = bot.plan(m)
+        self.assertIsNotNone(p)
+        self.assertEqual(p["r15"], 20.0)
+
 
 class TrendWatchTest(unittest.TestCase):
     """trend_watch is the one alert that fires on the market alone: the owner
