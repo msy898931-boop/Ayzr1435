@@ -669,18 +669,29 @@ def read_market() -> dict:
     """One read of the tape: quote plus every frame's trend, ATR and RSI."""
     q = quote()
     live = float(q.get("mid") or q.get("last") or 0)
-    trends, atrs, rsis = {}, {}, {}
+    trends, atrs, rsis, gap = {}, {}, {}, {}
     for tf in FRAMES:
         try:
             b = bars(tf, 300)
             trends[tf] = frame_trend(b)
             atrs[tf] = atr(b)
             rsis[tf] = rsi([x["close"] for x in b])
+            c = [x["close"] for x in b]
+            e20, e50 = ema(c, 20), ema(c, 50)
+            a = atrs[tf]
+            gap[tf] = (min(abs(live - e20), abs(live - e50)) / a
+                       if a and e20 is not None and e50 is not None else None)
         except Exception:  # noqa: BLE001 - one missing frame must not kill the read
             trends[tf] = 0
             atrs[tf] = None
             rsis[tf] = None
-    return {"q": q, "live": live, "trends": trends, "atrs": atrs, "rsis": rsis}
+            gap[tf] = None
+    # `gap` = how far price sits from BOTH averages on each frame, in ATRs --
+    # the margin behind a trend reading. It is INFORMATIONAL: no decision reads
+    # it, it only lets the card say when a 6/6 tilt is actually a hair-trigger
+    # (price resting on the averages, so a few points flip the whole read).
+    return {"q": q, "live": live, "trends": trends, "atrs": atrs,
+            "rsis": rsis, "gap": gap}
 
 
 def market_open(q: dict) -> bool:
@@ -2162,7 +2173,8 @@ def _opinion(live: float, side: str | None, agree: int,
              sell: list, buy: list, r15: float | None,
              mixed: bool, big: tuple | None = None,
              trig: tuple | None = None,
-             plan: dict | None = None) -> list[str]:
+             plan: dict | None = None,
+             thin: bool = False) -> list[str]:
     """The honest stance, up front: what I would DO, how sure, what flips me.
 
     This is the difference between a report and a view. It can say "wait" or
@@ -2187,7 +2199,11 @@ def _opinion(live: float, side: str | None, agree: int,
     tired = (isinstance(r15, (int, float))
              and ((side == "sell" and r15 <= 30)
                   or (side == "buy" and r15 >= 70)))
-    if tired or mixed:
+    # `thin` = price is resting on the averages, so the tilt is a hair-trigger.
+    # It softens the WORD only; the decision is untouched. A "high confidence"
+    # sell whose stop is the same 8 points that would flip the trend is not high
+    # confidence -- it is a coin toss wearing a label.
+    if tired or mixed or thin:
         conf = {"عالية": "متوسطة", "متوسطة": "منخفضة"}.get(conf, conf)
 
     if side is None:
@@ -2252,12 +2268,16 @@ def _opinion(live: float, side: str | None, agree: int,
         way = "هابط" if side == "sell" else "صاعد"
         flip = "فوق" if side == "sell" else "تحت"
         caveat = " · خفّف الحجم أو اقعد برا" if conf == "منخفضة" else ""
-        return [f"\n🎯 <b>موقفي:</b> {d} — الاتجاه {way} ({agree}/6 فريمات).",
-                f"  دخول <b>{num(plan['entry'])}</b> · وقف "
-                f"<b>{num(plan['stop'])}</b> · هدف <b>{num(plan['target'])}</b> "
-                f"(−${plan['risk_usd']:.0f}/+${plan['gain_usd']:.0f}).",
-                f"  الثقة <b>{conf}</b>{caveat}",
-                f"  🔄 بيلغي نظريتي: إغلاق 1س {flip} {num(plan['stop'])}."]
+        out = [f"\n🎯 <b>موقفي:</b> {d} — الاتجاه {way} ({agree}/6 فريمات).",
+               f"  دخول <b>{num(plan['entry'])}</b> · وقف "
+               f"<b>{num(plan['stop'])}</b> · هدف <b>{num(plan['target'])}</b> "
+               f"(−${plan['risk_usd']:.0f}/+${plan['gain_usd']:.0f}).",
+               f"  الثقة <b>{conf}</b>{caveat}"]
+        if thin:
+            out.append(f"  ⚠️ السعر ملاصق للمتوسطات — الاتجاه هامشي: حركة "
+                       f"صغيرة بتقلبه. القرار ماشي، بس حجمك صغير.")
+        out.append(f"  🔄 بيلغي نظريتي: إغلاق 1س {flip} {num(plan['stop'])}.")
+        return out
 
     # No confirmed trend (or the market is closed / a trade is held): name the
     # zone we would act on, if there is one.
@@ -2340,8 +2360,16 @@ def card_full() -> str:
     big = _big_leg(live)
     trig = _wall_trigger(live, big)
     pnow = plan(m)
+    # `thin` = the trend flips BEFORE the stop would: the price sits closer to
+    # its 1h averages (the frame the flip is stated on) than the trade's own
+    # stop distance. Then "high confidence" is a coin toss wearing a label. Read
+    # only -- it softens the WORD, never plan() or the ladder.
+    g1 = m["gap"].get("1h")
+    a1 = m["atrs"].get("1h")
+    thin = bool(pnow is not None and g1 is not None and a1
+                and g1 * a1 < pnow["risk_pts"])
     L += _opinion(live, trend_side, agree, sell, buy, rsis.get("15m"), mixed,
-                  big, trig, pnow)
+                  big, trig, pnow, thin)
 
     # ---- 1. the day's picture -------------------------------------------
     hi, lo = q.get("high"), q.get("low")

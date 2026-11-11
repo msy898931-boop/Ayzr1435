@@ -1137,6 +1137,26 @@ class OpinionTest(unittest.TestCase):
         self.assertIn("4,090", text)          # plan's stop, not the zone
         self.assertIn("بيلغي نظريتي", text)
 
+    def test_a_thin_margin_softens_the_word_not_the_decision(self):
+        # Price resting on the averages: the trend flips before the stop would.
+        # The label drops to "متوسطة" and a plain warning appears, but the call
+        # and every number are IDENTICAL -- the owner asked for the word to
+        # change and the decision not to.
+        p = {"entry": 4080.0, "stop": 4090.0, "target": 4055.0,
+             "risk_usd": 10.0, "gain_usd": 20.0, "rr": 2.0, "direction": "short"}
+        thick = bot._opinion(4080.0, "sell", 5, [(4080.5, 4)], [], 50.0, False,
+                             plan=p, thin=False)
+        thin = bot._opinion(4080.0, "sell", 5, [(4080.5, 4)], [], 50.0, False,
+                            plan=p, thin=True)
+        self.assertIn("عالية", "\n".join(thick))
+        self.assertNotIn("عالية", "\n".join(thin))
+        self.assertIn("ملاصق", "\n".join(thin))
+        # The decision and the numbers survive the softening, untouched.
+        self.assertIn("أبيع الآن", "\n".join(thin))
+        self.assertIn("4,080", "\n".join(thin))
+        self.assertIn("4,090", "\n".join(thin))
+        self.assertIn("إغلاق 1س فوق 4,090", "\n".join(thin))
+
     def test_confidence_drops_when_the_move_is_tired(self):
         # 5/6 frames but 15m RSI saturated: high confidence is not honest here.
         lines = bot._opinion(4030.0, "sell", 5, [(4080.0, 4)], [], 25.0, False)
