@@ -52,6 +52,8 @@ SYMBOL = os.environ.get("DESK_SYMBOL", "XAUUSD")
 BACKUP_FILE = "marketdesk-backup.json"
 BACKUP_CHAT = os.environ.get("DESK_BACKUP_CHAT", "")
 PIN_PATH = DATA / "pin.json"
+# The owner's last daily-log date. Persisted so a restart cannot resend a day.
+DAILY_PATH = DATA / "daily.json"
 
 # The two people the bot serves from the start. Anyone else who sends /start is
 # added to allow.json -- the bot is private, but adding a friend must not need a
@@ -64,6 +66,7 @@ SEED_CHATS = ["933571066", "8545528489"]
 # number below is in DOLLARS, which is what the account actually feels; the
 # point form (points = dollars / POINT_VALUE) is only for the stop line.
 ACCOUNT_USD = float(os.environ.get("DESK_ACCOUNT", "200"))
+START_CAPITAL = float(os.environ.get("DESK_START_CAPITAL", str(ACCOUNT_USD)))
 LOT = 0.01
 POINT_VALUE = LOT * 100.0        # $ per point at this lot
 STOP_MIN_USD = 8.0               # the owner's window: lose $8-12 at worst
@@ -222,8 +225,9 @@ MENU = [
     [("🗺️ خريطة المناطق", "map"), ("📰 الأخبار", "news")],
     [("🎬 السيناريوهات", "scenarios"), ("🔔 المستويات", "levels")],
     [("📂 الصفقات المفتوحة", "open"), ("📒 السجل", "journal_menu")],
-    [("👥 المشتركين", "who"), ("➕ سجّل صفقة", "howto")],
-    [("🔔 دليل التنبيهات", "alerts"), ("❓ مساعدة", "help")],
+    [("📊 سجل اليوم", "daily"), ("👥 المشتركين", "who")],
+    [("➕ سجّل صفقة", "howto"),
+     ("🔔 دليل التنبيهات", "alerts"), ("❓ مساعدة", "help")],
 ]
 
 JOURNAL_MENU = [
@@ -240,6 +244,7 @@ TEXT_ACTIONS = {
     "الصفقات": "open", "سجل": "journal_menu", "السجل": "journal_menu",
     "يومي": "j_day", "اليوم": "j_day", "أسبوعي": "j_week", "اسبوعي": "j_week",
     "شهري": "j_month", "الشهر": "j_month", "متابعة": "monitor",
+    "سجل اليوم": "daily", "سجل اليوم؟": "daily",
     "اعمل": "action", "تنبيهات": "alerts", "التنبيهات": "alerts", "دليل": "alerts",
     "مساعدة": "help", "قائمة": "menu",
     "مين": "who", "المشتركين": "who", "المشتركين؟": "who",
@@ -1646,11 +1651,76 @@ def _planned_r(t):
 
 
 def _money(t):
-    if t["size"] is None or t["exit_price"] is None:
+    if t["exit_price"] is None:
         return None
     pts = (t["exit_price"] - t["entry"]) if t["direction"] == "long" \
         else (t["entry"] - t["exit_price"])
-    return pts * t["size"] * 100.0
+    return pts * _size_of(t) * 100.0
+
+
+def _size_of(t) -> float:
+    """The lot a trade carries. Every trade has one -- the desk's own are LOT,
+    the owner's are parsed -- so a missing size falls back to the desk's."""
+    s = t["size"]
+    return float(s) if s else LOT
+
+
+def equity_now() -> float:
+    """The account as it stands: START_CAPITAL plus the result of every CLOSED
+    trade. An open trade is not counted until it settles -- unrealised P&L on a
+    paper book is a guess, and the owner asked for the money that actually
+    moved."""
+    total = START_CAPITAL
+    for t in all_trades():
+        if t["status"] != "closed" or t["exit_price"] is None:
+            continue
+        total += _money(t) or 0.0
+    return total
+
+
+def _equity_after(t) -> float:
+    """Running capital after `t` closed, walking the closed trades in order."""
+    run = START_CAPITAL
+    for x in sorted((x for x in all_trades() if x["status"] == "closed"),
+                    key=lambda x: x["closed_at"] or ""):
+        run += _money(x) or 0.0
+        if x["id"] == t["id"]:
+            break
+    return run
+
+
+CLOSE_UTC_HOUR = 21               # the gold session closes at 21:00 UTC
+
+
+def _session_day(now=None):
+    """(start_utc, local_date) of the trading day a report should cover.
+
+    The market closes at 21:00 UTC -- which is midnight on the owner's clock
+    (UTC+3). So a report that fires AT the close is standing in the first
+    minutes of a brand-new local day, and the day it must describe is the one
+    that just ENDED. Anchoring on the local calendar day, and stepping back one
+    day when we are within a couple of hours of the close, keeps the report
+    about the finished session instead of an empty new one.
+    """
+    now = now or datetime.now(UTC)
+    loc = now.astimezone(timezone(timedelta(hours=TZ_OFFSET_H)))
+    close_local_h = (CLOSE_UTC_HOUR + TZ_OFFSET_H) % 24
+    if (loc.hour - close_local_h) % 24 < 2:
+        loc -= timedelta(days=1)
+    start_local = loc.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start_local.astimezone(UTC), start_local.date()
+
+
+def _closed_since(start) -> list:
+    """Closed trades at/after `start` (an aware datetime), earliest first."""
+    out = []
+    for t in all_trades():
+        if t["status"] != "closed" or not t["closed_at"]:
+            continue
+        d = _parse(t["closed_at"])
+        if d is not None and d >= start:
+            out.append(t)
+    return sorted(out, key=lambda t: t["closed_at"] or "")
 
 
 def grade() -> int:
@@ -1747,8 +1817,11 @@ def _line(t) -> str:
 
 
 def _stats_block(st: dict) -> list[str]:
+    cap = (f"💰 <b>رأس المال: {equity_now():,.2f}$</b> "
+           f"(البداية {START_CAPITAL:,.0f}$ · "
+           f"الفرق {equity_now() - START_CAPITAL:+,.2f}$)")
     if not st.get("n"):
-        return ["ما في صفقات مغلقة بهالفترة."]
+        return ["ما في صفقات مغلقة بهالفترة.", cap]
     pf = st.get("profit_factor")
     pf_s = f"{pf:.2f}" if pf is not None else "—"
     out = [f"الصفقات: <b>{st['n']}</b> · "
@@ -1762,6 +1835,7 @@ def _stats_block(st: dict) -> list[str]:
                    f"خسارة {st['loss_money']:+,.2f}$)")
         if st.get("unpriced"):
             out.append(f"<i>{st['unpriced']} صفقة بلا حجم مسجّل — ما انحسبت بالمال.</i>")
+    out.append(cap)
     return out
 
 
@@ -1811,15 +1885,57 @@ def full_journal() -> str:
     return "\n".join(L)
 
 
+def daily_report() -> str:
+    """The end-of-day record the owner asked for: today's trades, and the
+    capital they left behind. Sent once when the market closes.
+
+    Money is what the account FELT -- start capital plus every closed trade --
+    so the last line is a balance, not a running total the owner has to add up.
+    The window is the trading SESSION (see _session_day), not the calendar day:
+    the close lands on midnight locally, so the calendar day at the moment of
+    sending is the empty new one, never the session that just ended.
+    """
+    grade()
+    start, local_date = _session_day()
+    rows = _closed_since(start)
+    eq = equity_now()
+    L = [f"📊 <b>سجل اليوم</b> — {local_date.strftime('%Y-%m-%d')} "
+         f"<i>({TZ_LABEL})</i>", ""]
+    if not rows:
+        L.append("ما في صفقة انسكّرت اليوم.")
+    else:
+        day_money = 0.0
+        for t in rows:
+            m = _money(t) or 0.0
+            day_money += m
+            L.append(f"  {_line(t)}  → <b>{m:+,.2f}$</b>")
+        L.append("")
+        L.append(f"نتيجة اليوم: <b>{day_money:+,.2f}$</b> "
+                 f"({len(rows)} صفقة)")
+    L.append("")
+    L.append(f"💰 <b>رأس المال: {eq:,.2f}$</b> "
+             f"(البداية {START_CAPITAL:,.0f}$)")
+    L.append(f"<i>الفرق: {eq - START_CAPITAL:+,.2f}$ — "
+             f"الجمع والطرح من رأس المال نفسه.</i>")
+    op = open_trades()
+    if op:
+        L.append(f"\n📂 لسا مفتوحة: <b>{len(op)}</b> — بتنحسب لما تنسكّر.")
+    return "\n".join(L)
+
+
 def card_open() -> str:
     grade()
     rows = open_trades()
     if not rows:
         return ("📂 <b>الصفقات المفتوحة</b>\n"
-                "ما في صفقة مفتوحة هلّق — ما بحمل شي حالياً.")
+                "ما في صفقة مفتوحة هلّق — ما بحمل شي حالياً.\n\n"
+                f"💰 <b>رأس المال: {equity_now():,.2f}$</b> "
+                f"(البداية {START_CAPITAL:,.0f}$)")
     L = [f"📂 <b>الصفقات المفتوحة</b> — العدد <b>{len(rows)}</b>", ""]
     L += ["  " + _line(t) for t in rows]
     L.append("")
+    L.append(f"💰 <b>رأس المال: {equity_now():,.2f}$</b> "
+             f"(البداية {START_CAPITAL:,.0f}$)")
     L.append("<i>لسكّر صفقة بيدك، اضغط زرها أو ابعت: "
              "<code>سكر 4</code></i>")
     return "\n".join(L)
@@ -1974,6 +2090,10 @@ def help_text() -> str:
             "<code>سكر 4</code>.\n\n"
             "<b>وكمان بتقدر تسجّل صفقتك بنفسك</b> (اختياري):\n"
             "<code>سجل شراء 4075 وقف 4069 هدف 4085 حجم 0.01</code>\n\n"
+            "<b>رأس المال:</b> ببلّش من <b>$200</b>، وكل صفقة "
+            "بينجمع/بينطرح ربحها أو خسارتها <b>من نفس رأس المال</b>. "
+            "بتشوفه بكل تقرير، وبينبعتلك <b>سجل اليوم</b> مرة وحدة "
+            "لمّا يسكّر السوق (اضغط «📊 سجل اليوم» بأي وقت).\n\n"
             "تابع: «📂 الصفقات المفتوحة» و«📒 السجل» (يومي/أسبوعي/شهري).\n"
             "«👥 المشتركين» بيوريك مين بيوصلو كل شي.\n\n"
             "<i>قراءة تحليلية، مو وعد ربح.</i>")
@@ -2909,6 +3029,7 @@ def dispatch(action: str) -> str:
         "j_day": lambda: period_report("day"),
         "j_week": lambda: period_report("week"),
         "j_month": lambda: period_report("month"),
+        "daily": daily_report,
         "howto": help_text,
         "help": help_text,
         "menu": lambda: "📊 <b>مكتب تحليل السوق</b>\nاختر من الأزرار 👇",
@@ -2961,7 +3082,8 @@ def _backup_chat() -> str:
 def _dump_journal() -> dict:
     return {"version": 1, "symbol": SYMBOL, "saved_at": _utcnow(),
             "trades": [dict(t) for t in all_trades()],
-            "allow": sorted(load_allow())}
+            "allow": sorted(load_allow()),
+            "daily": _load_daily()}
 
 
 def backup_journal(tg: Telegram) -> bool:
@@ -3042,6 +3164,9 @@ def restore_journal(tg: Telegram) -> int:
     allow = blob.get("allow") or []
     if allow and not ALLOW_PATH.exists():
         save_allow(set(allow) | set(SEED_CHATS))
+    daily = blob.get("daily") or {}
+    if daily and not DAILY_PATH.exists():
+        _save_daily(daily)
     return n
 
 
@@ -3211,7 +3336,7 @@ def _close_card(t) -> str:
     if t["r_multiple"] is not None:
         lines.append(f"النتيجة {t['r_multiple']:+.2f}R")
     if m is not None:
-        lines.append(f"{m:+,.2f}$ · الحساب ≈ ${ACCOUNT_USD + m:,.0f}")
+        lines.append(f"{m:+,.2f}$ · رأس المال <b>{_equity_after(t):,.2f}$</b>")
     return "\n".join(lines)
 
 
@@ -3282,6 +3407,24 @@ def _no_second(p: dict, t, why: str) -> str:
         "flat": "قاعدة: زد على رابح، مو على متعادل.",
         "mature": "قاعدة: زد على رابح، مو على سعر راح.",
     }[why]
+    # A SECOND signal in the SAME direction is not a warning -- it is the
+    # market still confirming the trade already open. State the two facts we
+    # actually know: the direction is still confirmed (p vs t), and where the
+    # first trade stands right now (measured, never assumed). No promise that
+    # it reaches the target -- only the owner's own reading is allowed to say
+    # "on track", and only as a status, not a guarantee.
+    if p["direction"] == t["direction"]:
+        if _winning(t):
+            where = "مشت <b>نص الطريق عالهدف</b>"
+        elif _in_profit(t):
+            where = "لسا <b>رابحة</b> وعالطريق"
+        else:
+            where = "لسا <b>عند الدخول</b> (ما تحركت بعد)"
+        return "\n".join([
+            f"✅ <b>إشارة {d} تانية بنفس الاتجاه</b>",
+            f"يعني الاتجاه لسا <b>صحيح</b> — وصفقتك الأولى #{t['id']} {frm} "
+            f"{where}.",
+            f"<i>ما فتحنا تانية — {rule}</i>"])
     return "\n".join([
         f"⚠️ <b>إشارة {d} جديدة</b> — بس {tail}",
         "🛑 <b>ما دخلنا.</b>",
@@ -3294,6 +3437,49 @@ def desk_is_silenced() -> bool:
     can silence the desk from the Render dashboard in seconds."""
     return os.environ.get("DESK_AUTO", "1").strip().lower() in \
         ("0", "off", "no", "false")
+
+
+def _load_daily() -> dict:
+    if DAILY_PATH.exists():
+        try:
+            return json.loads(DAILY_PATH.read_text())
+        except (ValueError, OSError):
+            pass
+    return {}
+
+
+def _save_daily(st: dict) -> None:
+    try:
+        DAILY_PATH.write_text(json.dumps(st))
+    except OSError:
+        pass
+
+
+def maybe_daily_report(tg: Telegram, allow: set[str]) -> None:
+    """Send the day's record ONCE, at the market close the owner named.
+
+    Triggered on the OBSERVED open->closed transition, not merely "the clock
+    says evening": a weekend has no close to report, and a restart mid-evening
+    must not resend a day already delivered. The state is persisted, so the
+    transition survives a reboot."""
+    st = _load_daily()
+    try:
+        is_open = market_open(quote())
+    except Exception:  # noqa: BLE001 - a feed hiccup must not kill the tick
+        return
+    today = datetime.now(timezone(timedelta(hours=TZ_OFFSET_H))).date().isoformat()
+    if is_open:
+        if not st.get("was_open"):
+            st["was_open"] = True
+            _save_daily(st)
+        return
+    if st.get("was_open") and st.get("last_sent") != today:
+        text = daily_report()
+        for c in allow:
+            tg.send(c, text)
+        st["was_open"] = False
+        st["last_sent"] = today
+        _save_daily(st)
 
 
 def support_watch(seen: dict) -> str | None:
@@ -3717,6 +3903,10 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     # then silence forever.
     allow |= load_allow()
     grade()
+    # The day's record goes out on the market's close, before the silence
+    # switch: it is a fact about the day, not a trade decision, so the owner
+    # still gets it when auto-trading is off.
+    maybe_daily_report(tg, allow)
     # The support watch runs before the silence switch: a level breaking is a
     # fact about the market, not a trade decision, so the owner still hears it
     # when auto-trading is off.

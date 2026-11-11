@@ -1302,6 +1302,158 @@ class AdxCeilingTest(unittest.TestCase):
         self.assertNotIn("ADX", fs["failed"])  # but no longer blocked
 
 
+class EquityTest(_DbCase):
+    """The account: start capital plus every CLOSED trade's money. An open
+    trade is not counted -- unrealised P&L is a guess, and the owner asked for
+    the money that actually moved."""
+
+    def _close(self, direction, entry, stop, target, exit_price, r):
+        tid = bot.add_trade(direction, entry, stop, target, bot.LOT, note="t")
+        bot._settle(tid, "target" if r > 0 else "stop", exit_price, r)
+        return tid
+
+    def test_equity_starts_at_the_owner_capital(self):
+        self.assertEqual(bot.equity_now(), bot.START_CAPITAL)
+
+    def test_a_win_adds_and_a_loss_subtracts(self):
+        self._close("long", 4000, 3991, 4020, 4020, 2.2)   # +$20
+        self.assertAlmostEqual(bot.equity_now(), bot.START_CAPITAL + 20.0)
+        self._close("short", 4050, 4059, 4030, 4059, -1.0)  # -$9
+        self.assertAlmostEqual(bot.equity_now(), bot.START_CAPITAL + 11.0)
+
+    def test_an_open_trade_does_not_move_the_capital(self):
+        bot.add_trade("long", 4000, 3991, 4020, bot.LOT, note="t")
+        self.assertEqual(bot.equity_now(), bot.START_CAPITAL)
+
+    def test_daily_report_lists_today_and_the_balance(self):
+        self._close("long", 4000, 3991, 4020, 4020, 2.2)
+        text = bot.daily_report()
+        self.assertIn("سجل اليوم", text)
+        self.assertIn("رأس المال", text)
+        self.assertIn(f"{bot.START_CAPITAL + 20.0:,.2f}", text)
+        self.assertIn("+20.00$", text)
+
+    def test_daily_report_is_honest_when_nothing_closed(self):
+        text = bot.daily_report()
+        self.assertIn("ما في صفقة انسكّرت اليوم", text)
+        self.assertIn(f"{bot.START_CAPITAL:,.2f}", text)
+
+    def test_the_close_card_shows_the_same_capital_as_the_report(self):
+        # Two surfaces must not disagree about the balance: the close card's
+        # number is the running equity, not "start + this trade only".
+        self._close("long", 4000, 3991, 4020, 4020, 2.2)   # +$20
+        t = self._close("short", 4050, 4059, 4030, 4059, -1.0)  # -$9
+        row = [x for x in bot.all_trades() if x["id"] == t][0]
+        card = bot._close_card(row)
+        self.assertIn(f"{bot.START_CAPITAL + 11.0:,.2f}", card)
+        self.assertIn(f"{bot.START_CAPITAL + 11.0:,.2f}", bot.daily_report())
+
+
+class SessionWindowTest(_DbCase):
+    """The report must cover the session that ENDED. At the close the owner's
+    clock has just ticked to a new day, so a naive calendar-day filter would
+    describe an empty day instead of the one that just traded."""
+
+    def _close_at(self, closed_utc_iso):
+        tid = bot.add_trade("long", 4000, 3991, 4020, bot.LOT, note="t")
+        with bot.closing(bot._conn()) as c:
+            c.execute("UPDATE trades SET status='closed',result='target',"
+                      "exit_price=?,r_multiple=2.2,closed_at=? WHERE id=?",
+                      (4020.0, closed_utc_iso, tid))
+            c.commit()
+        return tid
+
+    def test_a_close_at_midnight_local_still_covers_the_ended_session(self):
+        from datetime import UTC, datetime
+        # 21:05 UTC == 00:05 local (UTC+3): a brand-new local day.
+        now = datetime(2026, 11, 11, 21, 5, tzinfo=UTC)
+        start, day = bot._session_day(now)
+        self.assertEqual(day.isoformat(), "2026-11-11")
+        # A trade closed at 20:00 UTC (23:00 local, the session that ended).
+        self._close_at("2026-11-11T20:00:00Z")
+        self.assertEqual(len(bot._closed_since(start)), 1)
+
+    def test_a_trade_from_the_previous_session_is_excluded(self):
+        from datetime import UTC, datetime
+        now = datetime(2026, 11, 11, 21, 5, tzinfo=UTC)
+        start, _ = bot._session_day(now)
+        self._close_at("2026-11-10T20:00:00Z")   # the day before
+        self.assertEqual(bot._closed_since(start), [])
+
+
+class NoSecondTest(_DbCase):
+    """A second signal in the SAME direction confirms the open trade -- it is
+    not a warning, and it must never promise the target."""
+
+    def _t(self, direction="short", tid=7):
+        return {"id": tid, "direction": direction, "entry": 4050.0,
+                "stop": 4059.0, "target": 4030.0}
+
+    def test_same_direction_reads_as_confirmation(self):
+        p = {"direction": "short", "entry": 4050, "stop": 4059, "target": 4030}
+        with FakeFeed(mid=4045.0):                 # past entry, short is winning
+            text = bot._no_second(p, self._t(), "full")
+        self.assertIn("بنفس الاتجاه", text)
+        self.assertIn("صحيح", text)
+        self.assertNotIn("ما دخلنا", text)
+
+    def test_opposite_direction_still_says_we_did_not_enter(self):
+        p = {"direction": "long", "entry": 4050, "stop": 4041, "target": 4070}
+        with FakeFeed(mid=4045.0):
+            text = bot._no_second(p, self._t(), "full")
+        self.assertIn("ما دخلنا", text)
+        self.assertNotIn("بنفس الاتجاه", text)
+
+
+class DailyScheduleTest(_DbCase):
+    """The day's record goes out ONCE, on the observed open->closed edge, and a
+    restart must not resend a day already delivered."""
+
+    def setUp(self):
+        super().setUp()
+        self._saved_daily = bot.DAILY_PATH
+        bot.DAILY_PATH = bot.Path(os.path.join(self.tmp, "daily.json"))
+        self.sent = []
+
+    def tearDown(self):
+        bot.DAILY_PATH = self._saved_daily
+        super().tearDown()
+
+    class _Tg:
+        def __init__(self, sink):
+            self.sink = sink
+
+        def send(self, chat, text, *a, **k):
+            self.sink.append(text)
+            return {"ok": True}
+
+    def _tick(self, market):
+        with FakeFeed(market=market):
+            bot.maybe_daily_report(self._Tg(self.sent), {"1"})
+
+    def test_sends_once_on_the_close_transition(self):
+        self._tick("open")
+        self.assertEqual(self.sent, [])           # nothing while open
+        self._tick("closed")
+        self.assertEqual(len(self.sent), 1)       # the day's record, once
+        self._tick("closed")
+        self.assertEqual(len(self.sent), 1)       # a standing close is silent
+
+    def test_a_weekend_close_never_sends(self):
+        # The market was never seen open: no close to report, no message.
+        self._tick("closed")
+        self.assertEqual(self.sent, [])
+
+    def test_a_restart_mid_evening_does_not_resend(self):
+        self._tick("open")
+        self._tick("closed")
+        self.assertEqual(len(self.sent), 1)
+        # Simulate a reboot: the persisted state survives, so the same day is
+        # not delivered a second time.
+        self._tick("closed")
+        self.assertEqual(len(self.sent), 1)
+
+
 class AtrCeilingTest(unittest.TestCase):
     """The ATR ceiling was raised 0.25% -> 1.00%: it was refusing real moves.
 
