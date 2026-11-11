@@ -1356,6 +1356,128 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
             "scenarios": scen, "sell": sell, "buy": buy}
 
 
+def map_insights(m: dict, live: float, res: list[float], sup: list[float],
+                 emas: dict, news: list[dict]) -> list[dict]:
+    """The analyst's EYE: the things I notice reading the tape that a fixed
+    template does not -- each one a plain sentence, each one earned by a number.
+
+    This is the honest answer to "can the map be as flexible as you?". It cannot
+    think, but it CAN look at the same tells I look at and say them out loud:
+      * a divergence between momentum and price (RSI higher low while price makes
+        a lower low) -- the first sign a fall is tiring;
+      * price sitting on an average (a hair-trigger 6/6 tilt that a few points
+        would flip);
+      * a level that price keeps respecting (a wall) vs a thin one;
+      * the day's range position -- at the extreme, where late entries are worst;
+      * a stretch far from the average (price is extended, a snap-back is due);
+      * news that argues with the tape (dollar up / yields up vs gold down).
+    Nothing here is a prediction or a probability: each is a FACT with its number,
+    and the desk's own rules still decide the trades. No conviction is invented.
+    """
+    out: list[dict] = []
+    trends = m.get("trends") or {}
+    rsis = m.get("rsis") or {}
+    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
+    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
+    r15 = rsis.get("15m")
+
+    # --- momentum divergence on 15m: RSI turning up while price makes a new low
+    with suppress(Exception):
+        b15 = closed(bars("15m", 300), "15m")
+        if len(b15) > 40:
+            cl = [x["close"] for x in b15]
+            r_now = rsis.get("15m")
+            r_prev = rsi(cl[:-8], 14)
+            lo_now = min(cl[-8:])
+            lo_prev = min(cl[-16:-8])
+            if (r_now is not None and r_prev is not None
+                    and lo_now < lo_prev and r_now > r_prev + 2):
+                out.append({"kind": "دايفرجنس", "tone": "warn",
+                            "text": (f"دايفرجنس إيجابي على 15د: السعر عمل قاع أدنى "
+                                     f"({num(lo_now)}) بس RSI طلع ({r_prev:.0f}→{r_now:.0f}). "
+                                     "أول إشارة إن الهبوط عم يتعب — راقب ارتداد.")})
+
+    # --- price resting on an average: the 6/6 tilt is a hair-trigger
+    with suppress(Exception):
+        g = (m.get("gap") or {}).get("15m")
+        if isinstance(g, (int, float)) and g < 0.25 and (up >= 5 or dn >= 5):
+            side = "هابط" if dn >= 5 else "صاعد"
+            out.append({"kind": "حساس", "tone": "info",
+                        "text": (f"الاتجاه {side} 6/6 بس السعر ملزوق على المتوسط "
+                                 f"(على بعد {g:.2f}×ATR). يعني الاتجاه هشّ — شوية نقاط "
+                                 "بتقلبو. لا تعاند المستوى هون.")})
+
+    # --- the day's range position: at the extreme, late entries are worst
+    with suppress(Exception):
+        q = m["q"]
+        hi, lo = q.get("high"), q.get("low")
+        if isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
+            pos = (live - lo) / (hi - lo) * 100
+            if pos <= 10:
+                out.append({"kind": "موقع", "tone": "warn",
+                            "text": (f"السعر عند {pos:.0f}% من نطاق اليوم — قريب من "
+                                     "قاعه. بيع هون = مطاردة؛ الأحلى تنتظر ارتداد لفوق "
+                                     "أو كسر واضح.")})
+            elif pos >= 90:
+                out.append({"kind": "موقع", "tone": "warn",
+                            "text": (f"السعر عند {pos:.0f}% من نطاق اليوم — قريب من "
+                                     "قمتو. شراء هون = مطاردة؛ الأحلى تنتظر ارتداد لتحت.")})
+
+    # --- a stretch far from the average: price is extended
+    with suppress(Exception):
+        e = emas.get("15m") or {}
+        a15 = (m.get("atrs") or {}).get("15m")
+        if e.get("e20") and a15:
+            dist = abs(live - e["e20"]) / a15
+            if dist >= 2.0:
+                out.append({"kind": "تمدّد", "tone": "info",
+                            "text": (f"السعر بعيد {dist:.1f}×ATR عن متوسطه 15د — "
+                                     "متمدّد. السوق المتمدّد بيرجع للمتوسط غالباً قبل "
+                                     "ما يكمل، فانتبه للمطاردة.")})
+
+    # --- a level price keeps respecting: a wall
+    with suppress(Exception):
+        b1 = bars("1h", 300)
+        tol = max(1.0, (atr(b1) or 1.0) * 0.25)
+        near = (res[:1] or []) + (sup[:1] or [])
+        for lv in near:
+            t = _touches(lv, b1, tol)
+            if t >= 20:
+                out.append({"kind": "حيط", "tone": "info",
+                            "text": (f"مستوى {num(lv)} لمسو السعر {t} مرة — حيط قوي. "
+                                     "اختراقو بإغلاق معناها كلام كبير.")})
+
+    # --- news that argues with the tape (dollar/yields up vs gold falling)
+    with suppress(Exception):
+        titles = " ".join((n.get("title") or "") for n in news)
+        if dn >= 5 and ("الدولار" in titles or "الفائدة" in titles):
+            out.append({"kind": "خبر", "tone": "info",
+                        "text": ("الأخبار فيها قوة دولار/رفع فائدة — هاد بيدعم الهبوط "
+                                 "على الذهب، فالبيع مع الاتجاه متسق مع الخبر.")})
+        elif up >= 5 and ("الدولار" in titles or "الفائدة" in titles):
+            out.append({"kind": "خبر", "tone": "warn",
+                        "text": ("الأخبار فيها قوة دولار/رفع فائدة — هاد ضد الصعود. "
+                                 "انتبه: الشراء مع الاتجاه هون ممكن يخالف الخبر.")})
+
+    return out[:5]
+
+
+def price_tick() -> dict:
+    """A LIGHT read: just the live quote. One HTTP call, no frames, no news.
+
+    The map page wants the price to feel instant, but map_payload() reads six
+    frames plus the news feed -- far too heavy to run every few seconds on a
+    free instance. This is the honest split: the NUMBER ticks every few seconds
+    from here, the ANALYSIS refreshes on its own slower beat.
+    """
+    q = quote()
+    live = float(q.get("mid") or q.get("last") or 0)
+    return {"live": live, "state": q.get("marketState"),
+            "spread": q.get("spread"),
+            "dayDiffPercent": q.get("dayDiffPercent"),
+            "ts": datetime.now(UTC).isoformat()}
+
+
 def map_payload() -> dict:
     """Every number the live map page needs, in ONE read.
 
@@ -1430,6 +1552,11 @@ def map_payload() -> dict:
     with suppress(Exception):
         analysis = map_analysis(m, live, res, sup, p, adx_v)
 
+    # The analyst's eye: the tells a template misses, each earned by a number.
+    insights: list[dict] = []
+    with suppress(Exception):
+        insights = map_insights(m, live, res, sup, emas, news)
+
     return {
         "symbol": SYMBOL,
         "live": live,
@@ -1450,6 +1577,7 @@ def map_payload() -> dict:
         "late_note": note,
         "scenarios": scen,
         "analysis": analysis,
+        "insights": insights,
         "adx": adx_v,
         "news": news,
         "clock": _clock(datetime.now(UTC)),

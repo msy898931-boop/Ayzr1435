@@ -40,6 +40,7 @@ PING_RETRY_S = 45   # a failed beat is retried quickly, not after a full interva
 PING_TRIES = 3
 RESTORE_WAIT_S = 60  # never let a slow Telegram delay the bot for longer than this
 MAP_CACHE_S = 15     # the live map is a heavy read; serve it from a short cache
+PRICE_CACHE_S = 2    # the price is one light call; let it feel near-instant
 MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "map.html")
 
 # The live map: /map serves the page, /map.json serves the numbers. The numbers
@@ -49,6 +50,24 @@ MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "map.html")
 # a page open on a phone would hammer the free instance every few seconds.
 _MAP_CACHE: dict = {"at": 0.0, "body": b""}
 _MAP_LOCK = threading.Lock()
+_PRICE_CACHE: dict = {"at": 0.0, "body": b""}
+_PRICE_LOCK = threading.Lock()
+
+
+def price_json() -> bytes:
+    """The light, fast price endpoint. Same shape as map_json but one call."""
+    now = time.monotonic()
+    with _PRICE_LOCK:
+        if _PRICE_CACHE["body"] and now - _PRICE_CACHE["at"] < PRICE_CACHE_S:
+            return _PRICE_CACHE["body"]
+    try:
+        body = json.dumps(desk.price_tick(), ensure_ascii=False).encode()
+    except Exception as exc:  # noqa: BLE001 - a failed read must not 500 the page
+        print(f"price tick failed: {exc}", flush=True)
+        return json.dumps({"error": "read failed"}).encode()
+    with _PRICE_LOCK:
+        _PRICE_CACHE["at"], _PRICE_CACHE["body"] = now, body
+    return body
 
 
 def map_json() -> bytes:
@@ -89,6 +108,9 @@ class Health(BaseHTTPRequestHandler):
         path = self.path.split("?")[0].rstrip("/") or "/"
         if path == "/map.json":
             self._send_raw(200, "application/json; charset=utf-8", map_json())
+            return
+        if path == "/price":
+            self._send_raw(200, "application/json; charset=utf-8", price_json())
             return
         if path == "/map":
             try:

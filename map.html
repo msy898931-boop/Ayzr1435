@@ -48,6 +48,8 @@
           border-radius:10px; padding:11px 15px; font-size:14px; margin:12px 0; }
   .bear { background:rgba(248,81,73,.10); border:1px solid #6e2b28;
           border-radius:10px; padding:11px 15px; font-size:14px; margin:12px 0; }
+  .info { background:rgba(88,166,255,.10); border:1px solid #1f4b7a;
+          border-radius:10px; padding:11px 15px; font-size:14px; margin:12px 0; }
   ul { padding-inline-start:18px; margin:6px 0; }
   li { margin:3px 0; font-size:14px; }
   code { background:#21262d; padding:1px 6px; border-radius:5px; font-size:13px; }
@@ -57,7 +59,7 @@
 <div class="wrap">
   <div class="top">
     <h1>🥇 خريطة <span id="sym">XAUUSD</span> — لحظية</h1>
-    <div class="live"><span class="dot"></span>يتحدّث كل 30 ثانية · آخر قراءة <b id="clock">—</b> <span id="tz"></span></div>
+    <div class="live"><span class="dot"></span>السعر كل 5 ثواني · التحليل كل 30 ثانية · آخر قراءة <b id="clock">—</b> <span id="tz"></span></div>
   </div>
   <div class="price" id="live">—</div>
   <div class="muted" id="state">—</div>
@@ -76,6 +78,9 @@
   <div id="planbox"></div>
 
   <div id="verdict"></div>
+
+  <h2>👁️ عين المحلل (شو لاحظت)</h2>
+  <div id="insights">—</div>
 
   <h2>🗺️ خريطة المستويات</h2>
   <div class="card"><div id="ladder">—</div></div>
@@ -212,6 +217,14 @@ function render(d){
     document.getElementById("honesty").innerHTML = a.honesty
       ? `<div class="warn" style="margin-top:16px"><b>⚠️ ملاحظة الصدق:</b> ${a.honesty}</div>` : "";
   }
+
+  const ins = d.insights || [];
+  document.getElementById("insights").innerHTML = ins.length
+    ? ins.map(i=>{
+        const c = i.tone==="warn" ? "warn" : "info";
+        return `<div class="${c}" style="margin-bottom:8px"><b>${i.kind}:</b> ${i.text}</div>`;
+      }).join("")
+    : `<div class="muted">ما في ملاحظات استثنائية هلّق — كل شي عادي ضمن قواعد القراءة.</div>`;
 }
 
 async function tick(){
@@ -220,8 +233,31 @@ async function tick(){
     if (r.ok) render(await r.json());
   } catch(e){}
 }
+
+// The price ticks fast (one light call); the analysis refreshes slower (six
+// frames + news). Splitting them keeps the number feeling live without
+// hammering the free instance with the full read every few seconds.
+async function priceTick(){
+  try {
+    const r = await fetch("price?_=" + Date.now());
+    if (!r.ok) return;
+    const p = await r.json();
+    if (!p || p.live == null) return;
+    const el = document.getElementById("live");
+    if (el) el.textContent = F(p.live);
+    const st = document.getElementById("state");
+    if (st && p.state){
+      const open = p.state === "open";
+      st.textContent = (open?"🟢 السوق مفتوح":"🔴 السوق مسكّر")
+        + (p.dayDiffPercent!=null?` · اليوم ${P(p.dayDiffPercent)}%`:"")
+        + (p.spread!=null?` · سبريد ${p.spread.toFixed(2)}`:"");
+    }
+  } catch(e){}
+}
+
 tick();
 setInterval(tick, 30000);
+setInterval(priceTick, 5000);
 </script>
 </body>
 </html>
