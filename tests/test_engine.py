@@ -900,7 +900,11 @@ class FullCardTest(unittest.TestCase):
         # tape, not a dead one).
         rise = [4000 + (4148 - 4000) * (i / 19) for i in range(20)]
         drop = [4148 - (4148 - 4013) * (i / 24) for i in range(25)]
-        tail = [4058 + (6 if i % 2 else -6) for i in range(30)]
+        # The recent tape must sit INSIDE the desk's ATR band (0.08-0.25%; the
+        # live median is ~0.20%). A +/-6 swing read 0.37% and the gate rightly
+        # refused it -- a fixture above the band models a tape the desk would not
+        # trade, not the calm post-drop consolidation this scenario is.
+        tail = [4058 + (3 if i % 2 else -3) for i in range(30)]
         h1 = [4030 + i * 0.3 for i in range(20)] + last_1h
         return {"1d": [4060.0] * 30, "4h": rise + drop, "1h": h1,
                 "30m": tail, "15m": tail, "5m": tail}
@@ -1399,11 +1403,11 @@ class EntryWatchTest(unittest.TestCase):
 class AdxCeilingTest(unittest.TestCase):
     """The ADX window was 20-60; band-by-band it is 0-50.
 
-    Every ADX band up to 50 pays on the 251-day sample and ONLY the >50 band
-    loses (-$237 over 199 trades). The old floor of 20 threw away the best
-    entries (the 0-20 band pays ~$3.6/trade) and the old ceiling of 60 admitted
-    the worst. Floor -> 0, ceiling -> 50: 2386 -> 2937 trades, net $2186 ->
-    $3882, and the drawdown shrinks. Holds in both halves of the sample.
+    Re-measured 2026-11-13 on the corrected replay (live bands + no-chase gate):
+    ADX 0-15 is the one band that loses (-0.03R over 122 trades), but every band
+    from 15 up pays and the extra trades carry the floor, so 0-50 still nets the
+    MOST total R (0-50 +116R vs 15-50 +102R vs 20-50 +72R). The old ceiling of 60
+    admitted the thin >50 band. Floor -> 0, ceiling -> 50.
     """
 
     def test_the_ceiling_is_fifty(self):
@@ -1579,20 +1583,23 @@ class DailyScheduleTest(_DbCase):
 
 
 class AtrCeilingTest(unittest.TestCase):
-    """The ATR ceiling was raised 0.25% -> 1.00%: it was refusing real moves.
+    """The ATR ceiling is 0.25%, and that is a MEASURED choice, not the old one.
 
-    The owner watched the desk stand aside through a clean sell-off. The band
-    sweep says 0.25% was too tight: 1.00% doubles the trades (1142 -> 2386) for
-    +57% net at the same quality, and it still beats NO ceiling (2031$), because
-    the >1% band is the one that loses (-$212 over 117 trades).
+    The ceiling was widened to 1.00% when the desk was standing aside through
+    clean moves -- and on the replay WITHOUT the no-chase gate that was right
+    (0.25% -> +114R, 1.00% -> +158R). Adding the no-chase gate flipped the sign:
+    WITH it, 0.25% nets +117R against 1.00%'s +91R, and the wide ceiling doubles
+    the drawdown (-16R -> -25R = -$227 on the owner's $200). The gate already
+    refuses the bad high-volatility entries, so the ceiling no longer has to;
+    the sweep's peak is exactly 0.25% (0.20% -> +0.141R, 0.25% -> +0.176R,
+    0.30% -> +0.118R).
     """
 
-    def test_the_ceiling_is_one_percent(self):
-        self.assertEqual(bot.ATR_MAX_PCT, 0.0100)
+    def test_the_ceiling_is_a_quarter_percent(self):
+        self.assertEqual(bot.ATR_MAX_PCT, 0.0025)
 
-    def test_a_calm_trend_is_no_longer_blocked_by_atr(self):
-        # A gentle rise holds ATR% near the old ceiling's edge; the new one must
-        # let it through instead of turning a tradable move into "wait".
+    def test_a_calm_trend_is_not_blocked_by_atr(self):
+        # A gentle rise holds ATR% inside the band; it must pass.
         closes = [4000 + i * 0.4 for i in range(140)]
         bars = [_bar(_iso(i), c, c + 2.0, c - 2.0, c)
                 for i, c in enumerate(closes)]

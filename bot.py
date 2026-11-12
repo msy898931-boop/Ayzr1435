@@ -85,14 +85,15 @@ MIN_RR = 1.5                     # below this a plan is not worth stating
 # constants instead of hardcoding them). A STUDY figure, never a live reading:
 # the owner's journal is the live truth and is used FIRST when it has closed
 # trades. The card labels the source so a backtest number is never mistaken for
-# a measured one. Measured 2026-11-13 on the shipped config (live ADX/ATR bands,
-# no-chase gate, $9 stop, $20 target): 1,112 closed trades, 33.8% win, +0.082
-# R/trade. The old 37% / 16 came from a replay that used ADX 20-40 / ATR 0.25%
-# -- four times tighter than the live bands -- and no no-chase gate, so it
-# measured a different bot. (The live stop is the $9 pick nudged to $8-12 by the
-# nearest level; the replay fixes it at $9, which measured the same to 0.002 R.)
-STUDY_WIN_RATE = 0.34            # full-year replay; spread makes the live one lower
-STUDY_LOSS_STREAK = 19           # longest run of losers in the corrected replay
+# a measured one. Measured 2026-11-13 on the shipped config (ADX 0-50, ATR
+# 0.08-0.25%, no-chase gate, $9 stop, $20 target): 661 closed trades, 36.8% win,
+# +0.176 R/trade, max drawdown -16R, longest losing run 11. The old 37% / 16 came
+# from a replay that used ADX 20-40 / ATR 0.25% -- tighter than the live bands --
+# and no no-chase gate, so it measured a different bot. (The live stop is the $9
+# pick nudged to $8-12 by the nearest level; the replay fixes it at $9, which
+# measured the same to 0.002 R.)
+STUDY_WIN_RATE = 0.37            # full-year replay; spread makes the live one lower
+STUDY_LOSS_STREAK = 11           # longest run of losers in the corrected replay
 SHOW_STUDY = os.environ.get("DESK_SHOW_STUDY", "1").strip().lower() not in \
     ("0", "off", "no", "false")
 CONFIRM_FRAMES = 4               # a direction needs this many of 6 frames
@@ -121,18 +122,19 @@ TREND_FILTER_TF = "15m"          # the frame whose EMA20 the entry must respect
 FILTERS_ON = os.environ.get("DESK_FILTERS", "1").strip().lower() not in \
     ("0", "off", "no", "false")
 ADX_MIN, ADX_MAX = 0.0, 50.0     # ride a trend, but not an exhausted one
-# Re-measured on the 251-day sample, band by band: every ADX band up to 50 is
-# profitable (0-15 $3.50/trade, 15-25 $3.6, 25-40 $2, 40-50 $3.3) and ONLY the
-# >50 band loses (-$237 over 199 trades). So the old floor of 20 was throwing
-# away the best entries (the 0-20 band pays $3.6/trade), and the old ceiling of
-# 60 was admitting the worst. Floor -> 0, ceiling -> 50. Result: 2386 -> 2937
-# trades, net $2186 -> $3882, and the drawdown SHRINKS (-333 -> -211). Holds in
-# both halves of the sample (split-half: +2228 / +1674).
-# The ATR ceiling: the sweep says 0.25% was too tight -- 1.00% doubles the
-# trades for +57% net at the same quality, and still beats NO ceiling (2031$),
-# because the >1% band is the one that loses (-$212 over 117 trades). The stop
-# stays at $9: widening it lifts the win rate (37% -> 47%) but cuts net.
-ATR_MIN_PCT, ATR_MAX_PCT = 0.0008, 0.0100   # 0.08%-1.00% of price: alive, calm
+# Re-measured 2026-11-13 on the CORRECTED replay (backtest/bot2026.py, the LIVE
+# bands + the no-chase gate). Band by band on the short side: ADX 0-15 is the
+# one band that loses (-0.03R over 122 trades); every band from 15 up pays, and
+# the >50 band is thin. Floor -> 0 still nets the MOST total R (0-50 gives +116R
+# against 15-50's +102R and 20-50's +72R) because the extra trades are cheap and
+# positive. The floor's "bad band" is small and the extra trades carry it.
+# The ATR ceiling is the one that MATTERS, and it interacts with the no-chase
+# gate: WITHOUT the gate a wide ceiling nets more total R (0.25% -> +114R, 1.00%
+# -> +158R), which is why it was widened; WITH the gate the sign flips (0.25% ->
+# +117R, 1.00% -> +91R) and the wide ceiling also doubles the drawdown (-16R ->
+# -25R, i.e. -$227 on the owner's $200). The gate already refuses the bad
+# high-volatility entries, so the ceiling no longer has to; keep it tight.
+ATR_MIN_PCT, ATR_MAX_PCT = 0.0008, 0.0025   # 0.08%-0.25% of price: alive, calm
 RSI_LONG = (35.0, 58.0)          # a long is a pullback, not a chase
 RSI_SHORT = (42.0, 65.0)         # the short mirror
 # Which gates are live. Default "adx,atr": the two that helped on BOTH the
@@ -154,11 +156,12 @@ TREND_FILTER_ON = os.environ.get("DESK_TREND_FILTER", "1").strip().lower() not i
 MAX_TRADES_DAY = int(os.environ.get("DESK_MAX_TRADES_DAY", "10") or "10")
 # The no-chase filter: do not SELL into deep oversold (or BUY into deep
 # overbought) on the filter frame -- that is entering after the move, at the
-# edge of the range, where the retrace is most likely. Measured on 2026 (see
-# backtest): on the short side it lifts R/trade from +0.177 to +0.289 and holds
-# in all four quarters of the year; the symmetric rule also trims the total
-# drawdown (backtest bands: -19R -> -14R). The reading is taken on a CLOSED bar
-# only: on the forming bar the same rule measured -126R instead of +67R.
+# edge of the range, where the retrace is most likely. Measured on 2026 with the
+# LIVE bands (see backtest/bot2026.py): it halves the trade count and lifts
+# R/trade from +0.071 to +0.082 overall (+0.096 -> +0.108 on the short side) and
+# cuts the max drawdown from -40R to -25R. The reading is taken on a CLOSED bar
+# only: on the forming bar the same rule measured -0.245 R/trade instead of
+# +0.108 (it reads a price that has not happened yet).
 NOCHASE_ON = os.environ.get("DESK_NOCHASE", "1").strip().lower() not in \
     ("0", "off", "no", "false")
 NOCHASE_RSI = float(os.environ.get("DESK_NOCHASE_RSI", "38") or "38")
@@ -3734,7 +3737,7 @@ def card_full() -> str:
             L.append(f"  📊 <b>نسبتك الحقيقية:</b> {jn['n']} صفقة · "
                      f"فوز {jn['win_rate']:.0%} · مجموع {jn['total_r']:+.1f}R")
         else:
-            L.append(f"  📊 <b>نسبة الفوز (باكتست سنة، 1,112 صفقة):</b> "
+            L.append(f"  📊 <b>نسبة الفوز (باكتست سنة، 661 صفقة):</b> "
                      f"~{STUDY_WIN_RATE:.0%} — تخسر أكتر مما تربح · أطول سلسلة "
                      f"خسارة {STUDY_LOSS_STREAK} صفقة")
             L.append("  <i>هاد رقم دراسة مو رقمك — سجّل صفقاتك ليصير عندك "
