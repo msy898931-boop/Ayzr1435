@@ -900,7 +900,7 @@ class FullCardTest(unittest.TestCase):
         # tape, not a dead one).
         rise = [4000 + (4148 - 4000) * (i / 19) for i in range(20)]
         drop = [4148 - (4148 - 4013) * (i / 24) for i in range(25)]
-        # The recent tape must sit INSIDE the desk's ATR band (0.08-0.25%; the
+        # The recent tape must sit INSIDE the desk's ATR band (0.08-0.30%; the
         # live median is ~0.20%). A +/-6 swing read 0.37% and the gate rightly
         # refused it -- a fixture above the band models a tape the desk would not
         # trade, not the calm post-drop consolidation this scenario is.
@@ -1583,20 +1583,21 @@ class DailyScheduleTest(_DbCase):
 
 
 class AtrCeilingTest(unittest.TestCase):
-    """The ATR ceiling is 0.25%, and that is a MEASURED choice, not the old one.
+    """The ATR ceiling is 0.30%, and that is a MEASURED choice, not the old one.
 
     The ceiling was widened to 1.00% when the desk was standing aside through
     clean moves -- and on the replay WITHOUT the no-chase gate that was right
     (0.25% -> +114R, 1.00% -> +158R). Adding the no-chase gate flipped the sign:
-    WITH it, 0.25% nets +117R against 1.00%'s +91R, and the wide ceiling doubles
-    the drawdown (-16R -> -25R = -$227 on the owner's $200). The gate already
-    refuses the bad high-volatility entries, so the ceiling no longer has to;
-    the sweep's peak is exactly 0.25% (0.20% -> +0.141R, 0.25% -> +0.176R,
-    0.30% -> +0.118R).
+    WITH it, 0.25% nets +117R against 1.00%'s +91R, and a wide ceiling raises the
+    drawdown. The gate already refuses the bad high-volatility entries, so the
+    ceiling need not be as tight as 0.25%. The owner set 0.30% (2026-11-13) to
+    keep the high-volatility entries the tight cap refused: 796 trades for
+    +93.6R at -19R drawdown, against 0.25%'s 661 for +116.6R at -16R. Measured
+    per-trade: 0.25% -> +0.176R, 0.30% -> +0.118R.
     """
 
-    def test_the_ceiling_is_a_quarter_percent(self):
-        self.assertEqual(bot.ATR_MAX_PCT, 0.0025)
+    def test_the_ceiling_is_three_tenths_percent(self):
+        self.assertEqual(bot.ATR_MAX_PCT, 0.0030)
 
     def test_a_calm_trend_is_not_blocked_by_atr(self):
         # A gentle rise holds ATR% inside the band; it must pass.

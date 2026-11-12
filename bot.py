@@ -86,14 +86,14 @@ MIN_RR = 1.5                     # below this a plan is not worth stating
 # the owner's journal is the live truth and is used FIRST when it has closed
 # trades. The card labels the source so a backtest number is never mistaken for
 # a measured one. Measured 2026-11-13 on the shipped config (ADX 0-50, ATR
-# 0.08-0.25%, no-chase gate, $9 stop, $20 target): 661 closed trades, 36.8% win,
-# +0.176 R/trade, max drawdown -16R, longest losing run 11. The old 37% / 16 came
+# 0.08-0.30%, no-chase gate, $9 stop, $20 target): 796 closed trades, 34.9% win,
+# +0.118 R/trade, max drawdown -19R, longest losing run 13. The old 37% / 16 came
 # from a replay that used ADX 20-40 / ATR 0.25% -- tighter than the live bands --
 # and no no-chase gate, so it measured a different bot. (The live stop is the $9
 # pick nudged to $8-12 by the nearest level; the replay fixes it at $9, which
 # measured the same to 0.002 R.)
-STUDY_WIN_RATE = 0.37            # full-year replay; spread makes the live one lower
-STUDY_LOSS_STREAK = 11           # longest run of losers in the corrected replay
+STUDY_WIN_RATE = 0.35            # full-year replay; spread makes the live one lower
+STUDY_LOSS_STREAK = 13           # longest run of losers in the corrected replay
 SHOW_STUDY = os.environ.get("DESK_SHOW_STUDY", "1").strip().lower() not in \
     ("0", "off", "no", "false")
 CONFIRM_FRAMES = 4               # a direction needs this many of 6 frames
@@ -131,10 +131,14 @@ ADX_MIN, ADX_MAX = 0.0, 50.0     # ride a trend, but not an exhausted one
 # The ATR ceiling is the one that MATTERS, and it interacts with the no-chase
 # gate: WITHOUT the gate a wide ceiling nets more total R (0.25% -> +114R, 1.00%
 # -> +158R), which is why it was widened; WITH the gate the sign flips (0.25% ->
-# +117R, 1.00% -> +91R) and the wide ceiling also doubles the drawdown (-16R ->
-# -25R, i.e. -$227 on the owner's $200). The gate already refuses the bad
-# high-volatility entries, so the ceiling no longer has to; keep it tight.
-ATR_MIN_PCT, ATR_MAX_PCT = 0.0008, 0.0025   # 0.08%-0.25% of price: alive, calm
+# +117R, 1.00% -> +91R) and a wide ceiling raises the drawdown. The gate already
+# refuses the bad high-volatility entries, so the ceiling need not be as tight.
+# Set to 0.30% (owner's call, 2026-11-13): it admits 796 trades for +93.6R at a
+# -19R drawdown, against 0.25%'s 661 trades for +116.6R at -16R. The tighter cap
+# nets MORE R for LESS drawdown; the owner preferred the extra entries at the
+# high-volatility edge (the days the tight cap went silent), accepting the lower
+# expectancy. Measured, not asserted: 0.25% -> +0.176 R/trade, 0.30% -> +0.118.
+ATR_MIN_PCT, ATR_MAX_PCT = 0.0008, 0.0030   # 0.08%-0.30% of price: alive, calm
 RSI_LONG = (35.0, 58.0)          # a long is a pullback, not a chase
 RSI_SHORT = (42.0, 65.0)         # the short mirror
 # Which gates are live. Default "adx,atr": the two that helped on BOTH the
@@ -3737,7 +3741,7 @@ def card_full() -> str:
             L.append(f"  📊 <b>نسبتك الحقيقية:</b> {jn['n']} صفقة · "
                      f"فوز {jn['win_rate']:.0%} · مجموع {jn['total_r']:+.1f}R")
         else:
-            L.append(f"  📊 <b>نسبة الفوز (باكتست سنة، 661 صفقة):</b> "
+            L.append(f"  📊 <b>نسبة الفوز (باكتست سنة، 796 صفقة):</b> "
                      f"~{STUDY_WIN_RATE:.0%} — تخسر أكتر مما تربح · أطول سلسلة "
                      f"خسارة {STUDY_LOSS_STREAK} صفقة")
             L.append("  <i>هاد رقم دراسة مو رقمك — سجّل صفقاتك ليصير عندك "

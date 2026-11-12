@@ -46,7 +46,7 @@ try:
 except Exception:  # noqa: BLE001 - a standalone study must still run
     STOP_USD, RR = 9.0, 2.2
     ADX_MIN, ADX_MAX = 0.0, 50.0
-    ATR_MIN_PCT, ATR_MAX_PCT = 0.0008, 0.0100
+    ATR_MIN_PCT, ATR_MAX_PCT = 0.0008, 0.0030
     RSI_LONG, RSI_SHORT = (35.0, 58.0), (42.0, 65.0)
     NOCHASE_ON, NOCHASE_RSI, NOCHASE_TF = True, 38.0, "1h"
     NOCHASE_SIDES = {"short", "long"}
