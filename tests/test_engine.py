@@ -2161,5 +2161,35 @@ class StickyLevelsTest(unittest.TestCase):
         self.assertEqual([z for z, _ in out["sell"]], [4120.0])
 
 
+class ChatSplitTest(unittest.TestCase):
+    """The owner's own messages stay private; the market alerts stay public.
+
+    `_desk_chats` carries the money (a trade, the day's record, the account) and
+    goes to the owner alone; `_alert_chats` carries facts about the market and
+    goes to everyone allowed."""
+
+    def setUp(self):
+        self._own, self._backup = bot.OWNER_ONLY, bot.BACKUP_CHAT
+        bot.BACKUP_CHAT = ""                      # fall back to SEED_CHATS[0]
+
+    def tearDown(self):
+        bot.OWNER_ONLY, bot.BACKUP_CHAT = self._own, self._backup
+
+    def test_desk_messages_go_to_the_owner_alone(self):
+        bot.OWNER_ONLY = True
+        allow = {"100", "200", "933571066"}
+        self.assertEqual(bot._desk_chats(allow), [bot._backup_chat()])
+        self.assertNotIn("100", bot._desk_chats(allow))
+
+    def test_alerts_go_to_everyone_allowed(self):
+        allow = {"100", "200"}
+        self.assertEqual(bot._alert_chats(allow), ["100", "200"])
+
+    def test_owner_only_off_restores_the_old_behaviour(self):
+        bot.OWNER_ONLY = False
+        allow = {"100", "200"}
+        self.assertEqual(bot._desk_chats(allow), ["100", "200"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
