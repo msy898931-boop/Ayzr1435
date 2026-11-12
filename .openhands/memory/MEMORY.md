@@ -1005,3 +1005,31 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   present. Port 12000 → `work-1-vdueockkqyznsbyj…/map`.
 - Owner condition restated: **only the owner gets messages; no test notifications
   to anyone else.** The map server sends nothing at all.
+
+## Map page: hourly analysis + sticky levels (2026-11-07, late)
+
+- ⭐ **A named level is never taken down — a UNION re-split by price.** The live
+  map recomputed `_levels`/`_zones`/`_liquidity` each read, so a sharp move
+  dropped the level the owner was watching. `_sticky_map()` (bot.py) unions the
+  fresh levels with a pool in `data/levels_seen.json` (three SEPARATE families:
+  pivot levels, multi-touch zones, liquidity) and re-splits the whole pool by the
+  live price: a level crosses resistance↔support, but is never removed, only
+  re-labelled. Display shows the nearest `STICKY_MAX`; store keeps the nearest
+  `STICKY_STORE_MAX` so the file stays bounded.
+- ⭐ **Sticky = DISPLAY only; the trade reads the FRESH level.** `plan()` and
+  `map_analysis()` keep the fresh levels. A trade must never fire off a stale
+  level the market has already left.
+- ⭐ **Render has no disk → the sticky pool rides in the pinned backup.**
+  `_dump_journal()` carries `sticky`; `restore_journal()` writes it back when the
+  file is absent. Do NOT add the sticky mtime to `backup_loop`'s change-stamp:
+  it changes hourly, so the bot would send a Telegram document every hour —
+  the owner said speak only on change.
+- The analysis now refreshes **hourly** (`setInterval(tick, 3600000)` in
+  map.html); the price keeps ticking every 5s. The header says so.
+- ⭐ **A feature that WRITES a file needs test isolation.** `setUpModule()` in
+  tests/test_engine.py points `bot.STICKY_PATH` at a temp dir, or a test run
+  pollutes the real `data/levels_seen.json` with fake levels.
+- Ruff here has **no config file**, so N802/E402 are OFF and `# noqa: N802`
+  itself errors (RUF100). Baseline for tests/test_engine.py is 4 errors.
+- Suite now **189 tests, 1 pre-existing failure** (`test_the_win_rate_line_names_
+  its_source`). Commits `915605a`, `1195f77`. Render autoDeploy OFF.
