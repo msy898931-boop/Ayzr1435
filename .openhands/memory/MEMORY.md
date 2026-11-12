@@ -904,3 +904,28 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   the band (0.08-0.25%), do not loosen the band for the fixture.
 - Suite: 174 tests, 1 pre-existing failure (`test_the_win_rate_line_names_its_source`
   — local trades file, fails WITHOUT agent edits, verified by `git stash`).
+
+## Ayzr1435 — ATR ceiling set to 0.30% by owner's call (2026-11-13)
+
+- The owner chose **0.30%** over the measured-better **0.25%**. Honest numbers,
+  both from `bot2026.simulate()` with the ceiling READ from `bot.py`:
+  | ceiling | trades | win | total R | R/trade | max DD |
+  |---|---|---|---|---|---|
+  | 0.25% | 661 | 36.8% | +116.6R | +0.176 | -16.2R (-$146) |
+  | 0.30% | 796 | 34.9% |  +93.6R | +0.118 | -19.2R (-$173) |
+  0.30% buys 135 extra trades at the volatility edge for 23R less total and a
+  3R deeper drawdown. **That is the owner's trade, and it is theirs to make —
+  record it, do not relitigate it.** STUDY_WIN_RATE 0.35, STUDY_LOSS_STREAK 13,
+  card says "796 صفقة".
+- ⭐ **The owner's REAL trades barely move between 0.25% and 0.30%.** All 20
+  trades of Nov 9-11 passed BOTH caps (ATR 0.11-0.21%). Only the Nov 12 crash
+  window (ATR 0.25-0.34%) splits them: 0.25% refuses 6, 0.30% refuses 2 (net
+  +3.57R on that one day). **A one-day edge is not an edge** — the full year is
+  what decides, and there 0.25% wins. Say both.
+- ⭐ **Data sources for re-running this:** biquote `/api/XAUUSD/ohlc?interval=15m`
+  returns only the **last ~193 bars** (~2 days). For older windows use Dukascopy
+  day files (`datafeed.dukascopy.com/.../BID_candles_min_1.bi5`) — but it
+  **503s under load**; retry with backoff (3-6 tries). The .bi5 is LZMA; if you
+  saved the already-decompressed bytes, `lzma.decompress` raises `LZMAError` —
+  fall back to using the bytes raw. Match a trade to its bar by the last CLOSED
+  15m bar strictly before `opened_at` (bot `closed()` semantics).
