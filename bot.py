@@ -225,6 +225,10 @@ TREND_ALERT_COOLDOWN_S = 20 * 60  # at most one direction alert per 20 minutes
 # DESK_TZ_OFFSET=0 to show GMT.
 TZ_OFFSET_H = int(os.environ.get("DESK_TZ_OFFSET", "3") or "3")
 TZ_LABEL = os.environ.get("DESK_TZ_LABEL", "بتوقيت سوريا")
+# The two hours the full daily read goes out, local time: morning and evening.
+# The owner asked for the analysis "للبدو يصير وليلي" -- daybreak and night.
+DAILY_AM_HOUR = int(os.environ.get("DESK_DAILY_AM_HOUR", "9") or "9")
+DAILY_PM_HOUR = int(os.environ.get("DESK_DAILY_PM_HOUR", "21") or "21")
 NEWS_ITEMS: list[tuple[str, str]] = [
     ("🔥", "اليوم: تقرير التضخم الأميركي (CPI) — أهم حدث بالأسبوع"),
     ("⚠️", "الـCPI رح يطلع بلا نسبة سنوية (تداعيات الإغلاق) — رقم مشوّه"),
@@ -235,6 +239,7 @@ NEWS_ITEMS: list[tuple[str, str]] = [
 MENU = [
     [("🧠 قراءتي للسوق", "full")],
     [("🧭 شو تعمل هلّق", "action")],
+    [("📅 التحليل اليومي الشامل", "day_analysis")],
     [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
     [("🗺️ خريطة المناطق", "map"), ("📰 الأخبار", "news")],
     [("🎬 السيناريوهات", "scenarios"), ("🔔 المستويات", "levels")],
@@ -259,6 +264,8 @@ TEXT_ACTIONS = {
     "يومي": "j_day", "اليوم": "j_day", "أسبوعي": "j_week", "اسبوعي": "j_week",
     "شهري": "j_month", "الشهر": "j_month", "متابعة": "monitor",
     "سجل اليوم": "daily", "سجل اليوم؟": "daily",
+    "/daily": "day_analysis", "تحليل يومي": "day_analysis",
+    "التحليل اليومي": "day_analysis", "قراءة اليوم": "day_analysis",
     "اعمل": "action", "تنبيهات": "alerts", "التنبيهات": "alerts", "دليل": "alerts",
     "مساعدة": "help", "قائمة": "menu",
     "مين": "who", "المشتركين": "who", "المشتركين؟": "who",
@@ -678,6 +685,9 @@ def frame_trend(b: list[dict]) -> int:
 
 
 FRAMES = ("1d", "4h", "1h", "30m", "15m", "5m")
+# Arabic labels for the frames, so a report reads in the owner's language.
+TF_AR = {"1d": "يومي", "4h": "4س", "1h": "1س", "30m": "30د",
+         "15m": "15د", "5m": "5د"}
 # The reading may lean on the big frames; a TRADE still needs CONFIRM_FRAMES of
 # all six. Big frames weigh more because a daily/4h tilt outlives a 5m wiggle.
 BIG_FRAMES = ("1d", "4h", "1h")
@@ -1035,7 +1045,16 @@ def card_analysis() -> str:
 
 
 def _levels(live: float) -> tuple[list[float], list[float]]:
-    """Nearest resistance levels above and support levels below the price."""
+    """Nearest resistance levels above and support levels below the price.
+
+    Pivots need `right` bars to confirm, so right after a sharp move the newest
+    extreme is not yet a pivot and the side it sits on can come back EMPTY -- a
+    fast fall to a fresh low leaves no confirmed support below, and the report
+    loses its support section and half its scenarios. So each side falls back to
+    the recent window's own extreme (the lowest low below price / highest high
+    above it) when no pivot qualifies: a real level the owner is watching, not
+    an invented one.
+    """
     try:
         b = bars("1h", 300)
     except Exception:  # noqa: BLE001
@@ -1043,6 +1062,15 @@ def _levels(live: float) -> tuple[list[float], list[float]]:
     highs, lows = pivots(b, 3, 3)
     res = sorted({round(h, 2) for h in highs if h > live})
     sup = sorted({round(l, 2) for l in lows if l < live}, reverse=True)
+    win = b[-120:]
+    if not sup and win:
+        swing_lo = min(x["low"] for x in win)
+        if swing_lo < live:
+            sup = [round(swing_lo, 2)]
+    if not res and win:
+        swing_hi = max(x["high"] for x in win)
+        if swing_hi > live:
+            res = [round(swing_hi, 2)]
     return res, sup
 
 
@@ -1239,6 +1267,310 @@ def _ema_last(vals: list[float], n: int) -> float | None:
     """The last EMA of a series, or None when there is not enough history."""
     s = ema_series(vals, n)
     return s[-1] if s else None
+
+
+def fib_levels(live: float) -> dict:
+    """Fibonacci retracement + extension over the live swing, the way I read it
+    by hand: take the most recent significant swing (the highest high and lowest
+    low of the recent 1h window, whichever came LAST is the anchor), project the
+    retracement levels the owner watches (23.6 / 38.2 / 50 / 61.8 / 78.6), and
+    the extension targets (127.2 / 161.8) beyond the swing.
+
+    The point is not the exact ratio -- it is which levels price has already
+    crossed and which one it is sitting on. "the 61.8% broke" is a fact; a bare
+    "61.8% = 3976.5" is decoration. Returns the nearest retracement above and
+    below, whether the last big level broke, and the extension target.
+
+    Guarded: a missing frame returns {} and the map prints no fibo section.
+    """
+    try:
+        b = bars("1h", 300)
+        if len(b) < 40:
+            return {}
+        # The swing: the extreme high and extreme low of the recent window.
+        # Whichever came LAST is where the move ended, so the move ran FROM the
+        # other one TO it: a low more recent than the high is a DOWN move (high
+        # -> low), and its retracement levels sit ABOVE the low, extensions BELOW.
+        win = b[-120:]
+        top = max(x["high"] for x in win)
+        bot = min(x["low"] for x in win)
+        if top <= bot:
+            return {}
+        i_top = max(i for i, x in enumerate(win) if x["high"] == top)
+        i_bot = max(i for i, x in enumerate(win) if x["low"] == bot)
+        down = i_bot > i_top          # the low is more recent -> a down move
+        rng = top - bot
+        ratios = (0.236, 0.382, 0.5, 0.618, 0.786)
+        levels: list[dict] = []
+        for r in ratios:
+            lv = bot + rng * r if down else top - rng * r
+            levels.append({"ratio": r, "price": round(lv, 2)})
+        # Which level is price sitting on / has crossed? (down: crossed = above)
+        above = [l for l in levels if l["price"] > live]
+        below = [l for l in levels if l["price"] <= live]
+        nearest_above = min(above, key=lambda l: l["price"] - live) if above else None
+        nearest_below = max(below, key=lambda l: live - l["price"]) if below else None
+        # Extensions beyond the move's end: below the low for a down move, above
+        # the high for an up move -- where price goes if the move keeps going.
+        ext = {}
+        for r in (1.272, 1.618):
+            ext[str(r)] = round(bot - rng * (r - 1), 2) if down \
+                else round(top + rng * (r - 1), 2)
+        return {
+            "top": round(top, 2), "bottom": round(bot, 2),
+            "direction": "down" if down else "up",
+            "levels": levels,
+            "nearest_above": nearest_above, "nearest_below": nearest_below,
+            "extensions": ext,
+        }
+    except Exception:  # noqa: BLE001 - a missing frame must not kill the read
+        return {}
+
+
+def fib_read(live: float) -> str:
+    """The fibo sentence the map and the daily note show -- a fact, not a chart."""
+    f = fib_levels(live)
+    if not f:
+        return ""
+    d = "هابط" if f["direction"] == "down" else "صاعد"
+    a = f.get("nearest_above")
+    bl = f.get("nearest_below")
+    parts = [f"فيبو (موجة {d}): {f['bottom']:.2f} ← {f['top']:.2f}"]
+    if bl:
+        parts.append(f"السعر فوق {bl['ratio']*100:.1f}% ({bl['price']:.2f})")
+    if a:
+        parts.append(f"تحت {a['ratio']*100:.1f}% ({a['price']:.2f})")
+    if f.get("extensions"):
+        parts.append(f"امتداد 127% → {f['extensions']['1.272']:.2f}")
+    return " · ".join(parts)
+
+
+def divergence_read() -> list[dict]:
+    """Momentum divergence, the tell that a move is tiring.
+
+    Bullish: price makes a LOWER low while RSI makes a HIGHER low. Bearish: price
+    makes a HIGHER high while RSI makes a LOWER high. Checked on 5m, 15m and 1h so
+    a short-term tell and a bigger one both speak. Each hit carries its numbers.
+
+    This is a FACT about the last two swings, not a prediction -- the honest
+    reading of "the fall is losing steam" without claiming a reversal.
+    """
+    out: list[dict] = []
+    for tf in ("5m", "15m", "1h"):
+        try:
+            b = closed(bars(tf, 300), tf)
+            if len(b) < 40:
+                continue
+            cl = [x["close"] for x in b]
+            now = rsi(cl, 14)
+            prev = rsi(cl[:-8], 14)
+            if now is None or prev is None:
+                continue
+            lo_now, lo_prev = min(cl[-8:]), min(cl[-16:-8])
+            hi_now, hi_prev = max(cl[-8:]), max(cl[-16:-8])
+            if lo_now < lo_prev and now > prev + 2:
+                out.append({"tf": tf, "kind": "دايفرجنس إيجابي", "tone": "warn",
+                            "text": (f"دايفرجنس إيجابي ({tf}): السعر قاع أدنى "
+                                     f"({lo_now:.1f}←{lo_prev:.1f}) بس RSI طلع "
+                                     f"({prev:.0f}→{now:.0f}) — الهبوط عم يتعب.")})
+            elif hi_now > hi_prev and now < prev - 2:
+                out.append({"tf": tf, "kind": "دايفرجنس سلبي", "tone": "warn",
+                            "text": (f"دايفرجنس سلبي ({tf}): السعر قمة أعلى "
+                                     f"({hi_now:.1f}←{hi_prev:.1f}) بس RSI نزل "
+                                     f"({prev:.0f}→{now:.0f}) — الصعود عم يتعب.")})
+        except Exception:  # noqa: BLE001 - one frame must not kill the read
+            continue
+    return out
+
+
+def daily_analysis(now: datetime | None = None) -> str:
+    """THE DAILY READ -- the whole hand-written analysis, once a day, in Arabic.
+
+    This is the piece the owner asked for: the same shape as the analysis I write
+    by hand, assembled from the live tape -- every section named and numbered, so
+    it reads as a report, not a card. It carries: the snapshot, the big picture,
+    the six frames, structure (higher/lower highs and lows), resistance and
+    support with touch counts, supply/demand zones, liquidity, Fibonacci, momentum
+    divergence, three named scenarios, and a playbook -- then the honest note.
+
+    It is deliberately NOT a promise: every number is measured, the fibo and
+    divergence are facts about the swings, and the honesty line says what could
+    go wrong. Nothing is invented; a missing piece drops its section.
+
+    `now` lets the caller stamp the time (tests pass a fixed one).
+    """
+    m = read_market()
+    q, live = m["q"], m["live"]
+    res, sup = _levels(live) if live > 0 else ([], [])
+    sell_z, buy_z = _zones(live) if live > 0 else ([], [])
+    liq_hi, liq_lo = _liquidity(live) if live > 0 else ([], [])
+    trends, rsis, atrs = m["trends"], m.get("rsis") or {}, m.get("atrs") or {}
+    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
+    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
+    r15 = rsis.get("15m")
+    now = now or datetime.now(UTC)
+
+    L: list[str] = []
+    L.append(f"📊 <b>التحليل اليومي — XAUUSD</b>")
+    L.append(f"🗓️ {now.strftime('%Y-%m-%d')} · {_clock(now)} {TZ_LABEL}")
+    L.append("")
+
+    # --- 1. the snapshot ---
+    L.append("<b>١) اللقطة اللحظية</b>")
+    L.append(f"السعر <b>{num(live)}</b> · سبريد {num(q.get('spread'))} · "
+             f"{'🟢 مفتوح' if market_open(q) else '🔴 مسكّر'}")
+    dd = q.get("dayDiffPercent")
+    if dd is not None:
+        L.append(f"تغيّر اليوم <b>{dd:+.2f}%</b>")
+    hi, lo = q.get("high"), q.get("low")
+    if isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
+        pos = (live - lo) / (hi - lo) * 100
+        L.append(f"نطاق اليوم {num(lo)}–{num(hi)} ({hi-lo:.1f} نقطة) · "
+                 f"السعر عند <b>{pos:.0f}%</b> منه")
+    L.append("")
+
+    # --- 2. the big picture: the multi-day leg ---
+    L.append("<b>٢) الصورة الكبيرة (اليومي)</b>")
+    with suppress(Exception):
+        bd = bars("1d", 30)
+        if len(bd) >= 4:
+            rows = bd[-4:]
+            for x in rows:
+                chg = x["close"] - x["open"]
+                L.append(f"  {x['openTime'][:10]}: {num(x['open'])}→{num(x['close'])} "
+                         f"({chg:+.1f})")
+            leg = bd[-1]["close"] - bd[-4]["open"]
+            L.append(f"  → حركة آخر 4 أيام: <b>{leg:+.1f}</b> نقطة")
+    L.append("")
+
+    # --- 3. the six frames ---
+    L.append("<b>٣) الفريمات (ميل · RSI · ATR)</b>")
+    for tf in FRAMES:
+        t = trends.get(tf)
+        icon = "🔴" if t == -1 else ("🟢" if t == 1 else "⚪")
+        r = rsis.get(tf)
+        a = atrs.get(tf)
+        L.append(f"  {TF_AR.get(tf, tf)}: {icon} RSI {r:.0f}" if r is not None
+                 else f"  {TF_AR.get(tf, tf)}: {icon}")
+        if a is not None:
+            L[-1] += f" · ATR {a:.1f}"
+    L.append(f"  → إجماع: <b>{dn}/6 هابط</b>" if dn > up else
+             (f"  → إجماع: <b>{up}/6 صاعد</b>" if up > dn else "  → إجماع: عرضي"))
+    L.append("")
+
+    # --- 4. structure ---
+    L.append("<b>٤) البنية</b>")
+    sr = _structure_read()
+    if sr:
+        L.append(f"  {sr}")
+    with suppress(Exception):
+        b1 = bars("1h", 200)
+        hh, ll = pivots(b1, 3, 3)
+        if len(hh) >= 2 and len(ll) >= 2:
+            L.append(f"  آخر قمم: {' · '.join(num(x) for x in hh[-3:])}")
+            L.append(f"  آخر قيعان: {' · '.join(num(x) for x in ll[-3:])}")
+    L.append("")
+
+    # --- 5. levels with strength ---
+    L.append("<b>٥) المقاومة والدعم</b>")
+    L += _levels_with_strength(live) or ["  —"]
+    L.append("")
+
+    # --- 6. zones ---
+    L.append("<b>٦) مناطق العرض والطلب</b>")
+    if sell_z:
+        L.append("  عرض (بيع): " + " · ".join(f"{num(p)} ({n} لمسة)"
+                                              for p, n in sell_z[:4]))
+    if buy_z:
+        L.append("  طلب (شراء): " + " · ".join(f"{num(p)} ({n} لمسة)"
+                                              for p, n in buy_z[:4]))
+    if not sell_z and not buy_z:
+        L.append("  —")
+    L.append("")
+
+    # --- 7. liquidity ---
+    L.append("<b>٧) السيولة</b>")
+    if liq_hi:
+        L.append("  فوق (ستوبات البائعين): " +
+                 " · ".join(num(x) for x in liq_hi[:3]))
+    if liq_lo:
+        L.append("  تحت (ستوبات الشاريين): " +
+                 " · ".join(num(x) for x in liq_lo[:3]))
+    if not liq_hi and not liq_lo:
+        L.append("  —")
+    L.append("")
+
+    # --- 8. fibonacci ---
+    L.append("<b>٨) فيبوناتشي</b>")
+    fr = fib_levels(live)
+    if fr:
+        d = "هابط" if fr["direction"] == "down" else "صاعد"
+        L.append(f"  موجة {d}: {num(fr['bottom'])} ← {num(fr['top'])}")
+        for l in fr["levels"]:
+            mark = " ← السعر" if (fr.get("nearest_above") and
+                                  abs(l["price"] - fr["nearest_above"]["price"]) < 1) or \
+                                 (fr.get("nearest_below") and
+                                  abs(l["price"] - fr["nearest_below"]["price"]) < 1) else ""
+            L.append(f"    {l['ratio']*100:.1f}% → {num(l['price'])}{mark}")
+        L.append(f"  امتداد 127% → {num(fr['extensions']['1.272'])} · "
+                 f"161% → {num(fr['extensions']['1.618'])}")
+    else:
+        L.append("  —")
+    L.append("")
+
+    # --- 9. divergence ---
+    L.append("<b>٩) الدايفرجنس</b>")
+    dv = divergence_read()
+    if dv:
+        for x in dv:
+            L.append(f"  {x['text']}")
+    else:
+        L.append("  ما في دايفرجنس واضح حالياً.")
+    L.append("")
+
+    # --- 10. the three scenarios (the map's own engine) ---
+    L.append("<b>١٠) السيناريوهات</b>")
+    p = None
+    with suppress(Exception):
+        p = plan(m)
+    adx_v = None
+    with suppress(Exception):
+        b15 = closed(bars("15m", 300), "15m")
+        adx_v = adx_series(b15)[-1] if b15 else None
+    a = map_analysis(m, live, res, sup, p, adx_v) if live > 0 else None
+    if a:
+        L.append(f"  الميل: <b>{a['bias']}</b>")
+        for i, s in enumerate(a["scenarios"], 1):
+            arrow = "🔴" if s["side"] == "short" else "🟢"
+            L.append(f"  {i}. {arrow} <b>{s['name']}</b> ({s.get('tag','')})")
+            L.append(f"     مشغّل {num(s['trigger'])} · وقف {num(s['stop'])} · "
+                     f"هدف {num(s['target'])} · R:R {s['rr']:.2f}")
+        L.append(f"  🎯 الحكم: {a['verdict']}")
+    L.append("")
+
+    # --- 11. the playbook ---
+    L.append("<b>١١) إيمتى تشتري وإيمتى تبيع</b>")
+    if a:
+        if a["sell"]:
+            L.append("  🔴 البيع:")
+            for pl in a["sell"][:3]:
+                L.append(f"    • {pl['kind']} — {pl['when']}: دخول {num(pl['entry'])} · "
+                         f"وقف {num(pl['stop'])} · هدف {num(pl['target'])} · "
+                         f"R:R {pl['rr']:.2f}")
+        if a["buy"]:
+            L.append("  🟢 الشراء:")
+            for pl in a["buy"][:3]:
+                L.append(f"    • {pl['kind']} — {pl['when']}: دخول {num(pl['entry'])} · "
+                         f"وقف {num(pl['stop'])} · هدف {num(pl['target'])} · "
+                         f"R:R {pl['rr']:.2f}")
+    L.append("")
+
+    # --- 12. the honest note (the owner's one non-negotiable) ---
+    L.append("<b>١٢) ملاحظة الصدق</b>")
+    L.append(f"  {a['honesty'] if a else 'قراءة آلية — ما في ضمان. الوقف إلزامي.'}")
+    L.append("")
+    L.append("<i>قراءة آلية من بيانات السوق الحيّة — مو نصيحة مالية · الوقف إلزامي دايماً.</i>")
+    return "\n".join(L)
 
 
 def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
@@ -1556,6 +1888,10 @@ def map_payload() -> dict:
     analysis = None
     with suppress(Exception):
         analysis = map_analysis(m, live, res, sup, p, adx_v)
+        # The extra tells I read by hand: fibo levels and momentum divergence.
+        analysis["fibo"] = fib_levels(live)
+        analysis["fibo_line"] = fib_read(live)
+        analysis["divergence"] = divergence_read()
 
     # The analyst's eye: the tells a template misses, each earned by a number.
     insights: list[dict] = []
@@ -3444,6 +3780,7 @@ def dispatch(action: str) -> str:
         "j_week": lambda: period_report("week"),
         "j_month": lambda: period_report("month"),
         "daily": daily_report,
+        "day_analysis": daily_analysis,
         "howto": help_text,
         "help": help_text,
         "menu": lambda: "📊 <b>مكتب تحليل السوق</b>\nاختر من الأزرار 👇",
@@ -3899,6 +4236,43 @@ def maybe_daily_report(tg: Telegram, allow: set[str]) -> None:
         _save_daily(st)
 
 
+def maybe_daily_analysis(tg: Telegram, allow: set[str]) -> None:
+    """Send the full daily read TWICE a day -- morning and evening -- each once.
+
+    The owner asked for "تحليل يومي كل يوم للبدو يصير وليلي" (a daily analysis,
+    morning and night). This is a FACT about the market, not a trade, so it runs
+    before the silence switch like the day's record. Keyed on the calendar date
+    AND the slot ("am"/"pm"), persisted, so a reboot mid-day neither repeats a
+    slot nor loses the other. The hours are configurable (DESK_DAILY_AM_HOUR /
+    DESK_DAILY_PM_HOUR, local) and each slot sends only within its hour window,
+    so a restart hours later does not fire a stale "morning" read.
+
+    Guarded end to end: a feed hiccup or a send failure never kills the tick.
+    """
+    st = _load_daily()
+    now = datetime.now(timezone(timedelta(hours=TZ_OFFSET_H)))
+    today = now.date().isoformat()
+    sent = st.get("analysis_sent") or {}
+    for slot, hour in (("am", DAILY_AM_HOUR), ("pm", DAILY_PM_HOUR)):
+        if now.hour != hour or sent.get(slot) == today:
+            continue
+        try:
+            text = daily_analysis()
+        except Exception:  # noqa: BLE001 - a hiccup must not kill the tick
+            continue
+        ok = False
+        for c in allow:
+            try:
+                tg.send(c, text)
+                ok = True
+            except Exception:  # noqa: BLE001
+                continue
+        if ok:
+            sent[slot] = today
+            st["analysis_sent"] = sent
+            _save_daily(st)
+
+
 def support_watch(seen: dict) -> str | None:
     """The dedicated heads-up for the desk's watched support.
 
@@ -4324,6 +4698,9 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     # switch: it is a fact about the day, not a trade decision, so the owner
     # still gets it when auto-trading is off.
     maybe_daily_report(tg, allow)
+    # The full daily read, morning and evening. Same reasoning: a fact about the
+    # market, so it speaks before the silence switch.
+    maybe_daily_analysis(tg, allow)
     # The support watch runs before the silence switch: a level breaking is a
     # fact about the market, not a trade decision, so the owner still hears it
     # when auto-trading is off.

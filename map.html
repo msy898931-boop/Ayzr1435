@@ -82,6 +82,17 @@
   <h2>👁️ عين المحلل (شو لاحظت)</h2>
   <div id="insights">—</div>
 
+  <div class="grid">
+    <div class="card">
+      <h2 style="margin-top:0">📐 فيبوناتشي</h2>
+      <div id="fibo" class="muted">—</div>
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0">📉 دايفرجنس</h2>
+      <div id="diverg" class="muted">—</div>
+    </div>
+  </div>
+
   <h2>🗺️ خريطة المستويات</h2>
   <div class="card"><div id="ladder">—</div></div>
 
@@ -225,6 +236,24 @@ function render(d){
         return `<div class="${c}" style="margin-bottom:8px"><b>${i.kind}:</b> ${i.text}</div>`;
       }).join("")
     : `<div class="muted">ما في ملاحظات استثنائية هلّق — كل شي عادي ضمن قواعد القراءة.</div>`;
+
+  // Fibonacci: the swing, the retracement levels, and where price sits on it.
+  const f = a && a.fibo;
+  document.getElementById("fibo").innerHTML = (f && f.levels && f.levels.length)
+    ? `<div class="muted" style="margin-bottom:6px">موجة ${f.direction==="down"?"هابطة":"صاعدة"}: ${F(f.bottom)} ← ${F(f.top)}</div>` +
+      f.levels.map(l=>{
+        const here = (f.nearest_above && Math.abs(l.price-f.nearest_above.price)<1) ||
+                     (f.nearest_below && Math.abs(l.price-f.nearest_below.price)<1);
+        return `<div${here?' style="color:#e3b341; font-weight:600"':''}>${(l.ratio*100).toFixed(1)}% → ${F(l.price)}${here?" ← السعر":""}</div>`;
+      }).join("") +
+      `<div class="muted" style="margin-top:6px">امتداد ١٢٧٪ → ${F(f.extensions["1.272"])} · ١٦١٪ → ${F(f.extensions["1.618"])}</div>`
+    : `<div class="muted">ما في موجة واضحة للفيبو هلّق.</div>`;
+
+  // Divergence: the momentum tells, each earned by a number.
+  const dv = (a && a.divergence) || [];
+  document.getElementById("diverg").innerHTML = dv.length
+    ? dv.map(x=>`<div class="${x.tone==="warn"?"warn":"info"}" style="margin-bottom:8px">${x.text}</div>`).join("")
+    : `<div class="muted">ما في دايفرجنس واضح هلّق.</div>`;
 }
 
 async function tick(){

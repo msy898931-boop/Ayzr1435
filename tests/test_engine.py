@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -1127,6 +1128,7 @@ class OpinionTest(unittest.TestCase):
 
     def test_a_confirmed_plan_is_said_now_with_the_plan_numbers(self):
         # When plan() has fired, the card must say "now" and print plan()'s OWN
+
         # entry/stop/target -- the exact numbers the desk is trading.
         p = {"entry": 4080.0, "stop": 4090.0, "target": 4055.0,
              "risk_usd": 10.0, "gain_usd": 20.0, "rr": 2.0, "direction": "short"}
@@ -1561,6 +1563,112 @@ class AtrCeilingTest(unittest.TestCase):
         self.assertIsNotNone(atr_pct)
         self.assertLessEqual(atr_pct, bot.ATR_MAX_PCT)
         self.assertNotIn("ATR", fs["failed"])
+
+
+
+class FiboTest(unittest.TestCase):
+    """fib_levels: the swing, the retracement levels, the extensions, and the
+    direction. A down move (low more recent than high) retraces ABOVE the low
+    and extends BELOW it -- the sign bug that shipped once must stay fixed."""
+
+    def test_a_down_move_retraces_above_the_low_and_extends_below(self):
+        closes = [4100 + i for i in range(10)] + [4109 - i * 5 for i in range(1, 60)]
+        with FakeFeed(mid=closes[-1], closes={"1h": closes}):
+            f = bot.fib_levels(closes[-1])
+        self.assertEqual(f["direction"], "down")
+        for l in f["levels"]:
+            self.assertGreater(l["price"], f["bottom"])
+            self.assertLess(l["price"], f["top"])
+        self.assertLess(f["extensions"]["1.272"], f["bottom"])
+        self.assertLess(f["extensions"]["1.618"], f["extensions"]["1.272"])
+
+    def test_an_up_move_retraces_below_the_high_and_extends_above(self):
+        closes = [4100 - i for i in range(10)] + [4091 + i * 5 for i in range(1, 60)]
+        with FakeFeed(mid=closes[-1], closes={"1h": closes}):
+            f = bot.fib_levels(closes[-1])
+        self.assertEqual(f["direction"], "up")
+        self.assertGreater(f["extensions"]["1.272"], f["top"])
+
+    def test_a_missing_frame_returns_empty_not_a_crash(self):
+        with FakeFeed(closes={"1h": [4100.0] * 5}):
+            self.assertEqual(bot.fib_levels(4100.0), {})
+
+
+class DivergenceTest(unittest.TestCase):
+    """divergence_read: a lower price low with a higher RSI low is bullish; the
+    opposite is bearish. A flat tape yields none."""
+
+    def test_a_flat_tape_has_no_divergence(self):
+        with FakeFeed(closes={tf: [4100.0] * 40 for tf in ("5m", "15m", "1h")}):
+            self.assertEqual(bot.divergence_read(), [])
+
+    def test_hits_carry_their_frame_and_text(self):
+        closes = [4100 - i * 2 for i in range(24)]
+        closes += [closes[-1] + (5 if i % 2 else -1) for i in range(12)]
+        with FakeFeed(closes={tf: list(closes) for tf in ("5m", "15m", "1h")}):
+            hits = bot.divergence_read()
+        for h in hits:
+            self.assertIn("tf", h)
+            self.assertIn("text", h)
+
+
+class DailyAnalysisTest(unittest.TestCase):
+    """daily_analysis: the full numbered Arabic report, and it always ends with
+    the honesty note the owner asked for."""
+
+    def _feed(self):
+        up = [4000 + i for i in range(30)]
+        return FakeFeed(mid=up[-1], closes={tf: up for tf in bot.FRAMES})
+
+    def test_it_is_numbered_arabic_and_carries_the_honesty_note(self):
+        with self._feed():
+            text = bot.daily_analysis()
+        self.assertIn("التحليل اليومي", text)
+        self.assertIn("ملاحظة الصدق", text)
+        self.assertIn("الوقف إلزامي", text)
+        for token in ("فيبوناتشي", "الدايفرجنس", "السيناريوهات",
+                      "المقاومة والدعم", "السيولة", "مناطق العرض والطلب"):
+            self.assertIn(token, text)
+
+    def test_it_never_exceeds_the_telegram_limit(self):
+        with self._feed():
+            self.assertLess(len(bot.daily_analysis()), 4096)
+
+
+class DailyScheduleTest(unittest.TestCase):
+    """maybe_daily_analysis: fires once per slot per day, only inside the slot's
+    hour, and a reboot that already sent a slot must not repeat it."""
+
+    def setUp(self):
+        self.sent = []
+        outer = self
+
+        class TG:
+            def send(self, chat, text, markup=None):
+                outer.sent.append(chat)
+                return True
+        self.tg = TG()
+
+    def _run(self, hour, saved):
+        from datetime import datetime as real_dt, timezone, timedelta
+        with unittest.mock.patch.object(bot, "_load_daily", return_value=saved), \
+             unittest.mock.patch.object(bot, "_save_daily", lambda st: None), \
+             unittest.mock.patch.object(bot, "daily_analysis", return_value="X"), \
+             unittest.mock.patch.object(bot, "datetime") as dt:
+            dt.now.return_value = real_dt(2026, 11, 12, hour, 5,
+                                          tzinfo=timezone(timedelta(hours=3)))
+            bot.maybe_daily_analysis(self.tg, {"1"})
+        return len(self.sent)
+
+    def test_the_morning_hour_sends_once(self):
+        self.assertEqual(self._run(bot.DAILY_AM_HOUR, {}), 1)
+
+    def test_an_off_hour_sends_nothing(self):
+        self.assertEqual(self._run((bot.DAILY_AM_HOUR + 2) % 24, {}), 0)
+
+    def test_a_slot_already_sent_today_does_not_repeat(self):
+        self.assertEqual(self._run(bot.DAILY_AM_HOUR,
+                                   {"analysis_sent": {"am": "2026-11-12"}}), 0)
 
 
 if __name__ == "__main__":
