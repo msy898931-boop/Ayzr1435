@@ -983,3 +983,25 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   `msy898931@gmail.com` and `kshsjshxudnndh@gmail.com` **raw**, and the repo is
   **public** (`private: false`). A note that says a redaction happened is not the
   redaction. Worth fixing (these are account identifiers, not secrets).
+
+## MarketDesk — the map link the owner asked for (2026-11-12)
+
+- ⭐ **The live bot on Render is BEHIND `main`.** `/health` reads
+  `commit: 5b3d570` while `origin/main` is `9b09b57` — and `5b3d570` is an
+  ANCESTOR of main, so the live page is an OLDER map (12 sections, **no chart**).
+  My local `map.html` already has those 12 + the candle chart + fibo + divergence.
+  So "make it like the bot" was already exceeded locally; the gap is a DEPLOY, not
+  code. `/health` `commit` is the only oracle — 200 alone proves nothing.
+- ⭐ **The read differs for a real reason, and it is my copy that is right.** Live
+  `plan: short` (entry 3875.8) because `5b3d570` has **no no-chase gate**; my
+  newer `bot.py` refuses (`1h RSI 27.7 < NOCHASE_RSI 38` = selling into the
+  bottom) → `plan: None`. Same engine, one deliberate improvement. Say this out
+  loud when showing both — it is not a bug.
+- **`map_server.py`** (new, untracked): serves ONLY the map page — reuses
+  `app.Health` so `/map`, `/map.json`, `/chart.json`, `/price`, `/health` are
+  byte-identical to the bot's — but starts **no poller and no desk**. Running
+  `app.py` here would open a second Telegram long-poll and 409 the live bot.
+  Verified: log has 0 Telegram mentions, `/map` 200 (22 436 b), chart colors
+  present. Port 12000 → `work-1-vdueockkqyznsbyj…/map`.
+- Owner condition restated: **only the owner gets messages; no test notifications
+  to anyone else.** The map server sends nothing at all.
