@@ -838,3 +838,40 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
 - The download link the owner sent (work-1-**shocrkxozkaqdglp**…) 404s on curl
   and the browser; it is a different sandbox host from this session's
   (work-1-**vdueockkqyznsbyj**). A fresh link is needed.
+
+## Ayzr1435 bot — the no-chase gate (2026-11-07)
+
+- ⭐ **The owner's own eye IS the acceptance test.** He audited the bot suspecting
+  it entered "without checking quality/direction"; then he refused an entry in
+  words ("selling from here is chasing") and said "make it like you". The honest
+  fix was to measure HIS rule on data, not invent one: `plan_check()` gained a
+  fifth gate `chase` — a SELL is refused while the filter frame's RSI is in deep
+  oversold (a BUY while deep overbought).
+- ⭐ **A filter read on the FORMING bar is reading the future.** Same rule read on
+  the forming candle = **−126R**; on the LAST CLOSED bar = **+67R** (2026, Dukascopy
+  5m). `closed(b, tf)` drops the still-forming bar; the no-chase read goes through
+  it. A test pins this (read == `rsi(tape[:-1])`). *This is the same lookahead
+  family as the earlier RSI bug — check the bar, always.*
+- **Measured, not asserted:** short side +0.177 → +0.289 R/trade (positive in all
+  4 quarters of 2026); symmetric rule cuts total DD −19R → −14R. The LIVE quality
+  gate's ATR band is 4× wider than the backtest's, so under live bands the lift is
+  smaller (+0.048 → +0.064) — say so, don't quote the backtest number as the live one.
+- ⭐ **Tests that build bars from a STRAIGHT LINE have ATR≈0 and RSI≈100** — they
+  pass only while no ATR/RSI gate exists, then break the moment one is added (7
+  broke here). A realistic tape is a drift PLUS a swing:
+  `[4000 + d*i + s*sin(i/2) for i in range(90)]`. Drift sign and swing sign must
+  MATCH for a clean trend (e.g. `-0.35i - 11*sin` → RSI 38.4; `-0.5i - 12*sin` →
+  RSI 37.0, just under the 38 floor). Isolate the rule under test by switching the
+  OTHER gates off (`bot.FILTERS_ON=False`, `bot.NOCHASE_ON=False`) rather than
+  bending the tape — that is what the existing tests' comments already intended.
+- ⭐ **Check a metric against data before "fixing" it** (recurring lesson). Two
+  suite failures looked like my breakage: 1 ruff-clean/1 mypy-clean is verified by
+  `git stash` + rerun, and `test_the_win_rate_line_names_its_source` fails on the
+  CLEAN tree too (it reads the local `data/journal.db`, git-ignored) — pre-existing,
+  NOT mine. Same discipline as the "0/16 plans, −1.00R" episode.
+- **Control surface** (Render dashboard env): `DESK_NOCHASE=0` off,
+  `DESK_NOCHASE_RSI` (default 38), `DESK_NOCHASE_TF` (default 1h),
+  `DESK_NOCHASE_SIDES` (`both`/`short`/`long`). Fails OPEN on a missing read.
+- **Deploy:** commit `2869d06` pushed to `main`; **Render autoDeploy is OFF** →
+  the owner must click **Deploy** himself. Push recipe (no credential helper):
+  `git push "https://x-access-token:${GITHUB_TOKEN}@github.com/msy898931-boop/Ayzr1435.git" main:main`.

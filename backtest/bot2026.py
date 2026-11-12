@@ -5,11 +5,17 @@ The desk's rules, replayed on the 5m series with no network:
   * trend per frame = EMA20 vs EMA50 (0.05% band)  [bot.frame_trend]
   * entry needs CONFIRM_FRAMES (4) of the 6 frames agreeing
   * the entry must respect the 15m EMA20 (long above / short below)
-  * stop = STOP_PICK_USD ($9); target = 2R ($18)
+  * the quality gate (ADX/ATR bands) -- the SAME bands bot.filter_status uses
+  * the no-chase gate (RSI on the filter frame) -- the SAME rule bot ships
+  * stop = STOP_PICK_USD ($9); target = STOP_PICK_USD * RR
   * one trade at a time; first touch wins, a bar spanning both takes the stop
 
 Frames come from duka_2026.json (Dukascopy XAUUSD), so this is the SAME year
 and the SAME fill rule as the combo backtest -- only the entry rules differ.
+
+The bands and the target are READ FROM bot.py, not duplicated: a study that
+hardcodes its own numbers drifts away from the bot and quietly measures
+something the desk no longer trades.
 """
 from __future__ import annotations
 import bisect
@@ -23,9 +29,27 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 HERE = os.path.dirname(os.path.abspath(__file__))
 FRAMES = ("1d", "4h", "1h", "30m", "15m", "5m")
 CONFIRM = 4
-STOP_USD = 9.0
-RR = 2.0
 FILTER_TF = "15m"
+
+# Read the live desk's own constants so this replay can never disagree with it.
+try:
+    import bot as _bot
+    STOP_USD = float(_bot.STOP_PICK_USD)
+    RR = float(_bot.TARGET_RR)
+    ADX_MIN, ADX_MAX = float(_bot.ADX_MIN), float(_bot.ADX_MAX)
+    ATR_MIN_PCT, ATR_MAX_PCT = float(_bot.ATR_MIN_PCT), float(_bot.ATR_MAX_PCT)
+    RSI_LONG, RSI_SHORT = _bot.RSI_LONG, _bot.RSI_SHORT
+    NOCHASE_ON = bool(_bot.NOCHASE_ON)
+    NOCHASE_RSI = float(_bot.NOCHASE_RSI)
+    NOCHASE_TF = str(_bot.NOCHASE_TF)
+    NOCHASE_SIDES = set(_bot.NOCHASE_SIDES)
+except Exception:  # noqa: BLE001 - a standalone study must still run
+    STOP_USD, RR = 9.0, 2.2
+    ADX_MIN, ADX_MAX = 0.0, 50.0
+    ATR_MIN_PCT, ATR_MAX_PCT = 0.0008, 0.0100
+    RSI_LONG, RSI_SHORT = (35.0, 58.0), (42.0, 65.0)
+    NOCHASE_ON, NOCHASE_RSI, NOCHASE_TF = True, 38.0, "1h"
+    NOCHASE_SIDES = {"short", "long"}
 
 
 def load():
@@ -70,7 +94,7 @@ def _at(times, t):
     return j
 
 
-def simulate(filters=False):
+def simulate(filters=False, nochase=True):
     raw, trend, times, e20 = load()
     b5 = raw["5m"]
     t5 = [x["openTime"] for x in b5]
@@ -80,6 +104,10 @@ def simulate(filters=False):
     adx15 = _adx(b15)
     atr15 = _atr_series(b15)
     rsi15 = _rsi_series([x["close"] for x in b15])
+    # The no-chase RSI series, computed ONCE for the whole replay.
+    nc_times = times.get(NOCHASE_TF, t15)
+    nc_rsi = rsi15 if NOCHASE_TF == "15m" else \
+        _rsi_series([x["close"] for x in raw[NOCHASE_TF]])
     trades = []
     open_t = None
     for i in range(300, len(b5) - 1):
@@ -128,6 +156,19 @@ def simulate(filters=False):
             if j15 >= 0 and not _gate_ok(direction, j15, live, adx15, atr15,
                                          macd15, rsi15):
                 continue
+        # The no-chase gate, the same rule bot.nochase_status ships: a short may
+        # not enter while the filter-frame RSI is deep oversold (a long may not
+        # enter deep overbought). Read on the last CLOSED bar of the filter
+        # frame -- the live gate reads a closed bar and so must the replay.
+        if nochase and NOCHASE_ON and direction in NOCHASE_SIDES:
+            jn = _at(nc_times, t) - 1
+            if 0 <= jn < len(nc_rsi):
+                r = nc_rsi[jn]
+                if r is not None:
+                    if direction == "short" and r < NOCHASE_RSI:
+                        continue
+                    if direction == "long" and r > 100.0 - NOCHASE_RSI:
+                        continue
         d = 1 if direction == "long" else -1
         open_t = {"direction": direction, "entry": live,
                   "stop": live - d * STOP_USD, "target": live + d * STOP_USD * RR,
@@ -139,26 +180,27 @@ def _gate_ok(direction, j, live, adx15, atr15, macd15, rsi15,
              gates=("adx", "atr")):
     """The same bands bot.filter_status applies, on the 15m series.
 
-    Default gates match the desk's shipped default (adx+atr): the two that paid
-    on both the futures study and the bot's own replay. MACD and RSI are
-    available but off by default -- on the 6-frame bot they cut the paying
-    trades (see bot.FILTER_GATES).
+    Default gates match the desk's shipped default (adx+atr). The ADX and ATR
+    bands MUST match bot.ADX_MIN/ADX_MAX and bot.ATR_MIN_PCT/ATR_MAX_PCT, or the
+    study measures a different bot than the one that trades. test_engine pins
+    that they agree (the old 20-40 / 0.25% here was four times tighter than the
+    live 0-50 / 1.00% and understated the trade count).
     """
     adx_v = adx15[j]
     atr_v = atr15[j]
     h = macd15[j]
     hp = macd15[j - 1] if j >= 1 else None
     r = rsi15[j]
-    if "adx" in gates and adx_v is not None and not (20.0 <= adx_v <= 40.0):
+    if "adx" in gates and adx_v is not None and not (ADX_MIN <= adx_v <= ADX_MAX):
         return False
     if "atr" in gates and atr_v is not None and live > 0 \
-            and not (0.0008 <= atr_v / live <= 0.0025):
+            and not (ATR_MIN_PCT <= atr_v / live <= ATR_MAX_PCT):
         return False
     if "macd" in gates and h is not None and hp is not None \
             and not (h > hp if direction == "long" else h < hp):
         return False
     if "rsi" in gates and r is not None:
-        lo, hi = (35.0, 58.0) if direction == "long" else (42.0, 65.0)
+        lo, hi = RSI_LONG if direction == "long" else RSI_SHORT
         if not (lo <= r <= hi):
             return False
     return True

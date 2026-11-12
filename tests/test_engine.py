@@ -1962,5 +1962,55 @@ class CollapsibleMenuTest(unittest.TestCase):
             self.assertIn(action, known, f"action {action} is not wired")
 
 
+class StudySyncTest(unittest.TestCase):
+    """The 2026 replay (backtest/bot2026.py) must measure the bot that trades.
+
+    It hardcoded its own ADX 20-40 / ATR 0.25% bands -- four times tighter than
+    the live ADX 0-50 / ATR 1.00% -- and skipped the no-chase gate entirely, so
+    every study number it produced (win rate, target sweep, "the no-chase gate
+    pays") described a bot that does not exist. The replay now READS bot's
+    constants; these tests fail the moment the two drift apart again.
+    """
+
+    def _study(self):
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "backtest"))
+        import bot2026
+        return bot2026
+
+    def test_the_replay_reads_the_live_bands(self):
+        s = self._study()
+        self.assertEqual((s.ADX_MIN, s.ADX_MAX), (bot.ADX_MIN, bot.ADX_MAX))
+        self.assertEqual((s.ATR_MIN_PCT, s.ATR_MAX_PCT),
+                         (bot.ATR_MIN_PCT, bot.ATR_MAX_PCT))
+        self.assertEqual((s.RSI_LONG, s.RSI_SHORT), (bot.RSI_LONG, bot.RSI_SHORT))
+
+    def test_the_replay_reads_the_live_sizing(self):
+        s = self._study()
+        self.assertEqual(s.STOP_USD, bot.STOP_PICK_USD)
+        self.assertEqual(s.RR, bot.TARGET_RR)
+
+    def test_the_replay_reads_the_live_no_chase_gate(self):
+        s = self._study()
+        self.assertEqual(s.NOCHASE_ON, bot.NOCHASE_ON)
+        self.assertEqual(s.NOCHASE_RSI, bot.NOCHASE_RSI)
+        self.assertEqual(s.NOCHASE_TF, bot.NOCHASE_TF)
+        self.assertEqual(s.NOCHASE_SIDES, set(bot.NOCHASE_SIDES))
+
+    def test_the_gate_bands_reject_the_same_values(self):
+        # The same ADX reading must pass/fail in both, at the band edges.
+        s = self._study()
+        for adx_v in (bot.ADX_MIN, bot.ADX_MAX, bot.ADX_MAX + 1.0,
+                      bot.ADX_MIN - 1.0):
+            live = s.ADX_MIN <= adx_v <= s.ADX_MAX
+            self.assertEqual(live, bot.ADX_MIN <= adx_v <= bot.ADX_MAX)
+        for atr_pct in (bot.ATR_MIN_PCT, bot.ATR_MAX_PCT,
+                        bot.ATR_MAX_PCT + 0.001):
+            live = s.ATR_MIN_PCT <= atr_pct <= s.ATR_MAX_PCT
+            self.assertEqual(live,
+                             bot.ATR_MIN_PCT <= atr_pct <= bot.ATR_MAX_PCT)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

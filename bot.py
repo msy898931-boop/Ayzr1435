@@ -74,14 +74,25 @@ STOP_MAX_USD = 12.0
 TARGET_MIN_USD = 15.0            # ...and take $15-20
 TARGET_MAX_USD = 20.0
 STOP_PICK_USD = 9.0              # the validated sweet spot; a near level may move it
-TARGET_RR = 2.2                  # 9 * 2.2 = $19.8, top of the window
+# The target: risk times this, clamped into the reward window. A 2026 sweep
+# (with the LIVE bands, see backtest/bot2026.py) put the whole $18-24 range on
+# one plateau -- no single value was clearly best, so this keeps the validated
+# 2.2. A WIDER stop, or an ATR-scaled stop, both tested WORSE on the same data.
+TARGET_RR = 2.2                  # 9 * 2.2 = $19.8, inside the reward window
 MIN_RR = 1.5                     # below this a plan is not worth stating
-# The desk's OWN backtest (251 days, 2,937 trades, $9 stop / $20 target). This
-# is a STUDY figure, never a live reading: the owner's journal is the live truth
-# and is used FIRST when it has closed trades. The card labels the source so a
-# backtest number is never mistaken for a measured one.
-STUDY_WIN_RATE = 0.37            # full-year, minus spread
-STUDY_LOSS_STREAK = 16           # longest run of losers that year (= 72% of the account)
+# The desk's OWN replay over 2026 (the same year as duka_2026.json, the SAME
+# rules the desk trades -- see backtest/bot2026.py, which now READS these
+# constants instead of hardcoding them). A STUDY figure, never a live reading:
+# the owner's journal is the live truth and is used FIRST when it has closed
+# trades. The card labels the source so a backtest number is never mistaken for
+# a measured one. Measured 2026-11-13 on the shipped config (live ADX/ATR bands,
+# no-chase gate, $9 stop, $20 target): 1,112 closed trades, 33.8% win, +0.082
+# R/trade. The old 37% / 16 came from a replay that used ADX 20-40 / ATR 0.25%
+# -- four times tighter than the live bands -- and no no-chase gate, so it
+# measured a different bot. (The live stop is the $9 pick nudged to $8-12 by the
+# nearest level; the replay fixes it at $9, which measured the same to 0.002 R.)
+STUDY_WIN_RATE = 0.34            # full-year replay; spread makes the live one lower
+STUDY_LOSS_STREAK = 19           # longest run of losers in the corrected replay
 SHOW_STUDY = os.environ.get("DESK_SHOW_STUDY", "1").strip().lower() not in \
     ("0", "off", "no", "false")
 CONFIRM_FRAMES = 4               # a direction needs this many of 6 frames
@@ -3723,7 +3734,7 @@ def card_full() -> str:
             L.append(f"  📊 <b>نسبتك الحقيقية:</b> {jn['n']} صفقة · "
                      f"فوز {jn['win_rate']:.0%} · مجموع {jn['total_r']:+.1f}R")
         else:
-            L.append(f"  📊 <b>نسبة الفوز (باكتست سنة، 2,937 صفقة):</b> "
+            L.append(f"  📊 <b>نسبة الفوز (باكتست سنة، 1,112 صفقة):</b> "
                      f"~{STUDY_WIN_RATE:.0%} — تخسر أكتر مما تربح · أطول سلسلة "
                      f"خسارة {STUDY_LOSS_STREAK} صفقة")
             L.append("  <i>هاد رقم دراسة مو رقمك — سجّل صفقاتك ليصير عندك "
@@ -3747,7 +3758,9 @@ def _study_edge() -> dict | None:
         here = Path(__file__).resolve().parent
         sys.path.insert(0, str(here / "backtest"))
         import bot2026  # type: ignore[import-not-found]
-        trades, _ = bot2026.simulate()
+        # The SHIPPED config, or this measures a bot nobody trades: the quality
+        # gate (filters) is the biggest determinant of the replay's numbers.
+        trades, _ = bot2026.simulate(filters=True, nochase=True)
         rr = float(bot2026.RR)
     except Exception:  # noqa: BLE001 - a missing study must not break the score
         return None
