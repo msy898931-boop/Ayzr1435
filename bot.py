@@ -141,6 +141,21 @@ TREND_FILTER_ON = os.environ.get("DESK_TREND_FILTER", "1").strip().lower() not i
 # trades OPENED today (local session), so a fast day cannot turn into a churn
 # of a hundred entries. Set DESK_MAX_TRADES_DAY=0 to remove the cap.
 MAX_TRADES_DAY = int(os.environ.get("DESK_MAX_TRADES_DAY", "10") or "10")
+# The no-chase filter: do not SELL into deep oversold (or BUY into deep
+# overbought) on the filter frame -- that is entering after the move, at the
+# edge of the range, where the retrace is most likely. Measured on 2026 (see
+# backtest): on the short side it lifts R/trade from +0.177 to +0.289 and holds
+# in all four quarters of the year; the symmetric rule also trims the total
+# drawdown (backtest bands: -19R -> -14R). The reading is taken on a CLOSED bar
+# only: on the forming bar the same rule measured -126R instead of +67R.
+NOCHASE_ON = os.environ.get("DESK_NOCHASE", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
+NOCHASE_RSI = float(os.environ.get("DESK_NOCHASE_RSI", "38") or "38")
+NOCHASE_TF = os.environ.get("DESK_NOCHASE_TF", "1h").strip()
+NOCHASE_SIDES = {s.strip().lower() for s in os.environ.get(
+    "DESK_NOCHASE_SIDES", "both").split(",") if s.strip()}
+if "both" in NOCHASE_SIDES or not NOCHASE_SIDES:
+    NOCHASE_SIDES = {"short", "long"}
 # The support watch: the desk's own nearest support (from _levels) gets a
 # dedicated heads-up -- approaching, bounced, or broken -- so the owner hears
 # about the level he cares about, not only when a whole plan appears.
@@ -2215,6 +2230,34 @@ def _filter_line(fs: dict) -> str:
     return " · ".join(parts)
 
 
+def nochase_status(direction: str, b15: list[dict] | None = None) -> dict:
+    """The no-chase gate: is this entry buying the top / selling the bottom?
+
+    Selling into deep oversold (or buying into deep overbought) on the filter
+    frame means entering AFTER the move, at the edge of the range -- the point
+    the owner's own eye refused. It is read on a CLOSED bar only; on the forming
+    bar the same rule measured a loss instead of a gain (see the constant).
+
+    Fails OPEN when the reading is missing, like every other gate here: a data
+    blip must not silence the desk.
+    """
+    side = "long" if direction == "long" else "short"
+    if not NOCHASE_ON or side not in NOCHASE_SIDES:
+        return {"ok": True, "rsi": None, "tf": NOCHASE_TF, "limit": None}
+    try:
+        b = b15 if NOCHASE_TF == "15m" and b15 is not None \
+            else bars(NOCHASE_TF, 300)
+        b = closed(b, NOCHASE_TF)
+    except Exception:  # noqa: BLE001 - a broken feed must not silence the desk
+        b = []
+    r = rsi([x["close"] for x in b]) if len(b) > 15 else None
+    if r is None:
+        return {"ok": True, "rsi": None, "tf": NOCHASE_TF, "limit": None}
+    limit = NOCHASE_RSI if side == "short" else 100.0 - NOCHASE_RSI
+    ok = (r >= limit) if side == "short" else (r <= limit)
+    return {"ok": ok, "rsi": r, "tf": NOCHASE_TF, "limit": limit}
+
+
 def plan_check(m: dict | None = None) -> dict:
     """The one decision engine, WITH its reason -- the owner asked to hear why
     a trade is taken, and (just as important) why one is NOT.
@@ -2234,6 +2277,10 @@ def plan_check(m: dict | None = None) -> dict:
                         tape). His own journal: this kept every winner and
                         blocked every loser.
       4. gate        -- the quality gate (ADX band, ATR band) failed.
+      5. chase       -- the entry is late: selling into deep oversold (or buying
+                        into deep overbought) on the filter frame. The owner's
+                        own eye refused this exact entry, and the backtest
+                        agrees (see the NOCHASE_* constants).
     """
     m = m or read_market()
     q, live, trends = m["q"], m["live"], m["trends"]
@@ -2310,6 +2357,19 @@ def plan_check(m: dict | None = None) -> dict:
         if not fs["ok"]:
             return {"plan": None, "reason": "gate",
                     "detail": f"بوابة الجودة ما تحققت: {_filter_line(fs)}"}
+
+    # 4. The no-chase gate: never SELL into deep oversold / BUY into deep
+    #    overbought. The owner's own read refused exactly this entry ("selling
+    #    from here is chasing"), and the backtest agrees (see the constants).
+    cs = nochase_status(side, b15)
+    if not cs["ok"]:
+        return {"plan": None, "reason": "chase",
+                "detail": (f"دخول متأخر — RSI({cs['tf']}) {cs['rsi']:.0f} "
+                           f"{'تحت' if side == 'short' else 'فوق'} "
+                           f"{cs['limit']:.0f}: السعر ركض وما بقى فيه مجال، "
+                           f"ما بمشي ورا الحركة.")}
+    p["nochase_rsi"] = cs["rsi"]
+    p["nochase_tf"] = cs["tf"]
     return {"plan": p, "reason": "ok", "detail": ""}
 
 
@@ -4205,7 +4265,11 @@ def _why_taken(p: dict, m: dict | None = None) -> list[str]:
             bits.append(f"ATR {rd['atr_pct']*100:.2f}%")
         if bits:
             out.append("✅ بوابة الجودة: " + " · ".join(bits))
-    # 4. The level the stop leans on.
+    # 4. The no-chase check, printed as the reading that passed.
+    if NOCHASE_ON and p.get("nochase_rsi") is not None:
+        out.append(f"✅ ما بمشي ورا الحركة: RSI({p.get('nochase_tf', NOCHASE_TF)}) "
+                   f"{p['nochase_rsi']:.0f}")
+    # 5. The level the stop leans on.
     if p.get("rr"):
         out.append(f"✅ R:R {p['rr']:.2f} (فوق الحد الأدنى {MIN_RR})")
     return out

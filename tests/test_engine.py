@@ -126,7 +126,9 @@ class PlanGateTest(unittest.TestCase):
         rising = list(range(4000, 4060))
         closes = {tf: rising for tf in bot.FRAMES}
         saved = bot.FILTERS_ON
+        saved_nc = bot.NOCHASE_ON
         bot.FILTERS_ON = False
+        bot.NOCHASE_ON = False
         try:
             with FakeFeed(mid=4059.0, closes=closes):
                 p = bot.plan()
@@ -135,6 +137,7 @@ class PlanGateTest(unittest.TestCase):
                 self.assertEqual(p["up"], len(bot.FRAMES))
         finally:
             bot.FILTERS_ON = saved
+            bot.NOCHASE_ON = saved_nc
 
     def test_frame_agrees_fails_open_on_a_missing_frame(self):
         # A broken feed must not stop the desk trading entirely: the filter is a
@@ -218,12 +221,15 @@ class FilterStatusTest(unittest.TestCase):
         rising = list(range(4000, 4060))
         closes = {tf: rising for tf in bot.FRAMES}
         saved = bot.FILTERS_ON
+        saved_nc = bot.NOCHASE_ON
         bot.FILTERS_ON = False
+        bot.NOCHASE_ON = False
         try:
             with FakeFeed(mid=4059.0, closes=closes):
                 self.assertIsNotNone(bot.plan())
         finally:
             bot.FILTERS_ON = saved
+            bot.NOCHASE_ON = saved_nc
 
 
 class IndicatorTest(unittest.TestCase):
@@ -589,7 +595,9 @@ class NewsTest(unittest.TestCase):
         rising = list(range(4000, 4060))
         closes = {tf: rising for tf in bot.FRAMES}
         fs = bot.FILTERS_ON
+        saved_nc = bot.NOCHASE_ON
         bot.FILTERS_ON = False
+        bot.NOCHASE_ON = False
         try:
             bot.NEWS_ITEMS = []
             with FakeFeed(mid=4059.0, closes=closes):
@@ -602,6 +610,7 @@ class NewsTest(unittest.TestCase):
         finally:
             bot.NEWS_ITEMS = saved
             bot.FILTERS_ON = fs
+            bot.NOCHASE_ON = saved_nc
 
     def test_live_news_is_merged_and_still_labelled_not_a_signal(self):
         saved_items, saved_live = bot.NEWS_ITEMS, bot.NEWS_LIVE
@@ -1234,15 +1243,15 @@ class OpinionTest(unittest.TestCase):
         self.assertEqual(bot.CHASE_RSI, 30.0)
 
     def test_plan_is_never_blocked_by_the_late_read(self):
-        # The whole point: the late-entry caveat is WORDS, not a gate. The RSI
-        # does not sit in FILTER_GATES by default, so a stretched RSI must not
-        # stop plan() from returning a sized trade when the frames agree and the
-        # candle agrees. (The quality gate and trend filter are on; the late
-        # read is separate from both.)
+        # The late-entry caveat is a WARNING on the 15m read, not a gate: the
+        # 15m RSI does not sit in FILTER_GATES, so a stretched 15m RSI must not
+        # stop plan() when the frames, the candle, and the no-chase gate all
+        # pass. (The no-chase gate reads its OWN frame -- 1h by default -- and a
+        # real tape keeps that reading inside its band.)
         import math
-        rising = [4000 + i + 8 * math.sin(i / 2.0) for i in range(90)]
-        closes = {tf: rising for tf in bot.FRAMES}
-        with FakeFeed(mid=rising[-1], closes=closes):
+        tape = [4000 + 0.2 * i + 10 * math.sin(i / 2.0) for i in range(90)]
+        closes = {tf: tape for tf in bot.FRAMES}
+        with FakeFeed(mid=tape[-1], closes=closes):
             p = bot.plan()
         self.assertIsNotNone(p)
         assert p is not None
@@ -1280,7 +1289,7 @@ class OpinionTest(unittest.TestCase):
         # fails the ATR gate) so the quality gate passes; the point of the test
         # is that plan() carries the 15m RSI for the open card.
         import math
-        rising = [4000 + i + 8 * math.sin(i / 2.0) for i in range(90)]
+        rising = [4000 + 0.2 * i + 10 * math.sin(i / 2.0) for i in range(90)]
         closes = {tf: rising for tf in bot.FRAMES}
         with FakeFeed(mid=rising[-1], closes=closes):
             p = bot.plan()
@@ -1707,11 +1716,13 @@ class PlanCheckTest(unittest.TestCase):
     """
 
     def _live_tape(self, up=True, n=90):
+        # A real tape: a drift plus a swing, so ATR is alive and the RSI sits in
+        # a tradeable band -- a straight line has no ATR and an RSI of 100, and
+        # would now be refused by the no-chase gate, not by the rule under test.
         import math
-        base = 4000.0
-        step = (lambda i: i + 8 * math.sin(i / 2.0)) if up \
-            else (lambda i: -i - 8 * math.sin(i / 2.0))
-        return [base + step(i) for i in range(n)]
+        step = (lambda i: 0.2 * i + 10 * math.sin(i / 2.0)) if up \
+            else (lambda i: -0.2 * i - 10 * math.sin(i / 2.0))
+        return [4000.0 + step(i) for i in range(n)]
 
     def test_closed_market_names_the_reason(self):
         with FakeFeed(market="closed"):
@@ -1739,7 +1750,7 @@ class PlanCheckTest(unittest.TestCase):
         # Six up frames but the price under the 15m EMA20: the trend gate is the
         # reason, and it must be named -- not a silent None.
         import math
-        tape = [4000 + i + 8 * math.sin(i / 2.0) for i in range(90)]
+        tape = [4000 + 0.2 * i + 10 * math.sin(i / 2.0) for i in range(90)]
         saved = bot.FILTERS_ON
         bot.FILTERS_ON = False
         try:
@@ -1766,6 +1777,74 @@ class PlanCheckTest(unittest.TestCase):
             self.assertEqual(bot.plan(), bot.plan_check()["plan"])
 
 
+class NoChaseTest(unittest.TestCase):
+    """The no-chase gate: never SELL into deep oversold (nor BUY into deep
+    overbought) on the filter frame. The owner's own read refused exactly this
+    entry -- "selling from here is chasing" -- and the 2026 backtest agreed
+    (short side: +0.177 -> +0.289 R/trade, holding in all four quarters)."""
+
+    def _tape(self, drift, swing=10.0, n=90):
+        import math
+        return [4000.0 + drift * i + swing * math.sin(i / 2.0) for i in range(n)]
+
+    def test_the_threshold_defaults_to_the_measured_one(self):
+        # Pinned to the level the 2026 study chose. A change must fail here.
+        self.assertEqual(bot.NOCHASE_RSI, 38.0)
+        self.assertEqual(bot.NOCHASE_TF, "1h")
+
+    def test_a_deep_oversold_short_is_refused_and_named(self):
+        # A fast fall: the 1h RSI is under the floor, so a short there is chasing.
+        tape = self._tape(-0.5, -12.0)
+        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+            pc = bot.plan_check()
+        self.assertIsNone(pc["plan"])
+        self.assertEqual(pc["reason"], "chase")
+        self.assertIn("متأخر", pc["detail"])
+
+    def test_a_short_above_the_floor_is_taken(self):
+        # The same falling tape, but slower: the 1h RSI sits above the floor, so
+        # the entry is not late and the plan is taken.
+        tape = self._tape(-0.35, -11.0)
+        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+            pc = bot.plan_check()
+        self.assertEqual(pc["reason"], "ok")
+        self.assertIsNotNone(pc["plan"])
+        assert pc["plan"] is not None
+        self.assertEqual(pc["plan"]["direction"], "short")
+
+    def test_a_deep_overbought_long_is_refused(self):
+        tape = self._tape(0.7, 13.0)
+        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+            pc = bot.plan_check()
+        self.assertIsNone(pc["plan"])
+        self.assertEqual(pc["reason"], "chase")
+
+    def test_the_gate_fails_open_on_a_missing_read(self):
+        # A data blip must not silence the desk: no bars -> no reading -> pass.
+        with FakeFeed(closes={"1h": []}):
+            self.assertTrue(bot.nochase_status("short")["ok"])
+
+    def test_the_gate_is_off_when_the_owner_turns_it_off(self):
+        tape = self._tape(-0.5, -12.0)
+        saved = bot.NOCHASE_ON
+        bot.NOCHASE_ON = False
+        try:
+            with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+                pc = bot.plan_check()
+            self.assertEqual(pc["reason"], "ok")
+        finally:
+            bot.NOCHASE_ON = saved
+
+    def test_the_taken_plan_carries_the_reading_and_the_why(self):
+        tape = self._tape(-0.35, -11.0)
+        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+            pc = bot.plan_check()
+            why = "\n".join(bot._why_taken(pc["plan"]))
+        self.assertIsNotNone(pc["plan"])
+        self.assertIsNotNone(pc["plan"]["nochase_rsi"])
+        self.assertIn("ما بمشي ورا الحركة", why)
+
+
 class PreTradeNoteTest(unittest.TestCase):
     """The heads-up BEFORE a trade: the owner asked to be told a trade is about
     to be taken and WHY, from the conditions -- not to find one already open."""
@@ -1778,7 +1857,7 @@ class PreTradeNoteTest(unittest.TestCase):
 
     def test_it_says_a_trade_is_about_to_be_taken(self):
         import math
-        tape = [4000 + i + 8 * math.sin(i / 2.0) for i in range(90)]
+        tape = [4000 + 0.2 * i + 10 * math.sin(i / 2.0) for i in range(90)]
         with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
             text = bot._pre_trade_note(self._p())
         self.assertIn("هلق رح تتاخد صفقة", text)
@@ -1786,7 +1865,7 @@ class PreTradeNoteTest(unittest.TestCase):
 
     def test_it_lists_the_conditions_that_passed(self):
         import math
-        tape = [4000 + i + 8 * math.sin(i / 2.0) for i in range(90)]
+        tape = [4000 + 0.2 * i + 10 * math.sin(i / 2.0) for i in range(90)]
         with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
             text = bot._pre_trade_note(self._p())
         self.assertIn("الاتجاه", text)          # the trend fact
@@ -1794,7 +1873,7 @@ class PreTradeNoteTest(unittest.TestCase):
 
     def test_it_carries_the_numbers_and_a_late_caveat(self):
         import math
-        tape = [4000 + i + 8 * math.sin(i / 2.0) for i in range(90)]
+        tape = [4000 + 0.2 * i + 10 * math.sin(i / 2.0) for i in range(90)]
         p = self._p("short")
         p["r15"] = 20.0                          # a stretched short
         with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
