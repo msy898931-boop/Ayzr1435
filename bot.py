@@ -1992,6 +1992,81 @@ def map_payload() -> dict:
     }
 
 
+def _rsi_series(vals: list[float], n: int = 14) -> list[float | None]:
+    """Wilder's RSI over the whole series, aligned to `vals` (None before warmup).
+
+    `rsi()` answers "what is RSI now"; a chart needs the whole line. Same
+    recursion, one value per bar, so the last point equals `rsi()` to the float.
+    """
+    out: list[float | None] = [None] * len(vals)
+    if len(vals) < n + 1:
+        return out
+    gains = losses = 0.0
+    for i in range(1, n + 1):
+        d = vals[i] - vals[i - 1]
+        gains += d if d > 0 else 0.0
+        losses += -d if d < 0 else 0.0
+    ag, al = gains / n, losses / n
+    out[n] = 100.0 if al == 0 else 100.0 - 100.0 / (1.0 + ag / al)
+    for i in range(n + 1, len(vals)):
+        d = vals[i] - vals[i - 1]
+        ag = (ag * (n - 1) + (d if d > 0 else 0.0)) / n
+        al = (al * (n - 1) + (-d if d < 0 else 0.0)) / n
+        out[i] = 100.0 if al == 0 else 100.0 - 100.0 / (1.0 + ag / al)
+    return out
+
+
+def chart_payload(tf: str = "15m", limit: int = 180) -> dict:
+    """The candle chart the live map page draws.
+
+    Every level on it comes from the SAME functions the Telegram cards use
+    (`_zones`, `_liquidity`, `_levels`), so the chart cannot disagree with the
+    bot. It carries no trade instruction of its own -- it is the tape, drawn.
+
+    Bars are the CLOSED ones plus the live bar (the chart wants to show the
+    forming candle), while the zones read the closed tape, exactly as the cards
+    do. One dead frame degrades the level lists to empty; it never blanks the
+    chart.
+    """
+    try:
+        raw = bars(tf, limit + 1)
+        q = quote()
+    except Exception:  # noqa: BLE001 - a dead feed must not 500 the page
+        return {"tf": tf, "bars": [], "rsi": [], "zones": {}, "liquidity": {}}
+    b = raw[-(limit + 1):]
+    closes = [x["close"] for x in b]
+    # The live price is the QUOTE's, not the last bar's close -- the cards split
+    # their zones on this same number, so the chart's zones land identically.
+    live = float(q.get("mid") or q.get("last") or 0)
+    day = b[-1]["openTime"][:10] if b else ""
+    today = [x for x in b if x["openTime"][:10] == day]
+    day_hi = max((x["high"] for x in today), default=None)
+    day_lo = min((x["low"] for x in today), default=None)
+
+    res, sup = _levels(live) if live > 0 else ([], [])
+    sell_z, buy_z = _zones(live) if live > 0 else ([], [])
+    liq_hi, liq_lo = _liquidity(live) if live > 0 else ([], [])
+
+    return {
+        "tf": tf,
+        "live": live,
+        "dayHigh": day_hi,
+        "dayLow": day_lo,
+        "bars": [{"t": x["openTime"], "o": x["open"], "h": x["high"],
+                  "l": x["low"], "c": x["close"]} for x in b],
+        "rsi": _rsi_series(closes),
+        "zones": {
+            "sell": [{"price": z, "touches": n} for z, n in sell_z[:4]],
+            "buy": [{"price": z, "touches": n} for z, n in buy_z[:4]],
+        },
+        "liquidity": {"above": liq_hi[:3], "below": liq_lo[:3]},
+        "res": res[:3],
+        "sup": sup[:3],
+        "clock": _clock(datetime.now(UTC)),
+        "tz": TZ_LABEL,
+    }
+
+
 def card_news() -> str:
     """The news layer -- INFORMATION ONLY, never a trade input.
 

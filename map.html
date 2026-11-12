@@ -53,6 +53,12 @@
   ul { padding-inline-start:18px; margin:6px 0; }
   li { margin:3px 0; font-size:14px; }
   code { background:#21262d; padding:1px 6px; border-radius:5px; font-size:13px; }
+  .legend { display:flex; flex-wrap:wrap; gap:14px; margin:2px 0 10px;
+            font-size:12px; color:#8b949e; }
+  .legend .sw { display:inline-block; width:11px; height:11px; border-radius:3px;
+                margin-inline-end:5px; vertical-align:middle; }
+  #chart { width:100%; height:auto; display:block; border-radius:10px;
+           background:#0d1319; }
 </style>
 </head>
 <body>
@@ -63,6 +69,17 @@
   </div>
   <div class="price" id="live">—</div>
   <div class="muted" id="state">—</div>
+
+  <div class="card" style="margin-top:16px">
+    <h2 style="margin-top:0">📈 المخطط (15د) — نفس مستويات المكتب</h2>
+    <div class="legend">
+      <span><i class="sw" style="background:#f85149"></i>مناطق بيع (فوق)</span>
+      <span><i class="sw" style="background:#3fb950"></i>مناطق شراء (تحت)</span>
+      <span><i class="sw" style="background:#e3b341"></i>سيولة</span>
+      <span><i class="sw" style="background:#58a6ff"></i>نطاق اليوم</span>
+    </div>
+    <canvas id="chart" width="1500" height="760"></canvas>
+  </div>
 
   <div class="grid" style="margin-top:16px">
     <div class="card">
@@ -263,6 +280,144 @@ async function tick(){
   } catch(e){}
 }
 
+// The candle chart: every level is the bot's own (zones/liquidity/day-range),
+// straight from /chart.json -- so the drawing can never disagree with the cards.
+function drawChart(d){
+  const cv = document.getElementById("chart");
+  if (!cv || !d || !d.bars || !d.bars.length) return;
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height;
+  const bars = d.bars;
+  const PAD_L = 78, PAD_R = 26, PAD_T = 22, PAD_B = 128;
+  const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
+  const rsiTop = PAD_T + plotH + 20, rsiH = PAD_B - 40;
+
+  // price window: the candles and the day range decide it. A far zone is drawn
+  // only if it lands inside; it is never allowed to squash the candles.
+  let pmin = Math.min(...bars.map(b=>b.l)), pmax = Math.max(...bars.map(b=>b.h));
+  if (d.dayLow!=null) pmin = Math.min(pmin, d.dayLow);
+  if (d.dayHigh!=null) pmax = Math.max(pmax, d.dayHigh);
+  const pad = (pmax-pmin)*0.05; pmin-=pad; pmax+=pad;
+  const yP = p => PAD_T + plotH*(pmax-p)/(pmax-pmin);
+  const xB = i => PAD_L + plotW*(i+0.5)/bars.length;
+  const inRange = y => y>=PAD_T-1 && y<=PAD_T+plotH+1;
+
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = "#0d1319"; ctx.fillRect(0,0,W,H);
+
+  // price grid + axis
+  ctx.font = "15px system-ui"; ctx.textBaseline = "middle";
+  for (let k=0;k<=6;k++){
+    const p = pmin + (pmax-pmin)*k/6, y = yP(p);
+    ctx.strokeStyle = "#1a232d"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(PAD_L,y); ctx.lineTo(W-PAD_R,y); ctx.stroke();
+    ctx.fillStyle = "#6e7b8a"; ctx.textAlign = "right";
+    ctx.fillText(p.toFixed(1), PAD_L-10, y);
+  }
+
+  // day range band
+  if (d.dayHigh!=null && d.dayLow!=null){
+    const yT = yP(d.dayHigh), yB = yP(d.dayLow);
+    ctx.fillStyle = "rgba(88,166,255,0.07)";
+    ctx.fillRect(PAD_L, yT, plotW, yB-yT);
+    ctx.strokeStyle = "rgba(88,166,255,0.5)"; ctx.setLineDash([6,5]); ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(PAD_L,yT); ctx.lineTo(W-PAD_R,yT); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(PAD_L,yB); ctx.lineTo(W-PAD_R,yB); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#58a6ff"; ctx.font = "bold 14px system-ui"; ctx.textAlign = "left";
+    ctx.fillText("قمة اليوم "+F(d.dayHigh), PAD_L+6, yT-12);
+    ctx.fillText("قاع اليوم "+F(d.dayLow), PAD_L+6, yB+14);
+  }
+
+  // bot's sell zones (above) / buy zones (below)
+  const z = d.zones || {};
+  for (const s of (z.sell||[])){
+    const y = yP(s.price); if (!inRange(y)) continue;
+    ctx.fillStyle = "rgba(248,81,73,0.10)"; ctx.fillRect(PAD_L,y-9,plotW,18);
+    ctx.strokeStyle = "rgba(248,81,73,0.55)"; ctx.setLineDash([5,4]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(PAD_L,y); ctx.lineTo(W-PAD_R,y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#f85149"; ctx.font = "bold 14px system-ui"; ctx.textAlign = "left";
+    ctx.fillText("بيع "+F(s.price)+" ("+s.touches+" لمسة)", PAD_L+6, y-12);
+  }
+  for (const s of (z.buy||[])){
+    const y = yP(s.price); if (!inRange(y)) continue;
+    ctx.fillStyle = "rgba(63,185,80,0.10)"; ctx.fillRect(PAD_L,y-9,plotW,18);
+    ctx.strokeStyle = "rgba(63,185,80,0.55)"; ctx.setLineDash([5,4]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(PAD_L,y); ctx.lineTo(W-PAD_R,y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#3fb950"; ctx.font = "bold 14px system-ui"; ctx.textAlign = "left";
+    ctx.fillText("شراء "+F(s.price)+" ("+s.touches+" لمسة)", PAD_L+6, y+16);
+  }
+  // liquidity pools (amber dashes)
+  const lq = d.liquidity || {};
+  for (const price of [...(lq.above||[]), ...(lq.below||[])]){
+    const y = yP(price); if (!inRange(y)) continue;
+    ctx.fillStyle = "rgba(227,179,65,0.85)";
+    for (let x=PAD_L;x<W-PAD_R;x+=9) ctx.fillRect(x,y-1.5,4,3);
+    ctx.fillStyle = "#e3b341"; ctx.font = "bold 12px system-ui"; ctx.textAlign = "right";
+    ctx.fillText("سيولة "+F(price), W-PAD_R-6, y-9);
+  }
+
+  // candles
+  const bw = Math.max(2, plotW/bars.length*0.62);
+  for (let i=0;i<bars.length;i++){
+    const b = bars[i], x = xB(i), up = b.c>=b.o;
+    ctx.strokeStyle = ctx.fillStyle = up?"#3fb950":"#f85149";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x,yP(b.h)); ctx.lineTo(x,yP(b.l)); ctx.stroke();
+    const yo = yP(b.o), yc = yP(b.c);
+    const top = Math.min(yo,yc), hgt = Math.max(1.5, Math.abs(yc-yo));
+    ctx.fillRect(x-bw/2, top, bw, hgt);
+  }
+
+  // live price
+  const yL = yP(d.live);
+  ctx.strokeStyle = "#f0f6fc"; ctx.setLineDash([4,4]); ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(PAD_L,yL); ctx.lineTo(W-PAD_R,yL); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "#0d1319"; ctx.fillRect(W-PAD_R+2,yL-11,72,22);
+  ctx.fillStyle = "#f0f6fc"; ctx.font = "bold 14px system-ui"; ctx.textAlign = "left";
+  ctx.fillText(F(d.live), W-PAD_R+6, yL);
+
+  // RSI panel
+  ctx.fillStyle = "#6e7b8a"; ctx.font = "13px system-ui"; ctx.textAlign = "left";
+  ctx.fillText("RSI (14)", PAD_L, rsiTop-4);
+  ctx.strokeStyle = "#1a232d"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(PAD_L,rsiTop); ctx.lineTo(W-PAD_R,rsiTop); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(PAD_L,rsiTop+rsiH); ctx.lineTo(W-PAD_R,rsiTop+rsiH); ctx.stroke();
+  const yR = r => rsiTop + rsiH*(100-r)/100;
+  for (const lv of [30,70]){
+    const y = yR(lv);
+    ctx.strokeStyle = lv===30?"rgba(63,185,80,0.4)":"rgba(248,81,73,0.4)";
+    ctx.setLineDash([5,4]);
+    ctx.beginPath(); ctx.moveTo(PAD_L,y); ctx.lineTo(W-PAD_R,y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = lv===30?"#3fb950":"#f85149"; ctx.font = "12px system-ui"; ctx.textAlign = "right";
+    ctx.fillText(lv, PAD_L-10, y);
+  }
+  ctx.strokeStyle = "#58a6ff"; ctx.lineWidth = 1.6;
+  ctx.beginPath(); let started = false;
+  for (let i=0;i<(d.rsi||[]).length;i++){
+    if (d.rsi[i]==null) continue;
+    const x = xB(i), y = yR(d.rsi[i]);
+    if (!started){ ctx.moveTo(x,y); started = true; } else ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+
+  // time axis
+  ctx.fillStyle = "#6e7b8a"; ctx.font = "12px system-ui"; ctx.textAlign = "center";
+  for (let i=0;i<bars.length;i+=24) ctx.fillText(bars[i].t.slice(11,16), xB(i), H-14);
+  ctx.fillStyle = "#4b5563"; ctx.fillText("UTC", W-PAD_R-20, H-2);
+}
+
+async function chartTick(){
+  try {
+    const r = await fetch("chart.json?_=" + Date.now());
+    if (r.ok) drawChart(await r.json());
+  } catch(e){}
+}
+
 // The price ticks fast (one light call); the analysis refreshes slower (six
 // frames + news). Splitting them keeps the number feeling live without
 // hammering the free instance with the full read every few seconds.
@@ -285,7 +440,9 @@ async function priceTick(){
 }
 
 tick();
+chartTick();
 setInterval(tick, 30000);
+setInterval(chartTick, 30000);
 setInterval(priceTick, 5000);
 </script>
 </body>

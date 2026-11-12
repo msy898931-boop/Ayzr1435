@@ -2020,5 +2020,56 @@ class StudySyncTest(unittest.TestCase):
                              bot.ATR_MIN_PCT <= atr_pct <= bot.ATR_MAX_PCT)
 
 
+class ChartPayloadTest(unittest.TestCase):
+    """chart_payload feeds the live map's candle chart. Every level on it must
+    come from the SAME functions the Telegram cards call, so the drawing can
+    never disagree with the bot -- that is the whole point of the feature."""
+
+    def _rise(self):
+        # A gentle uptrend with enough bars to warm the RSI and form pivots.
+        return [4000 + i * 0.5 for i in range(160)]
+
+    def test_the_chart_bars_carry_ohlc_and_time(self):
+        with FakeFeed(mid=4100.0, closes={"15m": self._rise()}):
+            p = bot.chart_payload()
+        self.assertTrue(p["bars"])
+        for b in p["bars"]:
+            self.assertEqual(set(b), {"t", "o", "h", "l", "c"})
+            self.assertLessEqual(b["l"], b["h"])
+
+    def test_the_chart_rsi_line_ends_where_rsi_says(self):
+        # The chart's last RSI point must equal rsi() on the same closes -- the
+        # line is the same recursion, drawn, not a second opinion.
+        closes = self._rise()
+        with FakeFeed(mid=4100.0, closes={"15m": closes}):
+            p = bot.chart_payload()
+            live_rsi = bot.rsi([b["c"] for b in p["bars"]])
+        self.assertIsNotNone(live_rsi)
+        self.assertAlmostEqual(p["rsi"][-1], live_rsi, places=6)
+
+    def test_the_chart_zones_match_the_map_card(self):
+        # The chart's zones must be _zones() itself, truncated the way the card
+        # truncates them -- the page cannot show a level the card does not.
+        with FakeFeed(mid=4100.0, closes={"15m": self._rise()}):
+            live = bot.read_market()["live"]
+            sell, buy = bot._zones(live)
+            p = bot.chart_payload()
+        self.assertEqual([(z["price"], z["touches"]) for z in p["zones"]["sell"]],
+                         [(z, n) for z, n in sell[:4]])
+        self.assertEqual([(z["price"], z["touches"]) for z in p["zones"]["buy"]],
+                         [(z, n) for z, n in buy[:4]])
+
+    def test_a_dead_feed_returns_an_empty_chart_not_an_error(self):
+        with FakeFeed(closes={"15m": []}):
+            p = bot.chart_payload()
+        self.assertEqual(p["bars"], [])
+        self.assertEqual(p["rsi"], [])
+
+    def test_the_payload_is_json_serialisable(self):
+        import json
+        with FakeFeed(mid=4100.0, closes={"15m": self._rise()}):
+            json.dumps(bot.chart_payload())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

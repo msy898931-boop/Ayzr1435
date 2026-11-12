@@ -40,6 +40,7 @@ PING_RETRY_S = 45   # a failed beat is retried quickly, not after a full interva
 PING_TRIES = 3
 RESTORE_WAIT_S = 60  # never let a slow Telegram delay the bot for longer than this
 MAP_CACHE_S = 15     # the live map is a heavy read; serve it from a short cache
+CHART_CACHE_S = 20   # the candle chart reads one frame; a slightly longer cache
 PRICE_CACHE_S = 2    # the price is one light call; let it feel near-instant
 MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "map.html")
 
@@ -50,6 +51,8 @@ MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "map.html")
 # a page open on a phone would hammer the free instance every few seconds.
 _MAP_CACHE: dict = {"at": 0.0, "body": b""}
 _MAP_LOCK = threading.Lock()
+_CHART_CACHE: dict = {"at": 0.0, "body": b""}
+_CHART_LOCK = threading.Lock()
 _PRICE_CACHE: dict = {"at": 0.0, "body": b""}
 _PRICE_LOCK = threading.Lock()
 
@@ -87,6 +90,26 @@ def map_json() -> bytes:
     return body
 
 
+def chart_json() -> bytes:
+    """The candle chart data: 15m bars, RSI line, and the bot's own zones.
+
+    Same caching shape as map_json -- the chart is a heavier read than the
+    price, and a page left open must not re-read the frame every few seconds.
+    """
+    now = time.monotonic()
+    with _CHART_LOCK:
+        if _CHART_CACHE["body"] and now - _CHART_CACHE["at"] < CHART_CACHE_S:
+            return _CHART_CACHE["body"]
+    try:
+        body = json.dumps(desk.chart_payload(), ensure_ascii=False).encode()
+    except Exception as exc:  # noqa: BLE001 - a failed read must not 500 the page
+        print(f"chart payload failed: {exc}", flush=True)
+        return json.dumps({"error": "read failed"}).encode()
+    with _CHART_LOCK:
+        _CHART_CACHE["at"], _CHART_CACHE["body"] = now, body
+    return body
+
+
 class Health(BaseHTTPRequestHandler):
     def _send(self, code: int, body: dict) -> None:
         raw = json.dumps(body).encode()
@@ -108,6 +131,9 @@ class Health(BaseHTTPRequestHandler):
         path = self.path.split("?")[0].rstrip("/") or "/"
         if path == "/map.json":
             self._send_raw(200, "application/json; charset=utf-8", map_json())
+            return
+        if path == "/chart.json":
+            self._send_raw(200, "application/json; charset=utf-8", chart_json())
             return
         if path == "/price":
             self._send_raw(200, "application/json; charset=utf-8", price_json())
