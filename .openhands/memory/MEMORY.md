@@ -929,3 +929,57 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   saved the already-decompressed bytes, `lzma.decompress` raises `LZMAError` —
   fall back to using the bytes raw. Match a trade to its bar by the last CLOSED
   15m bar strictly before `opened_at` (bot `closed()` semantics).
+
+## MarketDesk — the live map got a chart (2026-11-07)
+
+- ⭐ **The bot already HAD a live map page — I nearly built a second one.** The
+  owner said "رسملي ياها على مخطط... بدي ياها تصير متلكن تماماً" (draw it on a
+  chart, exactly like the bot's). I started hand-rolling a standalone
+  `public/xauusd-map.html`, then found `app.py` already serves `/map` (page) +
+  `/map.json` + `/price` on the Render web service. **The right move was to ADD
+  the candle chart to the existing live page, not ship a separate static file.**
+  Lesson: before drawing "like the bot", grep the repo for an existing web
+  surface (`app.py` `do_GET`, `map.html`). The owner's "exactly like the bot"
+  meant *same numbers*, and the page already had them.
+- ⭐ **A chart level must split on the QUOTE price, not the last bar's close.**
+  First cut took `live` from `closes[-1]`, so the chart's `_zones` landed one
+  zone off the card's (`(4099,24)` vs `(4101,24)`). The cards split zones on
+  `quote()["mid"]`; `chart_payload()` now reads the same `quote()` and the zones
+  match the card byte-for-byte. Test `test_the_chart_zones_match_the_map_card`
+  pins it.
+- ⭐ **Draw the RSI line with the SAME recursion, not a reimplementation.**
+  `_rsi_series()` is `rsi()` unrolled over the series; its last point equals
+  `rsi(closes)` to the float (test asserts `places=6`). A chart that re-derives
+  an indicator is a second engine that will drift.
+- **A far zone must not squash the tape.** Clip the price window to candles +
+  day range; a zone outside it is skipped (`inRange`), never allowed to stretch
+  the y-axis. Also truncate zones to the card's `[:4]` / liquidity `[:3]` — the
+  page may not show a level the Telegram card does not.
+- New surface: `bot.chart_payload(tf, limit)` → `{bars,rsi,zones,liquidity,res,
+  sup,dayHigh,dayLow,live,...}`; `app.py` `/chart.json` (cached `CHART_CACHE_S=20`);
+  `map.html` `drawChart()` canvas + `chartTick()` every 30s. Suite **179 tests**
+  (5 new ChartPayloadTest pass; the 1 pre-existing `test_the_win_rate_line_
+  names_its_source` fail is unrelated). ruff/mypy at baseline. Pushed `19fc4ce`.
+- ⚠ **Render autoDeploy is OFF** for this service — every push still needs the
+  owner to click **Deploy**. The chart is on `main`, not yet live.
+
+## MarketDesk — the archive the owner sent (2026-11-12)
+
+- ⭐ **A `work-1-*` download link is a SESSION host — it dies with the sandbox
+  that served it.** The owner's link `work-1-shocrkxozkaqdglp…` 404s on curl AND
+  in the browser; it is a different host from this session's
+  (`work-1-vdueockkqyznsbyj…`). But the archive itself was already on disk:
+  `/workspace/Ayzr1435-download/Ayzr1435-full.tar.gz` (6.4 MB gz → 37 MB / 102
+  files), with `index.html` beside it and a **SHA-256 that matched the page**
+  (`2081bfd4…`). So "the link is dead" ≠ "the file is gone" — check disk first.
+- The archive is the **2026-11-11** snapshot of this repo, so it PREDATES today's
+  map/chart work (`bot.py` 4203 lines there vs 5285 now; no `map.html`). Contents:
+  `bot.py` engine · `app.py` Render wrapper · `tests/test_engine.py` (137) ·
+  `backtest/` (duka_2026 year study, 34 MB of it) · `data/journal.db` (empty) ·
+  `.openhands/memory/` (the sanitized mirror) · `flybot/` · `render.yaml`.
+- ⚠ **A real leak, and the memory was wrong about it.** The mirror claims "two
+  personal emails were replaced with `<owner-email>`", but
+  `.openhands/memory/2026-11-07.md` (lines 71/73/783) still carries
+  `msy898931@gmail.com` and `kshsjshxudnndh@gmail.com` **raw**, and the repo is
+  **public** (`private: false`). A note that says a redaction happened is not the
+  redaction. Worth fixing (these are account identifiers, not secrets).
