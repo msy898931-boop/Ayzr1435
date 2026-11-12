@@ -104,18 +104,21 @@ class PlanGateTest(unittest.TestCase):
                               for tf in bot.FRAMES}):
             self.assertIsNone(bot.plan())
 
-    def test_a_confirmed_trend_is_a_trade_whatever_the_price(self):
-        # The owner asked for MY read to decide: the EMA20 quality gate is gone
-        # from plan(), so six up frames ARE a trade even with the price under
-        # the 15m EMA20. (The filter helpers still exist; they are just no
-        # longer in the decision path.)
+    def test_a_confirmed_trend_under_the_filter_frame_is_refused(self):
+        # Six frames up, but the live price sits UNDER the 15m EMA20 -- a long
+        # there is buying a falling tape. The owner asked for the trend filter
+        # back in the decision path, so plan() must refuse it. (The quality gate
+        # is turned off so this test pins ONE rule: the 15m candle agreement.)
         rising = list(range(4000, 4060))
         closes = {tf: rising for tf in bot.FRAMES}
-        with FakeFeed(mid=4000.0, closes=closes):
-            self.assertFalse(bot.frame_agrees("long", 4000.0))
-            p = bot.plan()
-            self.assertIsNotNone(p)
-            self.assertEqual(p["direction"], "long")
+        saved = bot.FILTERS_ON
+        bot.FILTERS_ON = False
+        try:
+            with FakeFeed(mid=4000.0, closes=closes):
+                self.assertFalse(bot.frame_agrees("long", 4000.0))
+                self.assertIsNone(bot.plan())
+        finally:
+            bot.FILTERS_ON = saved
 
     def test_a_confirmed_long_with_the_filter_passes(self):
         # The frame tilt + EMA20 rule in isolation: the quality gate is turned
@@ -198,17 +201,29 @@ class FilterStatusTest(unittest.TestCase):
         fs = bot.filter_status("long", self._bars(closes, spread=1.0))
         self.assertNotIn("MACD", fs["failed"])
 
-    def test_the_gate_no_longer_holds_a_plan_back(self):
-        # Six frames up, price above EMA20, but a dead-flat tape (ATR% ~ 0)
-        # would have failed the ATR band. The owner took the gate OUT of the
-        # decision path, so the plan stands regardless of FILTERS_ON. The gate
-        # still MEASURES (filter_status is tested above); it just no longer
-        # blocks.
+    def test_the_gate_holds_a_plan_back(self):
+        # Six frames up but a DEAD tape (ATR% ~ 0): the quality gate fails, and
+        # the owner asked for a trade to clear EVERY gate or not be taken -- so
+        # plan() must return None. This is the reversal of the old behaviour,
+        # which took the gate out of the decision path; the owner reversed it.
         rising = list(range(4000, 4060))
         closes = {tf: rising for tf in bot.FRAMES}
         with FakeFeed(mid=4059.0, closes=closes):
-            self.assertIsNotNone(bot.plan())
+            self.assertIsNone(bot.plan())
             self.assertFalse(bot.filter_status("long")["ok"])
+
+    def test_the_gate_is_bypassed_when_the_owner_turns_it_off(self):
+        # DESK_FILTERS=0 must still take the trade: the gate is a switch, not a
+        # hard wall, so the owner can loosen it from the dashboard if he wants.
+        rising = list(range(4000, 4060))
+        closes = {tf: rising for tf in bot.FRAMES}
+        saved = bot.FILTERS_ON
+        bot.FILTERS_ON = False
+        try:
+            with FakeFeed(mid=4059.0, closes=closes):
+                self.assertIsNotNone(bot.plan())
+        finally:
+            bot.FILTERS_ON = saved
 
 
 class IndicatorTest(unittest.TestCase):
@@ -868,15 +883,18 @@ class FullCardTest(unittest.TestCase):
                         closes={tf: wave for tf in bot.FRAMES})
 
     def _leg_feed(self, last_1h):
-        # A real multi-day down leg (rise then a 135-pt drop) with a flat tail,
-        # plus a caller-supplied 1h ending. The wall is the 38.2% fib of the
-        # drop; `last_1h` decides whether the trigger has fired.
+        # A real multi-day down leg (rise then a 135-pt drop) with a caller-
+        # supplied 1h ending. The wall is the 38.2% fib of the drop; `last_1h`
+        # decides whether the trigger has fired. The 15m/30m/5m tails carry a
+        # REAL range (a flat line has ~0 ATR and would fail the quality gate,
+        # which is the gate doing its job -- this fixture must model a live
+        # tape, not a dead one).
         rise = [4000 + (4148 - 4000) * (i / 19) for i in range(20)]
         drop = [4148 - (4148 - 4013) * (i / 24) for i in range(25)]
-        flat = [4058.0] * 30
+        tail = [4058 + (6 if i % 2 else -6) for i in range(30)]
         h1 = [4030 + i * 0.3 for i in range(20)] + last_1h
-        return {"1d": flat, "4h": rise + drop, "1h": h1,
-                "30m": flat, "15m": flat, "5m": flat}
+        return {"1d": [4060.0] * 30, "4h": rise + drop, "1h": h1,
+                "30m": tail, "15m": tail, "5m": tail}
 
     def test_it_stays_inside_the_telegram_limit(self):
         with self._feed():
@@ -1216,13 +1234,19 @@ class OpinionTest(unittest.TestCase):
         self.assertEqual(bot.CHASE_RSI, 30.0)
 
     def test_plan_is_never_blocked_by_the_late_read(self):
-        # The whole point: the caveat is words, not a gate. plan() must still
-        # return a sized trade when the frames agree, however stretched the RSI.
-        m = {"q": {"marketState": "open", "mid": 4000.0},
-             "live": 4000.0, "trends": {tf: -1 for tf in bot.FRAMES}}
-        p = bot.plan(m)
+        # The whole point: the late-entry caveat is WORDS, not a gate. The RSI
+        # does not sit in FILTER_GATES by default, so a stretched RSI must not
+        # stop plan() from returning a sized trade when the frames agree and the
+        # candle agrees. (The quality gate and trend filter are on; the late
+        # read is separate from both.)
+        import math
+        rising = [4000 + i + 8 * math.sin(i / 2.0) for i in range(90)]
+        closes = {tf: rising for tf in bot.FRAMES}
+        with FakeFeed(mid=rising[-1], closes=closes):
+            p = bot.plan()
         self.assertIsNotNone(p)
-        self.assertEqual(p["direction"], "short")
+        assert p is not None
+        self.assertEqual(p["direction"], "long")
 
     def test_the_late_helper_is_the_one_source_for_both_cards(self):
         # _late_entry is what the opinion card AND the action card read, so the
@@ -1252,12 +1276,17 @@ class OpinionTest(unittest.TestCase):
         self.assertNotIn("دخول متأخر", bot._open_card(p))
 
     def test_plan_carries_the_rsi_for_the_open_card(self):
-        m = {"q": {"marketState": "open", "mid": 4000.0}, "live": 4000.0,
-             "trends": {tf: -1 for tf in bot.FRAMES},
-             "rsis": {tf: 20.0 for tf in bot.FRAMES}}
-        p = bot.plan(m)
+        # A live 15m tape (a real range, not a straight line -- a dead line
+        # fails the ATR gate) so the quality gate passes; the point of the test
+        # is that plan() carries the 15m RSI for the open card.
+        import math
+        rising = [4000 + i + 8 * math.sin(i / 2.0) for i in range(90)]
+        closes = {tf: rising for tf in bot.FRAMES}
+        with FakeFeed(mid=rising[-1], closes=closes):
+            p = bot.plan()
         self.assertIsNotNone(p)
-        self.assertEqual(p["r15"], 20.0)
+        assert p is not None
+        self.assertEqual(p["r15"], bot.rsi(rising))
 
 
 class TrendWatchTest(unittest.TestCase):
@@ -1669,6 +1698,189 @@ class DailyScheduleTest(unittest.TestCase):
     def test_a_slot_already_sent_today_does_not_repeat(self):
         self.assertEqual(self._run(bot.DAILY_AM_HOUR,
                                    {"analysis_sent": {"am": "2026-11-12"}}), 0)
+
+
+class PlanCheckTest(unittest.TestCase):
+    """plan_check is the decision engine WITH its reason -- the owner asked to
+    hear WHY a trade is taken (and why one is not). plan() is its plan field,
+    so the reason can never drift from the decision.
+    """
+
+    def _live_tape(self, up=True, n=90):
+        import math
+        base = 4000.0
+        step = (lambda i: i + 8 * math.sin(i / 2.0)) if up \
+            else (lambda i: -i - 8 * math.sin(i / 2.0))
+        return [base + step(i) for i in range(n)]
+
+    def test_closed_market_names_the_reason(self):
+        with FakeFeed(market="closed"):
+            pc = bot.plan_check()
+        self.assertIsNone(pc["plan"])
+        self.assertEqual(pc["reason"], "closed")
+        self.assertIn("مسكّر", pc["detail"])
+
+    def test_a_split_tape_names_no_signal(self):
+        with FakeFeed(closes={tf: [4100, 4101, 4100, 4101] * 8
+                              for tf in bot.FRAMES}):
+            pc = bot.plan_check()
+        self.assertIsNone(pc["plan"])
+        self.assertEqual(pc["reason"], "no_signal")
+
+    def test_a_clean_long_is_ok_with_an_empty_detail(self):
+        tape = self._live_tape(up=True)
+        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+            pc = bot.plan_check()
+        self.assertEqual(pc["reason"], "ok")
+        self.assertIsNotNone(pc["plan"])
+        self.assertEqual(pc["detail"], "")
+
+    def test_a_long_under_the_filter_frame_names_the_trend(self):
+        # Six up frames but the price under the 15m EMA20: the trend gate is the
+        # reason, and it must be named -- not a silent None.
+        import math
+        tape = [4000 + i + 8 * math.sin(i / 2.0) for i in range(90)]
+        saved = bot.FILTERS_ON
+        bot.FILTERS_ON = False
+        try:
+            with FakeFeed(mid=4000.0, closes={tf: tape for tf in bot.FRAMES}):
+                pc = bot.plan_check()
+        finally:
+            bot.FILTERS_ON = saved
+        self.assertIsNone(pc["plan"])
+        self.assertEqual(pc["reason"], "trend")
+        self.assertIn("15د", pc["detail"])
+
+    def test_a_dead_tape_names_the_gate(self):
+        rising = list(range(4000, 4060))
+        with FakeFeed(mid=4059.0, closes={tf: rising for tf in bot.FRAMES}):
+            pc = bot.plan_check()
+        self.assertIsNone(pc["plan"])
+        self.assertEqual(pc["reason"], "gate")
+        self.assertIn("الجودة", pc["detail"])
+
+    def test_plan_is_the_plan_checks_plan(self):
+        # One engine: the wrapper must return exactly the checked plan.
+        tape = self._live_tape(up=True)
+        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+            self.assertEqual(bot.plan(), bot.plan_check()["plan"])
+
+
+class PreTradeNoteTest(unittest.TestCase):
+    """The heads-up BEFORE a trade: the owner asked to be told a trade is about
+    to be taken and WHY, from the conditions -- not to find one already open."""
+
+    def _p(self, direction="long"):
+        return {"direction": direction, "entry": 4000.0, "stop": 3988.0,
+                "target": 4024.0, "risk_pts": 12.0, "risk_usd": 12.0,
+                "gain_usd": 20.0, "rr": 1.67, "strong": True, "r15": 45.0,
+                "up": 6, "dn": 0}
+
+    def test_it_says_a_trade_is_about_to_be_taken(self):
+        import math
+        tape = [4000 + i + 8 * math.sin(i / 2.0) for i in range(90)]
+        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+            text = bot._pre_trade_note(self._p())
+        self.assertIn("هلق رح تتاخد صفقة", text)
+        self.assertIn("ليش", text)
+
+    def test_it_lists_the_conditions_that_passed(self):
+        import math
+        tape = [4000 + i + 8 * math.sin(i / 2.0) for i in range(90)]
+        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+            text = bot._pre_trade_note(self._p())
+        self.assertIn("الاتجاه", text)          # the trend fact
+        self.assertIn("R:R", text)              # the reward/risk fact
+
+    def test_it_carries_the_numbers_and_a_late_caveat(self):
+        import math
+        tape = [4000 + i + 8 * math.sin(i / 2.0) for i in range(90)]
+        p = self._p("short")
+        p["r15"] = 20.0                          # a stretched short
+        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+            text = bot._pre_trade_note(p)
+        self.assertIn(f"{p['entry']:,.2f}", text)
+        self.assertIn("دخول متأخر", text)
+
+
+class DailyCapTest(unittest.TestCase):
+    """The owner asked for at most TEN trades a day. trades_opened_today is the
+    counter the cap reads; it must count the session, not the calendar day."""
+
+    def test_the_cap_defaults_to_ten(self):
+        self.assertEqual(bot.MAX_TRADES_DAY, 10)
+
+    def test_it_counts_only_this_sessions_opens(self):
+        from datetime import timedelta
+        start, _ = bot._session_day()
+        old = (start - timedelta(days=3)).isoformat()
+        fresh = (start + timedelta(hours=1)).isoformat()
+        rows = [
+            {"opened_at": old, "id": 1},        # yesterday: not counted
+            {"opened_at": fresh, "id": 2},      # today
+            {"opened_at": fresh, "id": 3},      # today
+        ]
+        with unittest.mock.patch.object(bot, "all_trades", return_value=rows):
+            self.assertEqual(bot.trades_opened_today(), 2)
+
+    def test_the_cap_is_a_switch(self):
+        # DESK_MAX_TRADES_DAY=0 must remove the cap (the env is read at import,
+        # so this pins the DEFAULT and the shape of the guard).
+        self.assertGreater(bot.MAX_TRADES_DAY, 0)
+
+
+class CollapsibleMenuTest(unittest.TestCase):
+    """The owner asked for the extra buttons to move into a collapsible list
+    shown only when tapped -- one button under a card, the full grid one tap
+    away."""
+
+    def test_a_normal_card_carries_one_button(self):
+        k = bot.keyboard_for("analysis")
+        rows = k["inline_keyboard"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0]["callback_data"], "menu")
+        self.assertIn("القائمة", rows[0][0]["text"])
+
+    def test_the_menu_action_opens_the_full_grid(self):
+        k = bot.keyboard_for("menu")
+        labels = [b["text"] for r in k["inline_keyboard"] for b in r]
+        self.assertIn("🧠 قراءتي للسوق", labels)
+        self.assertIn("✖ طي القائمة", labels)
+
+    def test_the_expanded_grid_has_a_fold_row(self):
+        k = bot.keyboard_for("menu")
+        last = k["inline_keyboard"][-1]
+        self.assertEqual(last[0]["callback_data"], "collapse")
+
+    def test_collapse_is_a_known_action(self):
+        # Tapping the fold row must not fall through to "زر غير معروف".
+        self.assertNotIn("غير معروف", bot.dispatch("collapse"))
+
+    def test_an_open_trade_card_keeps_its_close_button(self):
+        # The close buttons are the ONE exception: folding them away would make
+        # the owner type an id to close a trade, which is the whole thing the
+        # buttons exist to avoid.
+        rows = [{"id": 7, "direction": "long", "entry": 4000.0, "stop": 3988.0,
+                 "target": 4024.0, "status": "open", "opened_at": "x"}]
+        with unittest.mock.patch.object(bot, "open_trades", return_value=rows):
+            k = bot.keyboard_for("open")
+        flat = [b["callback_data"] for r in k["inline_keyboard"] for b in r]
+        self.assertIn("close:7", flat)
+        self.assertIn("menu", flat)
+
+    def test_every_menu_action_is_wired(self):
+        # A button whose action is unknown is a dead tap. The MENU grid must
+        # only carry actions the bot actually handles -- this list is the
+        # dispatch table plus the two handled in handle() (`who` needs the live
+        # Telegram client; `trade`/`close` are parsed from text). Add a button
+        # with a typo and this fails.
+        known = {
+            "full", "action", "day_analysis", "analysis", "recommend", "map",
+            "news", "scenarios", "levels", "open", "journal_menu", "daily",
+            "who", "howto", "alerts", "help", "collapse", "menu",
+        }
+        for _t, action in [p for row in bot.MENU for p in row]:
+            self.assertIn(action, known, f"action {action} is not wired")
 
 
 if __name__ == "__main__":

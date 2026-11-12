@@ -133,6 +133,14 @@ RSI_SHORT = (42.0, 65.0)         # the short mirror
 FILTER_GATES = {g.strip().lower() for g in os.environ.get(
     "DESK_FILTER_GATES", "adx,atr").split(",") if g.strip()}
 DEFAULT_GATES = {"adx", "atr"}
+# The entry must agree with the 15m candle, not just the frame tilt. The switch
+# that APPLIES TREND_FILTER_TF in plan(); see that constant for the evidence.
+TREND_FILTER_ON = os.environ.get("DESK_TREND_FILTER", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
+# The daily cap: the owner asked for at most TEN trades a day. Counted on
+# trades OPENED today (local session), so a fast day cannot turn into a churn
+# of a hundred entries. Set DESK_MAX_TRADES_DAY=0 to remove the cap.
+MAX_TRADES_DAY = int(os.environ.get("DESK_MAX_TRADES_DAY", "10") or "10")
 # The support watch: the desk's own nearest support (from _levels) gets a
 # dedicated heads-up -- approaching, bounced, or broken -- so the owner hears
 # about the level he cares about, not only when a whole plan appears.
@@ -247,8 +255,13 @@ MENU = [
     [("📊 سجل اليوم", "daily"), ("👥 المشتركين", "who")],
     [("➕ سجّل صفقة", "howto"),
      ("🔔 دليل التنبيهات", "alerts"), ("❓ مساعدة", "help")],
+    [("✖ طي القائمة", "collapse")],
 ]
 
+# The collapsed menu: ONE button, bottom-left, shown under every card. The full
+# grid above is behind it -- the owner asked for the extra buttons to move into
+# a list that is only shown when tapped.
+COLLAPSE_BTN = [("☰ القائمة", "menu")]
 JOURNAL_MENU = [
     [("📅 السجل اليومي", "j_day"), ("🗓️ السجل الأسبوعي", "j_week")],
     [("📆 السجل الشهري", "j_month"), ("📋 كل الصفقات", "journal")],
@@ -375,6 +388,21 @@ class Telegram:
                 TimeoutError):
             pass
 
+    def edit_markup(self, chat, message_id, markup) -> bool:
+        """Replace a message's inline keyboard in place.
+
+        The collapsible menu needs this: folding the list must remove the
+        buttons from the message that carries them, not post a new message
+        (which is the spam the desk avoids).
+        """
+        try:
+            return bool(self.call("editMessageReplyMarkup",
+                                  {"chat_id": chat, "message_id": message_id,
+                                   "reply_markup": markup}).get("ok"))
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError,
+                TimeoutError):
+            return False
+
     def updates(self, offset: int | None, timeout: int = 30) -> list[dict]:
         payload: dict = {"timeout": timeout,
                          "allowed_updates": ["callback_query", "message"]}
@@ -444,26 +472,31 @@ def kb(rows) -> dict:
 
 
 def nav(action: str) -> dict:
-    rows: list[list[dict]] = []
-    if action not in ("menu", "help"):
-        rows.append([{"text": "🔄 تحديث", "callback_data": action}])
-    if action.startswith("j_") or action in ("monitor", "journal", "open"):
-        rows.append([{"text": "📒 السجل", "callback_data": "journal_menu"}])
-    rows.append([{"text": "🏠 القائمة", "callback_data": "menu"}])
-    return {"inline_keyboard": rows}
+    """The keyboard under a normal card: ONE button, at the bottom.
+
+    The owner asked for the extra buttons to move into a collapsible list shown
+    only when tapped -- so a card carries just the ☰ toggle, and the whole menu
+    lives one tap away. A card that is itself a list (the journal) keeps its own
+    buttons plus the toggle, and an open-trade card keeps its close buttons.
+    """
+    return kb([COLLAPSE_BTN])
 
 
 def keyboard_for(action: str) -> dict:
     if action == "journal_menu":
         return kb(JOURNAL_MENU)
-    if action in ("menu", "help"):
+    if action == "menu":
+        # The expanded list carries every action, plus a row to fold it back.
         return kb(MENU)
     if action == "open":
         ck = close_keyboard()
         if ck:
-            ck["inline_keyboard"] += nav("open")["inline_keyboard"]
+            ck["inline_keyboard"] += COLLAPSE_BTN_ROWS
             return ck
     return nav(action)
+
+
+COLLAPSE_BTN_ROWS = [[{"text": t, "callback_data": d} for t, d in COLLAPSE_BTN]]
 
 
 # ========================================================================
@@ -2182,27 +2215,31 @@ def _filter_line(fs: dict) -> str:
     return " · ".join(parts)
 
 
-def plan(m: dict | None = None) -> dict | None:
-    """MY read, sized into a trade -- the desk's one decision engine.
+def plan_check(m: dict | None = None) -> dict:
+    """The one decision engine, WITH its reason -- the owner asked to hear why
+    a trade is taken, and (just as important) why one is NOT.
 
-    The owner asked for MY reading to decide, not the desk's gate, so the
-    quality gate (EMA20 + ADX/ATR/MACD/RSI) is GONE from this path: a confirmed
-    trend is now a trade, and the direction is read the way the card reads it --
-    frames first, then the retracement of a dominant multi-day leg.
+    Returns {"plan": p or None, "reason": <code>, "detail": <owner-facing str>}.
+    `plan()` is this function's "plan" field, so every card and the auto-desk
+    read one engine and can never disagree.
 
-    One source for the card and the auto-desk still: two copies of this logic
-    would drift, and a card that disagreed with the trade it opened would be the
-    worst kind of bug.
+    The gates, in the order they are checked. A gate that FAILS means NO trade
+    -- the owner said "المهم تكون صفقة صحيحة": a trade must clear every gate or
+    it is not taken.
 
-    Returns a dict with direction, entry, stop, target, rr, risk_usd, risk_pts,
-    gain_usd, up/dn frame counts, and whether the direction is strong
-    (STRONG_FRAMES) -- the auto-desk needs that last bit to decide whether a
-    second trade is allowed.
+      1. closed      -- the market is shut; never a signal on a dead price.
+      2. no_signal   -- the frames do not agree and no fib wall was rejected.
+      3. trend       -- the 15m candle disagrees with the direction (a long
+                        while price sits under the 15m EMA20 = buying a falling
+                        tape). His own journal: this kept every winner and
+                        blocked every loser.
+      4. gate        -- the quality gate (ADX band, ATR band) failed.
     """
     m = m or read_market()
     q, live, trends = m["q"], m["live"], m["trends"]
     if not market_open(q) or live <= 0:
-        return None
+        return {"plan": None, "reason": "closed",
+                "detail": "السوق مسكّر — ما بعطي إشارة على سعر ميت."}
     up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
     res, sup = _levels(live)
@@ -2220,28 +2257,70 @@ def plan(m: dict | None = None) -> dict | None:
         # Carry the 15m RSI so the open card can say the entry is late, the
         # same way every other card does. The plan dict is never persisted
         # (_write_plan stores only entry/stop/target), so this is a view field.
-        # Fail open on a partial market dict: a missing RSI means no caveat,
-        # never a broken plan.
         p["r15"] = (m.get("rsis") or {}).get("15m")
         return p
 
-    # 1. A confirmed trend. The frames agree -- my read and the old desk read
-    #    agree on the threshold, so this is an entry at market. The gate that
-    #    used to sit here is deliberately not applied.
+    # 1. A confirmed trend, or the retracement of a dominant leg. Same source as
+    #    the card, so the desk and the card cannot disagree.
+    direction = None
+    level = None
     if up >= CONFIRM_FRAMES:
-        return sized("long")
-    if dn >= CONFIRM_FRAMES:
-        return sized("short")
+        direction = "long"
+    elif dn >= CONFIRM_FRAMES:
+        direction = "short"
+    else:
+        trig = _wall_trigger(live)
+        if trig is not None:
+            direction, level, _nxt = trig
+    if direction is None:
+        return {"plan": None, "reason": "no_signal",
+                "detail": (f"الفريمات ما اتفقت ({up}/6 صعود · {dn}/6 هبوط) "
+                           f"وما في جدار فيبو مرفوض.")}
 
-    # 2. No trend, but the price is retracing a dominant multi-day leg. MY read
-    #    is the fib wall, and the trade is the REJECTION of it -- the same
-    #    trigger the card prints, from the same helper, so the desk and the card
-    #    can never disagree about whether the moment has come.
-    trig = _wall_trigger(live)
-    if trig is not None:
-        direction, wall, _nxt = trig
-        return sized(direction, wall)
-    return None
+    p = sized(direction, level)
+    side = "long" if direction == "long" else "short"
+    # A wall trade (no frame agreement, the fib retracement was rejected) is by
+    # nature COUNTER to the short frames -- so the 15m candle filter, which
+    # demands the price agree with the entry, would veto every one of them. The
+    # wall is its own confirmation: the 1h bar already touched the wall and
+    # closed back on the leg's side. So the trend filter applies ONLY to a
+    # frame-agreed entry, not to the wall.
+    from_trend = up >= CONFIRM_FRAMES or dn >= CONFIRM_FRAMES
+
+    # The 15m bars are read ONCE and shared by both filters, so a plan sized
+    # from one read can never be judged against a different one -- and only when
+    # a filter that needs them is actually live.
+    b15 = None
+    if (TREND_FILTER_ON and from_trend) or FILTERS_ON:
+        try:
+            b15 = bars(TREND_FILTER_TF, 300)
+        except Exception:  # noqa: BLE001 - a broken feed must not silence the desk
+            b15 = None
+
+    # 2. The trend filter: the entry must agree with the 15m candle.
+    if TREND_FILTER_ON and from_trend and not frame_agrees(side, live, b15):
+        return {"plan": None, "reason": "trend",
+                "detail": ("السعر على فريم 15د ضد اتجاه الصفقة "
+                           "(الشمعة ما تأكدت) — ما بدخل ضد الشمعة.")}
+
+    # 3. The quality gate (ADX/ATR), read on the 15m frame. Applied to every
+    #    entry, the wall included: a chop tape is not worth trading either way.
+    if FILTERS_ON:
+        fs = filter_status(side, b15)
+        if not fs["ok"]:
+            return {"plan": None, "reason": "gate",
+                    "detail": f"بوابة الجودة ما تحققت: {_filter_line(fs)}"}
+    return {"plan": p, "reason": "ok", "detail": ""}
+
+
+def plan(m: dict | None = None) -> dict | None:
+    """MY read, sized into a trade -- the desk's one decision engine.
+
+    Thin wrapper over plan_check() so every existing caller keeps working while
+    the reason travels with the decision. A trade exists ONLY when every gate
+    passes (see plan_check); otherwise this returns None.
+    """
+    return plan_check(m)["plan"]
 
 
 def _plan_lines(p: dict) -> list[str]:
@@ -2435,6 +2514,30 @@ def _closed_since(start) -> list:
         if d is not None and d >= start:
             out.append(t)
     return sorted(out, key=lambda t: t["closed_at"] or "")
+
+
+def today_key() -> str:
+    """The trading session's local date as a string -- the key a once-a-day
+    notice is remembered under (the daily cap, the daily read)."""
+    _, local_date = _session_day()
+    return local_date.isoformat()
+
+
+def trades_opened_today() -> int:
+    """How many trades were OPENED in the current trading session.
+
+    The daily cap reads this: the owner asked for at most MAX_TRADES_DAY trades
+    a day. The window is the same trading SESSION the daily report uses
+    (_session_day), so "today" means the session the market is in, not the
+    calendar day that flips at midnight local.
+    """
+    start, _ = _session_day()
+    n = 0
+    for t in all_trades():
+        d = _parse(t["opened_at"])
+        if d is not None and d >= start:
+            n += 1
+    return n
 
 
 def grade() -> int:
@@ -3783,6 +3886,7 @@ def dispatch(action: str) -> str:
         "day_analysis": daily_analysis,
         "howto": help_text,
         "help": help_text,
+        "collapse": lambda: "📊 <b>مكتب تحليل السوق</b>\nالقائمة مطويّة — اضغط «☰ القائمة» لعرض الأزرار.",
         "menu": lambda: "📊 <b>مكتب تحليل السوق</b>\nاختر من الأزرار 👇",
     }.get(action, lambda: f"⚠️ زر غير معروف: {esc(action)}")()
 
@@ -3988,6 +4092,13 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
         action = "menu"
     if cid:
         tg.answer(cid, "جارٍ التنفيذ…")
+    # Folding the list edits the message that carries it: no new message, so the
+    # owner's chat is not filled with menu copies. The card itself stays.
+    if action == "collapse" and cq is not None:
+        mid = ((cq.get("message") or {}).get("message_id"))
+        if mid:
+            tg.edit_markup(chat, mid, kb(COLLAPSE_BTN))
+        return "collapse"
     try:
         if action == "trade":
             out = record_trade(text)
@@ -4064,6 +4175,62 @@ def _winning(t) -> bool:
     # Progress is signed; the goal is a distance, so compare against |span|.
     # (Against the signed span, a short at a small LOSS scored as winning.)
     return (live - t["entry"]) * d >= abs(span) * 0.5
+
+
+def _why_taken(p: dict, m: dict | None = None) -> list[str]:
+    """The WHY a trade is being taken -- the conditions that just came true, in
+    the owner's language. This is the "ليش" he asked to hear before a trade: the
+    same facts the gates checked, printed as the reason they passed.
+    """
+    m = m or read_market()
+    r = m.get("rsis") or {}
+    a = m.get("atrs") or {}
+    side = "long" if p["direction"] == "long" else "short"
+    fs = filter_status(side)
+    rd = fs["readings"]
+    out = []
+    # 1. The trend: how many frames agree.
+    agree = p.get("dn") if side == "short" else p.get("up")
+    way = "هابط" if side == "short" else "صاعد"
+    out.append(f"✅ الاتجاه {way} ({agree}/6 فريمات متفقين)")
+    # 2. The 15m candle agreement.
+    if TREND_FILTER_ON:
+        out.append("✅ السعر متوافق مع شمعة 15د (مع الاتجاه)")
+    # 3. The quality gate readings, printed as the numbers that passed.
+    if FILTERS_ON:
+        bits = []
+        if rd.get("adx") is not None and "adx" in FILTER_GATES:
+            bits.append(f"ADX {rd['adx']:.0f}")
+        if rd.get("atr_pct") is not None and "atr" in FILTER_GATES:
+            bits.append(f"ATR {rd['atr_pct']*100:.2f}%")
+        if bits:
+            out.append("✅ بوابة الجودة: " + " · ".join(bits))
+    # 4. The level the stop leans on.
+    if p.get("rr"):
+        out.append(f"✅ R:R {p['rr']:.2f} (فوق الحد الأدنى {MIN_RR})")
+    return out
+
+
+def _pre_trade_note(p: dict, m: dict | None = None) -> str:
+    """The heads-up BEFORE a trade is taken: "هلق رح تتاخد صفقة، والسبب...".
+
+    The owner asked to be told a trade is about to be taken and WHY, from the
+    market's conditions -- not to find a trade already open. This is that
+    message: the direction, the numbers, and the conditions that came true.
+    """
+    d = "بيع 🔴" if p["direction"] == "short" else "شراء 🟢"
+    L = [f"🔎 <b>هلق رح تتاخد صفقة {d}</b> — {SYMBOL}", ""]
+    L.append("<b>ليش؟ الشروط تحققت:</b>")
+    L += ["  " + x for x in _why_taken(p, m)]
+    L.append("")
+    L += _plan_lines(p)
+    note = _late_note("sell" if p["direction"] == "short" else "buy",
+                      p.get("r15"))
+    if note:
+        L.append(f"\n⚠️ {note}")
+    L.append("")
+    L.append("<i>عم سجّلها هلّق — رح تابعها لحالي وأخبرك لما تنسكّر.</i>")
+    return "\n".join(L)
 
 
 def _open_card(p: dict, t=None) -> str:
@@ -4741,7 +4908,17 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
             tg.send(c, note)
     if desk_is_silenced():
         return
-    p = plan()
+    # The daily cap first: if the session already opened MAX_TRADES_DAY trades,
+    # nothing more is taken today whatever the signal says. Announced once.
+    if MAX_TRADES_DAY and trades_opened_today() >= MAX_TRADES_DAY:
+        if seen.get("day_cap") != today_key():
+            seen["day_cap"] = today_key()
+            for c in allow:
+                tg.send(c, f"🛑 <b>وصلنا حد اليوم</b> — {MAX_TRADES_DAY} صفقات. "
+                           "ما رح افتح غير بكرا.")
+        return
+    pc = plan_check()
+    p = pc["plan"]
     if p is None:
         return
     op = open_trades()
@@ -4768,6 +4945,15 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
             for c in allow:
                 tg.send(c, _no_second(p, t0, why))
     else:
+        # The heads-up BEFORE the trade: what is about to be taken and WHY, so
+        # the owner hears the reason from the conditions, not from a trade that
+        # is already open. Sent once per fresh plan (keyed on the entry price so
+        # a drifting signal does not repeat it).
+        head_key = f"pre:{p['direction']}:{p['entry']:.1f}"
+        if seen.get("pre_key") != head_key:
+            seen["pre_key"] = head_key
+            for c in allow:
+                tg.send(c, _pre_trade_note(p))
         tid = _write_plan(p)
         row = next(x for x in all_trades() if x["id"] == tid)
         seen[tid] = "open"
