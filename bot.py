@@ -36,6 +36,9 @@ HOME = Path(__file__).resolve().parent
 DATA = HOME / "data"
 DATA.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA / "journal.db"
+# The sticky level pool the live map reads (see _sticky_map). Kept on disk so a
+# restart does not lose the levels the owner is watching.
+STICKY_PATH = DATA / "levels_seen.json"
 ALLOW_PATH = DATA / "allow.json"
 OFFSET_PATH = DATA / "offset.json"
 TOKEN_PATH = HOME / ".tg_token"
@@ -51,6 +54,13 @@ SYMBOL = os.environ.get("DESK_SYMBOL", "XAUUSD")
 # DESK_BACKUP_CHAT overrides the chat; by default it is the first allowed chat.
 BACKUP_FILE = "marketdesk-backup.json"
 BACKUP_CHAT = os.environ.get("DESK_BACKUP_CHAT", "")
+# The owner's own messages (a trade opened, closed, refused, or watched, plus
+# the day's record and the account) go to the owner ALONE by default. The market
+# ALERTS (a level breaking, the direction flipping, a gate opening, price
+# reaching a zone) stay for everyone allowed -- a guest is on the bot for those.
+# DESK_OWNER_ONLY=0 restores the old behaviour: everything to everyone allowed.
+OWNER_ONLY = os.environ.get("DESK_OWNER_ONLY", "1").strip().lower() not in \
+    ("0", "false", "no", "off", "")
 PIN_PATH = DATA / "pin.json"
 # The owner's last daily-log date. Persisted so a restart cannot resend a day.
 DAILY_PATH = DATA / "daily.json"
@@ -1289,6 +1299,121 @@ def _liquidity(live: float) -> tuple[list[float], list[float]]:
     return sorted(above), sorted(below, reverse=True)
 
 
+# ========================================================================
+# the sticky level pool -- a named level is never taken down
+# ========================================================================
+# The owner's rule: once the map has named a support, a resistance, a zone or a
+# liquidity pool, it STAYS on the map. A refresh may ADD a level; it may never
+# silently drop one. Without this a sharp move recomputed the nearest support
+# and the level the owner was watching vanished -- the map contradicted itself
+# between two reads a minute apart.
+#
+# Three families, each sticky on its own so a list keeps its meaning: the pivot
+# LEVELS (_levels), the multi-touch ZONES (_zones), and the LIQUIDITY pools
+# (_liquidity). Every family is stored whole and re-split by the live price at
+# read time, so a level crosses from resistance to support as price moves
+# through it -- it is never removed, only re-labelled.
+#
+# The pool is bounded so it cannot grow forever: each side keeps the STICKY_MAX
+# nearest to the price. A level leaves only when that many nearer levels have
+# been named, never because a refresh recomputed it away -- the exact failure
+# the owner reported.
+STICKY_MAX = int(os.environ.get("DESK_STICKY_MAX", "15") or "15")
+# What is STORED is larger than what is shown, but still bounded: the farthest
+# levels are pruned so the file cannot grow forever. Pruning keeps the nearest,
+# so the display (which shows the nearest STICKY_MAX) is unaffected.
+STICKY_STORE_MAX = int(os.environ.get("DESK_STICKY_STORE_MAX", "80") or "80")
+_STICKY_LOCK = threading.Lock()
+
+
+def _sticky_load() -> dict:
+    """The stored pool: {"lvls": [...], "zones": [...], "liq": [...],
+    "touches": {price: count}}, every price a plain float."""
+    try:
+        blob = json.loads(STICKY_PATH.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+    if not isinstance(blob, dict):
+        return {}
+    out: dict = {}
+    for k in ("lvls", "zones", "liq"):
+        v = blob.get(k)
+        if isinstance(v, list):
+            out[k] = [float(x) for x in v if isinstance(x, (int, float))]
+    tch = blob.get("touches")
+    if isinstance(tch, dict):
+        out["touches"] = {float(k): int(v) for k, v in tch.items()
+                          if isinstance(v, (int, float))}
+    return out
+
+
+def _sticky_save(pool: dict) -> None:
+    body = json.dumps({"lvls": sorted(set(pool.get("lvls") or [])),
+                       "zones": sorted(set(pool.get("zones") or [])),
+                       "liq": sorted(set(pool.get("liq") or [])),
+                       "touches": {f"{p:.2f}": n for p, n
+                                   in (pool.get("touches") or {}).items()}},
+                      ensure_ascii=False, indent=1)
+    # Write only when the pool actually changed: the map re-reads every hour, and
+    # an unchanged pool must not churn the file (or its mtime).
+    try:
+        if STICKY_PATH.read_text(encoding="utf-8") == body:
+            return
+    except OSError:
+        pass
+    try:
+        STICKY_PATH.write_text(body, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _sticky_map(live: float, res, sup, sell_z, buy_z, liq_hi, liq_lo) -> dict:
+    """Union the fresh levels with the stored pool; a watched level never drops.
+
+    Each family is folded into the pool, the pool is written back, and the whole
+    pool is re-split by the CURRENT price -- so a level crosses from resistance
+    to support as price moves through it, but is never removed. Each side keeps
+    the STICKY_MAX nearest to the price, nearest first.
+
+    This is for the MAP'S DISPLAY only. The plan and the scenarios keep reading
+    the FRESH levels: a trade may never be triggered by a stale level the market
+    has already left behind.
+    """
+    with _STICKY_LOCK:
+        pool = _sticky_load()
+        pool["lvls"] = sorted(set(pool.get("lvls", []))
+                              | {round(x, 2) for x in list(res) + list(sup)})
+        pool["zones"] = sorted(set(pool.get("zones", []))
+                               | {round(z, 2) for z, _ in list(sell_z) + list(buy_z)})
+        pool["liq"] = sorted(set(pool.get("liq", []))
+                             | {round(x, 2) for x in list(liq_hi) + list(liq_lo)})
+        tch = dict(pool.get("touches", {}))
+        for z, n in list(sell_z) + list(buy_z):
+            tch[round(z, 2)] = n
+        pool["touches"] = tch
+        # Prune the farthest STORED levels so the file stays bounded; the nearest
+        # STICKY_STORE_MAX survive, which always covers the displayed STICKY_MAX.
+        def _keep_near(vals: list[float]) -> list[float]:
+            return sorted(vals, key=lambda v: abs(v - live))[:STICKY_STORE_MAX]
+        pool["lvls"] = _keep_near(pool["lvls"])
+        pool["zones"] = _keep_near(pool["zones"])
+        pool["liq"] = _keep_near(pool["liq"])
+        _sticky_save(pool)
+
+        lv, zo, lq = pool["lvls"], pool["zones"], pool["liq"]
+        res_out = sorted(x for x in lv if x > live)[:STICKY_MAX]
+        sup_out = sorted((x for x in lv if x < live), reverse=True)[:STICKY_MAX]
+        sell_out = [(z, tch.get(z, 0))
+                    for z in sorted(x for x in zo if x > live)[:STICKY_MAX]]
+        buy_out = [(z, tch.get(z, 0))
+                   for z in sorted((x for x in zo if x < live),
+                                   reverse=True)[:STICKY_MAX]]
+        liq_up = sorted(x for x in lq if x > live)[:3]
+        liq_dn = sorted((x for x in lq if x < live), reverse=True)[:3]
+    return {"res": res_out, "sup": sup_out, "sell": sell_out, "buy": buy_out,
+            "liq_above": liq_up, "liq_below": liq_dn}
+
+
 def card_map() -> str:
     """The map: where to SELL (zones above) and where to BUY (zones below).
 
@@ -1898,6 +2023,13 @@ def map_payload() -> dict:
     res, sup = _levels(live) if live > 0 else ([], [])
     sell_z, buy_z = _zones(live) if live > 0 else ([], [])
     liq_hi, liq_lo = _liquidity(live) if live > 0 else ([], [])
+    # The map's DISPLAY levels are sticky: unioned with every level the page has
+    # already named, so a refresh never drops one. The plan and the scenarios
+    # below keep the FRESH levels -- a trade must not fire off a stale level.
+    sticky = (_sticky_map(live, res, sup, sell_z, buy_z, liq_hi, liq_lo)
+              if live > 0 else
+              {"res": [], "sup": [], "sell": [], "buy": [],
+               "liq_above": [], "liq_below": []})
 
     # The live plan (the same dict the action card shows), if one exists now.
     p = None
@@ -1974,11 +2106,12 @@ def map_payload() -> dict:
         "rsis": m["rsis"],
         "atrs": m["atrs"],
         "emas": emas,
-        "res": res[:6],
-        "sup": sup[:6],
-        "sell_zones": [{"price": z, "touches": n} for z, n in sell_z[:5]],
-        "buy_zones": [{"price": z, "touches": n} for z, n in buy_z[:5]],
-        "liquidity": {"above": liq_hi[:3], "below": liq_lo[:3]},
+        "res": sticky["res"][:6],
+        "sup": sticky["sup"][:6],
+        "sell_zones": [{"price": z, "touches": n} for z, n in sticky["sell"][:5]],
+        "buy_zones": [{"price": z, "touches": n} for z, n in sticky["buy"][:5]],
+        "liquidity": {"above": sticky["liq_above"][:3],
+                      "below": sticky["liq_below"][:3]},
         "plan": p,
         "plan_side": side,
         "late_note": note,
@@ -2046,6 +2179,11 @@ def chart_payload(tf: str = "15m", limit: int = 180) -> dict:
     res, sup = _levels(live) if live > 0 else ([], [])
     sell_z, buy_z = _zones(live) if live > 0 else ([], [])
     liq_hi, liq_lo = _liquidity(live) if live > 0 else ([], [])
+    # Same sticky display as the map page: a level drawn once stays drawn.
+    sticky = (_sticky_map(live, res, sup, sell_z, buy_z, liq_hi, liq_lo)
+              if live > 0 else
+              {"res": [], "sup": [], "sell": [], "buy": [],
+               "liq_above": [], "liq_below": []})
 
     return {
         "tf": tf,
@@ -2056,12 +2194,13 @@ def chart_payload(tf: str = "15m", limit: int = 180) -> dict:
                   "l": x["low"], "c": x["close"]} for x in b],
         "rsi": _rsi_series(closes),
         "zones": {
-            "sell": [{"price": z, "touches": n} for z, n in sell_z[:4]],
-            "buy": [{"price": z, "touches": n} for z, n in buy_z[:4]],
+            "sell": [{"price": z, "touches": n} for z, n in sticky["sell"][:4]],
+            "buy": [{"price": z, "touches": n} for z, n in sticky["buy"][:4]],
         },
-        "liquidity": {"above": liq_hi[:3], "below": liq_lo[:3]},
-        "res": res[:3],
-        "sup": sup[:3],
+        "liquidity": {"above": sticky["liq_above"][:3],
+                      "below": sticky["liq_below"][:3]},
+        "res": sticky["res"][:3],
+        "sup": sticky["sup"][:3],
         "clock": _clock(datetime.now(UTC)),
         "tz": TZ_LABEL,
     }
@@ -4089,11 +4228,35 @@ def _backup_chat() -> str:
     return BACKUP_CHAT or SEED_CHATS[0]
 
 
+def _desk_chats(allow: set[str]) -> list[str]:
+    """Who hears the DESK's own messages: a trade opened, closed, refused, or
+    watched; the day's record and the account.
+
+    Those carry the owner's money -- entry, stop, size, the balance -- so with
+    OWNER_ONLY they go to the owner ALONE. A guest on the bot must not read the
+    owner's book. Without OWNER_ONLY the desk stays as it was: everyone allowed.
+    """
+    if OWNER_ONLY:
+        return [_backup_chat()]
+    return sorted(allow)
+
+
+def _alert_chats(allow: set[str]) -> list[str]:
+    """Who hears the market ALERTS: a level breaking, the direction flipping, a
+    gate opening, price reaching a zone.
+
+    These are facts about the market, not about the owner's account, so they
+    stay for everyone allowed -- that is the half of the bot a guest is here for.
+    """
+    return sorted(allow)
+
+
 def _dump_journal() -> dict:
     return {"version": 1, "symbol": SYMBOL, "saved_at": _utcnow(),
             "trades": [dict(t) for t in all_trades()],
             "allow": sorted(load_allow()),
-            "daily": _load_daily()}
+            "daily": _load_daily(),
+            "sticky": _sticky_load()}
 
 
 def backup_journal(tg: Telegram) -> bool:
@@ -4177,6 +4340,11 @@ def restore_journal(tg: Telegram) -> int:
     daily = blob.get("daily") or {}
     if daily and not DAILY_PATH.exists():
         _save_daily(daily)
+    # The sticky pool outlives the container too: a restart must not forget the
+    # levels the owner was watching, so restore it when the file is absent.
+    sticky = blob.get("sticky")
+    if isinstance(sticky, dict) and not STICKY_PATH.exists():
+        _sticky_save(sticky)
     return n
 
 
@@ -4555,7 +4723,7 @@ def maybe_daily_report(tg: Telegram, allow: set[str]) -> None:
         return
     if st.get("was_open") and st.get("last_sent") != today:
         text = daily_report()
-        for c in allow:
+        for c in _desk_chats(allow):
             tg.send(c, text)
         st["was_open"] = False
         st["last_sent"] = today
@@ -4587,7 +4755,7 @@ def maybe_daily_analysis(tg: Telegram, allow: set[str]) -> None:
         except Exception:  # noqa: BLE001 - a hiccup must not kill the tick
             continue
         ok = False
-        for c in allow:
+        for c in _alert_chats(allow):
             try:
                 tg.send(c, text)
                 ok = True
@@ -5032,23 +5200,23 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     # when auto-trading is off.
     note = support_watch(seen)
     if note:
-        for c in allow:
+        for c in _alert_chats(allow):
             tg.send(c, note)
     note = levels_watch(seen)
     if note:
-        for c in allow:
+        for c in _alert_chats(allow):
             tg.send(c, note)
     note = gate_watch(seen)
     if note:
-        for c in allow:
+        for c in _alert_chats(allow):
             tg.send(c, note)
     note = trend_watch(seen)
     if note:
-        for c in allow:
+        for c in _alert_chats(allow):
             tg.send(c, note)
     note = entry_watch(seen)
     if note:
-        for c in allow:
+        for c in _alert_chats(allow):
             tg.send(c, note)
     for t in all_trades():
         st = t["status"]
@@ -5057,13 +5225,13 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
             # A manual close already sent its card from the button handler;
             # announcing it here too would deliver the same closure twice.
             if st != "open" and t["result"] != "manual":
-                for c in allow:
+                for c in _desk_chats(allow):
                     tg.send(c, _close_card(t))
     # In-trade monitoring runs AFTER settle, so it never narrates a trade that
     # this same cycle just closed.
     note = trade_watch(seen)
     if note:
-        for c in allow:
+        for c in _desk_chats(allow):
             tg.send(c, note)
     if desk_is_silenced():
         return
@@ -5072,7 +5240,7 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     if MAX_TRADES_DAY and trades_opened_today() >= MAX_TRADES_DAY:
         if seen.get("day_cap") != today_key():
             seen["day_cap"] = today_key()
-            for c in allow:
+            for c in _desk_chats(allow):
                 tg.send(c, f"🛑 <b>وصلنا حد اليوم</b> — {MAX_TRADES_DAY} صفقات. "
                            "ما رح افتح غير بكرا.")
         return
@@ -5101,7 +5269,7 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
         key = f"refuse:{t0['id']}"
         if seen.get(key) != why:
             seen[key] = why
-            for c in allow:
+            for c in _desk_chats(allow):
                 tg.send(c, _no_second(p, t0, why))
     else:
         # The heads-up BEFORE the trade: what is about to be taken and WHY, so
@@ -5111,12 +5279,12 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
         head_key = f"pre:{p['direction']}:{p['entry']:.1f}"
         if seen.get("pre_key") != head_key:
             seen["pre_key"] = head_key
-            for c in allow:
+            for c in _desk_chats(allow):
                 tg.send(c, _pre_trade_note(p))
         tid = _write_plan(p)
         row = next(x for x in all_trades() if x["id"] == tid)
         seen[tid] = "open"
-        for c in allow:
+        for c in _desk_chats(allow):
             tg.send(c, _open_card(p, row))
 
 

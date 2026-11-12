@@ -65,7 +65,7 @@
 <div class="wrap">
   <div class="top">
     <h1>🥇 خريطة <span id="sym">XAUUSD</span> — لحظية</h1>
-    <div class="live"><span class="dot"></span>السعر كل 5 ثواني · التحليل كل 30 ثانية · آخر قراءة <b id="clock">—</b> <span id="tz"></span></div>
+    <div class="live"><span class="dot"></span>السعر كل 5 ثواني · التحليل كل ساعة · آخر قراءة <b id="clock">—</b> <span id="tz"></span></div>
   </div>
   <div class="price" id="live">—</div>
   <div class="muted" id="state">—</div>
@@ -441,8 +441,8 @@ async function priceTick(){
 
 tick();
 chartTick();
-setInterval(tick, 30000);
-setInterval(chartTick, 30000);
+setInterval(tick, 3600000);
+setInterval(chartTick, 3600000);
 setInterval(priceTick, 5000);
 </script>
 </body>

@@ -11,6 +11,7 @@ they are worth pinning: a change that breaks one of them must fail here first.
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,23 @@ import unittest.mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot  # noqa: E402
+
+
+def setUpModule():
+    """Every test in this file runs against a throwaway sticky-level pool.
+
+    map_payload/chart_payload now WRITE the sticky pool (that is the feature),
+    so without this a test run would leave the real data/levels_seen.json full
+    of the fake feed's levels -- and the next live read would inherit them.
+    """
+    global _STICKY_DIR
+    _STICKY_DIR = tempfile.mkdtemp()
+    bot.STICKY_PATH = pathlib.Path(_STICKY_DIR) / "levels.json"
+
+
+def tearDownModule():
+    bot.STICKY_PATH = pathlib.Path(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / "data" / "levels_seen.json"
 
 
 def _bar(open_time, o, h, lo, c):
@@ -264,11 +282,14 @@ class _DbCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self._saved_db = bot.DB_PATH
+        self._saved_sticky = bot.STICKY_PATH
         bot.DB_PATH = os.path.join(self.tmp, "j.db")
+        bot.STICKY_PATH = pathlib.Path(self.tmp) / "levels.json"
         bot._init_db()
 
     def tearDown(self):
         bot.DB_PATH = self._saved_db
+        bot.STICKY_PATH = self._saved_sticky
 
 
 class VerdictTest(_DbCase):
@@ -2069,6 +2090,75 @@ class ChartPayloadTest(unittest.TestCase):
         import json
         with FakeFeed(mid=4100.0, closes={"15m": self._rise()}):
             json.dumps(bot.chart_payload())
+
+
+class StickyLevelsTest(unittest.TestCase):
+    """The owner's rule: a level the map named is never taken down by a refresh.
+
+    The pool is written and read through the module-level STICKY_PATH, which
+    setUpModule points at a temp file for the whole file, so these tests never
+    touch the real data/levels_seen.json."""
+
+    def setUp(self):
+        bot.STICKY_PATH.unlink(missing_ok=True)
+
+    def test_a_named_level_survives_a_refresh_that_no_longer_sees_it(self):
+        # First read names 4050 as support; a later read -- a sharp move that
+        # recomputes a different nearest support -- must NOT drop it.
+        bot._sticky_map(4100.0, [], [4050.0], [], [], [], [])
+        out = bot._sticky_map(4100.0, [], [4040.0], [], [], [], [])
+        self.assertIn(4050.0, out["sup"])
+        self.assertIn(4040.0, out["sup"])
+
+    def test_a_level_crossing_the_price_is_relabelled_not_removed(self):
+        # 4050 named as support below 4100; price falls to 4000 and 4050 is now
+        # ABOVE it -- it must appear as resistance, still named, never dropped.
+        bot._sticky_map(4100.0, [], [4050.0], [], [], [], [])
+        out = bot._sticky_map(4000.0, [], [], [], [], [], [])
+        self.assertIn(4050.0, out["res"])
+        self.assertNotIn(4050.0, out["sup"])
+
+    def test_zones_stay_in_the_zone_list_not_the_level_list(self):
+        # A zone named once must remain a zone -- not leak into res/sup, which
+        # are the plain pivot levels.
+        bot._sticky_map(4100.0, [], [], [(4120.0, 3)], [(4080.0, 2)], [], [])
+        out = bot._sticky_map(4100.0, [], [], [], [], [], [])
+        self.assertEqual([z for z, _ in out["sell"]], [4120.0])
+        self.assertEqual([z for z, _ in out["buy"]], [4080.0])
+        self.assertNotIn(4120.0, out["res"])
+
+    def test_a_zone_keeps_its_last_known_touch_count(self):
+        bot._sticky_map(4100.0, [], [], [(4120.0, 4)], [], [], [])
+        out = bot._sticky_map(4100.0, [], [], [], [], [], [])
+        self.assertEqual(out["sell"][0], (4120.0, 4))
+
+    def test_the_display_is_capped_to_the_nearest(self):
+        # 30 levels above, all named; the display shows only the nearest
+        # STICKY_MAX -- but the STORE keeps them, so none is really "lost".
+        res = [4100.0 + i for i in range(1, 31)]
+        out = bot._sticky_map(4000.0, res, [], [], [], [], [])
+        self.assertEqual(len(out["res"]), bot.STICKY_MAX)
+        self.assertEqual(out["res"][0], 4101.0)
+        self.assertLessEqual(max(out["res"]),
+                             4100.0 + bot.STICKY_STORE_MAX)
+
+    def test_a_broken_pool_file_does_not_crash_the_map(self):
+        bot.STICKY_PATH.write_text("not json at all", encoding="utf-8")
+        out = bot._sticky_map(4100.0, [], [4050.0], [], [], [], [])
+        self.assertIn(4050.0, out["sup"])
+
+    def test_the_pool_rides_in_the_backup_so_a_restart_keeps_it(self):
+        # Render has no disk: the container restarts and data/levels_seen.json
+        # is gone. The pool must travel in the pinned backup and come back.
+        bot._sticky_map(4100.0, [], [4050.0], [(4120.0, 3)], [], [], [])
+        blob = bot._dump_journal()
+        self.assertEqual(blob["sticky"]["lvls"], [4050.0])
+        self.assertEqual(blob["sticky"]["zones"], [4120.0])
+        bot.STICKY_PATH.unlink()                      # the container restarted
+        bot._sticky_save(blob["sticky"])              # restore_journal does this
+        out = bot._sticky_map(4100.0, [], [], [], [], [], [])
+        self.assertIn(4050.0, out["sup"])
+        self.assertEqual([z for z, _ in out["sell"]], [4120.0])
 
 
 if __name__ == "__main__":
