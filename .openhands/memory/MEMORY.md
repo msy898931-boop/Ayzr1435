@@ -875,3 +875,32 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
 - **Deploy:** commit `2869d06` pushed to `main`; **Render autoDeploy is OFF** →
   the owner must click **Deploy** himself. Push recipe (no credential helper):
   `git push "https://x-access-token:${GITHUB_TOKEN}@github.com/msy898931-boop/Ayzr1435.git" main:main`.
+
+## Ayzr1435 — the gate bands were measured on a bot that does not trade (2026-11-13)
+
+- ⭐ **A "tuning" commit can be built on a study of the wrong bot.** The 2026
+  replay (`backtest/bot2026.py`) hardcoded its gate bands — ADX 20-40, ATR
+  0.08%-0.25% — four times tighter than the live desk, and skipped the no-chase
+  gate. Two tuning commits (`faff153`, `6a5e6b0`) widened the live bands to ADX
+  0-50 / ATR 0.08%-1.00% *on that replay's numbers*. Once the replay READS
+  `bot`'s constants and applies the gate, the widening **inverts**.
+- ⭐ **The ATR ceiling and the no-chase gate interact — measure them together.**
+  WITHOUT the gate a wide ceiling nets more total R (0.25% -> +114R, 1.00% ->
+  +158R). WITH the gate the sign flips (0.25% -> +117R, 1.00% -> +91R) AND the
+  wide ceiling doubles the drawdown (-16R -> -25R). -25R is **-$227 on a $200
+  account** — the difference between a bad week and a blown account. The gate
+  already refuses the bad high-volatility entries, so the ceiling need not.
+  Peak of the sweep is exactly 0.25% (0.20% -> +0.141R, 0.25% -> +0.176R,
+  0.30% -> +0.118R). Shipped: ADX 0-50 (floor 0 STAYS — 0-15 is the one losing
+  band at -0.03R but 0-50 still nets the most total R, +116R vs 15-50's +102R),
+  ATR 0.08-0.25%, target 2.2, no-chase on.
+- ⭐ **Verify the replay's indicators EQUAL the bot's, to the decimal, before
+  trusting any study number.** `bot.adx_series/atr/rsi/ema` vs `bot2026._adx/
+  _atr_series/_rsi_series` matched to 3 decimals — that check is what turned a
+  "maybe the engine is wrong" doubt into a confident band fix.
+- **A test fixture above the live ATR band models a tape the desk would not
+  trade.** `FullCardTest._leg_feed` used a ±6 swing (ATR 0.37%, live median
+  0.205%); after tightening the ceiling it stopped firing. Fix the fixture into
+  the band (0.08-0.25%), do not loosen the band for the fixture.
+- Suite: 174 tests, 1 pre-existing failure (`test_the_win_rate_line_names_its_source`
+  — local trades file, fails WITHOUT agent edits, verified by `git stash`).
