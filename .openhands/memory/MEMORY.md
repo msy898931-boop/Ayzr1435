@@ -1087,3 +1087,21 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   "بنية قصيرة المدى، عكس الاتجاه العام (n/6)". Reconcile or label — never bare.
 - Suite **219** (was 209). mypy **3** (was 4 — fixed news-item typing). ruff 43
   (pre-existing). Commit `7eec8a1`, pushed `b380ae2..7eec8a1`.
+
+## 2026-11-07 (later still) — the comparison page is LIVE, not hand-written
+
+- ⭐ **A hand-written "presentation" page is the same sin as a hardcoded metric.**
+  `comparison.html` was a static artifact: prices from one moment, stale the
+  next, and it silently disagreed with the live map. Rebuilt as `/compare`
+  (alias `/comparison`) in `app.py`, reading the SAME `/map.json` every 5s — so
+  it can never go stale or contradict. `/map` ⇄ `/compare` cross-link.
+- ⭐ **The one honest exception: a snapshot must be LABELLED as one.** The
+  analyst's own read is hand-written, so it is date-stamped and marked "ثابت
+  بتاريخ …" while everything else is live. That is how a static block coexists
+  with a live page without lying.
+- `map_payload` now carries `dayHigh`/`dayLow` (from the quote) and `commit`
+  (`RENDER_GIT_COMMIT`[:7]) so a page can show the day range and name the
+  engine that built every number. New fields are additive — the map ignores
+  them.
+- Suite still **219**; mypy 3 (pre-existing); ruff 46 (baseline, app.py's 3 are
+  old). Commit `4dbf6a5`, pushed `a67ed42..4dbf6a5`.
