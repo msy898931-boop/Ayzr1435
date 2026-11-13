@@ -1900,6 +1900,43 @@ class AnalystEyeTest(_DbCase):
         finally:
             bot.divergence_read = saved
 
+    def test_near_level_fires_only_at_the_edge_of_the_range(self):
+        # A sell 2 points above its support with a 15-point 1h ATR is a chase:
+        # the support is where the fall stops, not open space.
+        self.assertEqual(
+            bot._near_level("sell", 4100.0, [4120.0], [4098.0], 15.0), 4098.0)
+        # The same sell 40 points above the support has room to run.
+        self.assertIsNone(
+            bot._near_level("sell", 4100.0, [4120.0], [4060.0], 15.0))
+
+    def test_edge_note_names_the_bounce_and_the_break(self):
+        note = bot._edge_note("sell", [4120.0], [4094.0])
+        self.assertIn("لحاق", note)
+        self.assertIn("4,094", note)   # the break below the support
+        self.assertIn("4,120", note)   # the bounce up to the resistance
+
+    def test_opinion_drops_the_confidence_when_the_spot_is_a_chase(self):
+        # 6/6 down would be "عالية", but price sits ON the support -> a chase:
+        # the stance must say so and quiet down, not call the spot "high".
+        out = "\n".join(bot._opinion(
+            3890.0, "sell", 6, [3923.0], [3888.0], 42.0, False,
+            None, None, {"entry": 3890.0, "stop": 3902.0, "target": 3870.0,
+                         "risk_usd": 12.0, "gain_usd": 20.0},
+            False, [3923.0], [3888.0], 15.0))
+        self.assertIn("لحاق", out)
+        self.assertIn("متوسطة", out)
+        self.assertNotIn("عالية", out)
+
+    def test_opinion_stays_high_when_the_entry_has_room(self):
+        # Same 6/6 down, but the support is far below: no chase, stay "عالية".
+        out = "\n".join(bot._opinion(
+            3890.0, "sell", 6, [3923.0], [3840.0], 42.0, False,
+            None, None, {"entry": 3890.0, "stop": 3902.0, "target": 3870.0,
+                         "risk_usd": 12.0, "gain_usd": 20.0},
+            False, [3923.0], [3840.0], 15.0))
+        self.assertNotIn("لحاق", out)
+        self.assertIn("عالية", out)
+
 
 class DailyAnalysisTest(unittest.TestCase):
     """daily_analysis: the full numbered Arabic report, and it always ends with

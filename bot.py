@@ -3994,12 +3994,55 @@ def _late_note(side: str | None, r15) -> str:
             "الصفقة صحيحة بس متأخرة — خفّف الحجم أو اقعد برا.")
 
 
+def _near_level(side: str, live: float, res: list[float], sup: list[float],
+                atr1h: float | None) -> float | None:
+    """The same-direction level the price is resting ON, or None.
+
+    A sell needs room DOWN to the support; a buy needs room UP to the
+    resistance. When that level is closer than a third of the 1h ATR the entry
+    is at the EDGE of the range -- the spot the owner calls "لحاق" (chasing):
+    the support under a short is the first place the fall stops, not open space.
+    """
+    room = max(2.0, 0.35 * (atr1h or 0.0))
+    lv = sup[0] if (side == "sell" and sup) else (
+        res[0] if (side == "buy" and res) else None)
+    if lv is not None and abs(live - lv) <= room:
+        return lv
+    return None
+
+
+def _edge_note(side: str, res: list[float], sup: list[float]) -> str:
+    """The position warning for a stance taken at the edge of the range.
+
+    It names the two better plays -- the bounce or the break -- so the read is
+    honest about the spot without contradicting the desk's own market entry
+    (the desk still takes the trade; this says the SPOT is a chase).
+    """
+    if side == "sell":
+        bits = []
+        if res:
+            bits.append(f"بِع الارتداد لفوق عند <b>{num(res[0])}</b>")
+        if sup:
+            bits.append(f"بِع الكسر تحت <b>{num(sup[0])}</b>")
+        tail = (" الأفضل: " + " أو ".join(bits)) if bits else ""
+        return f"📍 السعر ملزوق على الدعم — البيع من هون <b>لحاق متأخر</b>.{tail}."
+    bits = []
+    if sup:
+        bits.append(f"اشتري الارتداد لتحت عند <b>{num(sup[0])}</b>")
+    if res:
+        bits.append(f"اشتري الاختراق فوق <b>{num(res[0])}</b>")
+    tail = (" الأفضل: " + " أو ".join(bits)) if bits else ""
+    return f"📍 السعر ملزوق على المقاومة — الشراء من هون <b>لحاق متأخر</b>.{tail}."
+
+
 def _opinion(live: float, side: str | None, agree: int,
              sell: list, buy: list, r15: float | None,
              mixed: bool, big: tuple | None = None,
              trig: tuple | None = None,
              plan: dict | None = None,
-             thin: bool = False) -> list[str]:
+             thin: bool = False,
+             res: list | None = None, sup: list | None = None,
+             atr1h: float | None = None) -> list[str]:
     """The honest stance, up front: what I would DO, how sure, what flips me.
 
     This is the difference between a report and a view. It can say "wait" or
@@ -4032,6 +4075,17 @@ def _opinion(live: float, side: str | None, agree: int,
     # sell whose stop is the same 8 points that would flip the trend is not high
     # confidence -- it is a coin toss wearing a label.
     if late or mixed or thin:
+        conf = {"عالية": "متوسطة", "متوسطة": "منخفضة"}.get(conf, conf)
+
+    # `edge` = the price is resting on the same-direction level, so this entry
+    # is a chase AT the edge of the range. It drops the confidence one notch
+    # (a sell whose first support is 3 points away has no room to run) and names
+    # the better spots. It never blocks the desk -- the desk still takes the
+    # trend trade; this only stops the card from calling the spot "high".
+    res = res or []
+    sup = sup or []
+    edge = _near_level(side, live, res, sup, atr1h) if side else None
+    if edge is not None:
         conf = {"عالية": "متوسطة", "متوسطة": "منخفضة"}.get(conf, conf)
 
     if side is None:
@@ -4106,6 +4160,8 @@ def _opinion(live: float, side: str | None, agree: int,
         if thin:
             out.append(f"  ⚠️ السعر ملاصق للمتوسطات — الاتجاه هامشي: حركة "
                        f"صغيرة بتقلبه. القرار ماشي، بس حجمك صغير.")
+        if edge is not None:
+            out.append("  " + _edge_note(side, res, sup))
         out.append(f"  🔄 بيلغي نظريتي: إغلاق 1س {flip} {num(plan['stop'])}.")
         return out
 
@@ -4199,8 +4255,9 @@ def card_full() -> str:
     a1 = m["atrs"].get("1h")
     thin = bool(pnow is not None and g1 is not None and a1
                 and g1 * a1 < pnow["risk_pts"])
+    res_lv, sup_lv = _levels(live)
     L += _opinion(live, trend_side, agree, sell, buy, rsis.get("15m"), mixed,
-                  big, trig, pnow, thin)
+                  big, trig, pnow, thin, res_lv, sup_lv, a1)
 
     # ---- 1. the day's picture -------------------------------------------
     hi, lo = q.get("high"), q.get("low")
