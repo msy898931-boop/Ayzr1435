@@ -1196,3 +1196,8 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
 - ⚠️ **`autoDeploy: true` in render.yaml did NOT redeploy on push** (uptime kept
   climbing, `/health` stayed on the old commit). The owner must press Deploy in
   the Render dashboard for every change. Verify with `/health` -> `commit`.
+- ✅ **Daily-news deploy confirmed (2026-11-13):** the owner pressed Deploy and
+  `/health` reads `commit: ca9a2d5`, `uptime_s` reset -- the daily read with the
+  news section IS live. First read to carry news: the 09:00 morning slot
+  (today's 21:00 PM slot had already passed before this deploy). Verify a deploy
+  with `/health` -> `commit`.
