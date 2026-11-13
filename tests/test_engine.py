@@ -1998,8 +1998,8 @@ class CollapsibleMenuTest(unittest.TestCase):
         # Telegram client; `trade`/`close` are parsed from text). Add a button
         # with a typo and this fails.
         known = {
-            "full", "action", "day_analysis", "analysis", "recommend", "map",
-            "news", "scenarios", "levels", "open", "journal_menu", "daily",
+            "full", "report", "action", "day_analysis", "analysis", "recommend",
+            "map", "news", "scenarios", "levels", "open", "journal_menu", "daily",
             "who", "howto", "alerts", "help", "collapse", "menu",
         }
         for _t, action in [p for row in bot.MENU for p in row]:
@@ -2105,6 +2105,66 @@ class ChartPayloadTest(unittest.TestCase):
         import json
         with FakeFeed(mid=4100.0, closes={"15m": self._rise()}):
             json.dumps(bot.chart_payload())
+
+
+class ReportTest(unittest.TestCase):
+    """The full report lives on BOTH the map and the bot. The two must read ONE
+    engine (report_payload), so the page and the card can never disagree -- the
+    same rule the map already follows for zones and levels."""
+
+    def _rise(self):
+        return [4000 + i * 0.5 for i in range(160)]
+
+    def _fall(self):
+        return [4200 - i * 0.5 for i in range(160)]
+
+    def test_the_report_carries_the_sections_the_owner_asked_for(self):
+        with FakeFeed(mid=4100.0, closes={"1h": self._rise()}):
+            p = bot.report_payload()
+        for key in ("live", "bias", "frames", "levels", "sessions", "days",
+                    "bullets", "fib", "fib_line", "structure", "plan", "clock"):
+            self.assertIn(key, p)
+        self.assertEqual(len(p["frames"]), len(bot.FRAMES))
+
+    def test_the_bias_follows_the_tape(self):
+        # Every frame falling -> the report must read down, not range.
+        with FakeFeed(mid=3900.0, closes={tf: self._fall() for tf in bot.FRAMES}):
+            p = bot.report_payload()
+        self.assertEqual(p["bias"], "هابط")
+        self.assertEqual(p["dn"], len(bot.FRAMES))
+
+    def test_each_frame_sentence_is_built_from_its_own_numbers(self):
+        with FakeFeed(mid=3900.0, closes={tf: self._fall() for tf in bot.FRAMES}):
+            p = bot.report_payload()
+        for f in p["frames"]:
+            self.assertTrue(f["read"])
+            self.assertIn("الاتجاه", f["read"])
+
+    def test_the_map_and_the_card_share_one_engine(self):
+        # The map payload's report must equal a standalone report_payload read
+        # of the same tape -- one engine, two views, no drift.
+        with FakeFeed(mid=4100.0, closes={"1h": self._rise()}):
+            mp = bot.map_payload()
+        self.assertIsNotNone(mp["report"])
+        self.assertIn("bias", mp["report"])
+        self.assertEqual(mp["report"]["live"], mp["live"])
+
+    def test_the_card_fits_the_telegram_limit(self):
+        with FakeFeed(mid=4100.0, closes={"1h": self._rise()}):
+            t = bot.card_report()
+        self.assertLessEqual(len(t), 4000)
+        self.assertIn("تحليلي المستقل", t)
+        self.assertIn("الميل العام", t)
+
+    def test_a_dead_tape_yields_a_card_not_a_crash(self):
+        with FakeFeed(mid=0.0, closes={"1h": []}):
+            t = bot.card_report()
+        self.assertIn("ما في قراءة", t)
+
+    def test_the_payload_is_json_serialisable(self):
+        import json
+        with FakeFeed(mid=4100.0, closes={"1h": self._rise()}):
+            json.dumps(bot.report_payload(), ensure_ascii=False)
 
 
 class StickyLevelsTest(unittest.TestCase):

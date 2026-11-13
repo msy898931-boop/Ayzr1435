@@ -308,6 +308,7 @@ NEWS_ITEMS: list[tuple[str, str]] = [
 
 MENU = [
     [("🧠 قراءتي للسوق", "full")],
+    [("🥇 التحليل التفصيلي", "report")],
     [("🧭 شو تعمل هلّق", "action")],
     [("📅 التحليل اليومي الشامل", "day_analysis")],
     [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
@@ -334,6 +335,8 @@ TEXT_ACTIONS = {
     "/start": "menu", "/menu": "menu", "/help": "help",
     "تحليل": "analysis", "توصية": "recommend", "سيناريو": "scenarios",
     "كامل": "full", "شامل": "full", "كل شي": "full", "التحليل الكامل": "full",
+    "تفصيلي": "report", "التحليل التفصيلي": "report", "تقرير": "report",
+    "التقرير": "report", "تقرير كامل": "report", "تحليلي": "report",
     "سيناريوهات": "scenarios", "مستويات": "levels", "مفتوحة": "open",
     "الصفقات": "open", "سجل": "journal_menu", "السجل": "journal_menu",
     "يومي": "j_day", "اليوم": "j_day", "أسبوعي": "j_week", "اسبوعي": "j_week",
@@ -1473,6 +1476,71 @@ def card_map() -> str:
     return "\n".join(lines)
 
 
+def card_report() -> str:
+    """The full analysis report as a Telegram card -- the SAME engine as the map.
+
+    Reads report_payload(), so the card and the live page can never disagree:
+    one report, two views. Every figure is the live tape's, and the closing
+    lines say plainly that this is a reading, not a promise.
+    """
+    p = report_payload()
+    live = p["live"]
+    if not live:
+        return "⚠️ ما في قراءة سوق هلّق — جرّب بعد شوي."
+
+    L = [f"🥇 <b>تحليلي المستقل — {esc(p['symbol'])}</b>"]
+    dd = p.get("dayDiffPercent")
+    head = f"السعر <b>{num(live)}</b>"
+    if dd is not None:
+        head += f" · اليوم {'🔴' if dd < 0 else '🟢'} {dd:+.2f}%"
+    L.append(head)
+    L.append(f"<i>{p['clock']} {p['tz']}</i>")
+
+    L.append(f"\n<b>🧭 الميل العام:</b> {esc(p['bias'])} "
+             f"({p['dn']} فريم هابط · {p['up']} صاعد من 6)")
+
+    L.append("\n<b>📊 الفريمات:</b>")
+    for f in p["frames"]:
+        icon = "🔴" if f["trend"] == -1 else ("🟢" if f["trend"] == 1 else "⚪")
+        r = f"{f['rsi']:.0f}" if f["rsi"] is not None else "—"
+        a = f"{f['atr']:.1f}" if f["atr"] is not None else "—"
+        L.append(f"  {icon} <b>{f['label']}</b> — RSI {r} · ATR {a}")
+        if f["read"]:
+            L.append(f"     <i>{esc(f['read'])}</i>")
+
+    if p["structure"]:
+        L.append(f"\n<b>🏗️ البنية:</b> {esc(p['structure'])}")
+
+    if p["levels"]:
+        L.append("\n<b>🧭 المستويات:</b>")
+        for lv in p["levels"][:8]:
+            arrow = "🔺" if lv["kind"] == "مقاومة" else "🔻"
+            L.append(f"  {arrow} {num(lv['price'])} <i>({lv['dist']:+.0f})</i>")
+
+    s = p["sessions"]
+    sline = []
+    if s.get("asia"):
+        sline.append(f"آسيا {s['asia']['pts']:.0f}")
+    if s.get("london"):
+        sline.append(f"لندن {s['london']['pts']:.0f}")
+    if s.get("ny"):
+        sline.append(f"نيويورك {s['ny']['pts']:.0f}")
+    if sline:
+        L.append(f"\n<b>🌏 نطاق الجلسات (نقطة):</b> {' · '.join(sline)}")
+
+    if p["fib_line"]:
+        L.append(f"\n<b>📐 فيبو:</b> {esc(p['fib_line'])}")
+
+    if p["bullets"]:
+        L.append("\n<b>🎯 الخلاصة:</b>")
+        for b in p["bullets"]:
+            L.append(f"  • {esc(b)}")
+
+    L.append("\n<i>قراءة فنية من بيانات حيّة — مو توصية ولا وعد ربح. "
+             "الوقف إلزامي دايماً.</i>")
+    return "\n".join(L)
+
+
 def _ema_last(vals: list[float], n: int) -> float | None:
     """The last EMA of a series, or None when there is not enough history."""
     s = ema_series(vals, n)
@@ -2069,12 +2137,15 @@ def map_payload() -> dict:
             scen.append({"side": "short", "trigger": trig, "level": sup[0],
                          "next": sup[1] if len(sup) > 1 else None, **s})
 
-    # EMAs per frame -- the levels the owner reads against the price.
+    # EMAs per frame -- the levels the owner reads against the price. The raw
+    # bars are kept so the report below reuses them (ONE tape read per frame).
     emas: dict = {}
+    frame_bars: dict = {}
     for tf in FRAMES:
         with suppress(Exception):
             b = bars(tf, 300)
             c = [x["close"] for x in b]
+            frame_bars[tf] = closed(b, tf)
             emas[tf] = {"e20": _ema_last(c, 20), "e50": _ema_last(c, 50)}
 
     # The late-entry caveat for the live plan, from the ONE helper every card
@@ -2115,6 +2186,14 @@ def map_payload() -> dict:
     with suppress(Exception):
         insights = map_insights(m, live, res, sup, emas, news)
 
+    # The full report -- the SAME engine the bot's "التحليل التفصيلي" card reads,
+    # so the page and the card can never disagree. Guarded: a failure drops the
+    # section, it never blanks the page. Pass the reads we already have so the
+    # page pays for ONE tape read, not two.
+    report = None
+    with suppress(Exception):
+        report = report_payload(m, res, sup, frame_bars)
+
     return {
         "symbol": SYMBOL,
         "live": live,
@@ -2139,6 +2218,171 @@ def map_payload() -> dict:
         "insights": insights,
         "adx": adx_v,
         "news": news,
+        "report": report,
+        "clock": _clock(datetime.now(UTC)),
+        "tz": TZ_LABEL,
+    }
+
+
+def _report_read(fr: dict, live: float) -> str:
+    """One frame's sentence, derived from its own numbers -- not a template.
+
+    The report must read the tape, not recite it: the trend, where price sits
+    against the average, and what the momentum says. Every clause is a fact the
+    frame carries, so the sentence changes the moment the frame does.
+    """
+    tr, r, e20, a = fr["trend"], fr["rsi"], fr["ema20"], fr["atr"]
+    parts = [f"الاتجاه {'هابط' if tr == -1 else ('صاعد' if tr == 1 else 'عرضي')}."]
+    if e20 is not None:
+        parts.append(f"السعر {'فوق' if live > e20 else 'تحت'} EMA20 ({e20:.1f}).")
+    if r is not None:
+        if r >= 70:
+            parts.append(f"RSI {r:.0f} — تشبّع شراء.")
+        elif r <= 30:
+            parts.append(f"RSI {r:.0f} — تشبّع بيع.")
+        elif r < 45:
+            parts.append(f"RSI {r:.0f} — زخم ضعيف.")
+        elif r > 55:
+            parts.append(f"RSI {r:.0f} — زخم قوي.")
+        else:
+            parts.append(f"RSI {r:.0f} — محايد.")
+    if a:
+        parts.append(f"ATR {a:.1f} نقطة.")
+    return " ".join(parts)
+
+
+def report_payload(m: dict | None = None,
+                   res: list[float] | None = None,
+                   sup: list[float] | None = None,
+                   frames_bars: dict | None = None) -> dict:
+    """The full analysis report -- ONE engine for the map, the bot and the page.
+
+    The owner asked for the report he reads by hand to live on the map AND on
+    the bot and update with the market. The only way the two can never disagree
+    is to build it once here and let both read it, the same rule the map already
+    follows. Everything is derived from the live tape; nothing is a study figure
+    dressed up as a reading.
+
+    `m`, `res`, `sup` and `frames_bars` may be supplied by a caller that already
+    read the tape (map_payload does), so the page pays for ONE read, not two.
+    """
+    if m is None:
+        m = read_market()
+    q, live = m["q"], m["live"]
+    if res is None or sup is None:
+        res, sup = _levels(live) if live > 0 else ([], [])
+    fb = frames_bars or {}
+
+    frames: list[dict] = []
+    for tf in FRAMES:
+        fr: dict = {"tf": tf, "label": TF_AR.get(tf, tf),
+                    "trend": m["trends"].get(tf, 0),
+                    "rsi": m["rsis"].get(tf), "atr": m["atrs"].get(tf),
+                    "ema20": None, "ema50": None}
+        with suppress(Exception):
+            b = fb.get(tf)
+            if b is None:
+                b = bars(tf, 300)
+            c = [x["close"] for x in b]
+            fr["ema20"] = _ema_last(c, 20)
+            fr["ema50"] = _ema_last(c, 50)
+        fr["read"] = _report_read(fr, live) if live > 0 else ""
+        frames.append(fr)
+
+    up = sum(1 for x in frames if x["trend"] == 1)
+    dn = sum(1 for x in frames if x["trend"] == -1)
+    if dn >= 5:
+        bias = "هابط"
+    elif up >= 5:
+        bias = "صاعد"
+    elif dn > up:
+        bias = "مائل للهبوط"
+    elif up > dn:
+        bias = "مائل للصعود"
+    else:
+        bias = "عرضي"
+
+    # The day's session ranges, so the report can say WHERE the move happened.
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    b1h: list[dict] = fb.get("1h") or []
+    if not b1h:
+        with suppress(Exception):
+            b1h = closed(bars("1h", 300), "1h")
+    t1 = [x for x in b1h if x["openTime"][:10] == today]
+
+    def _rng(rows: list[dict]) -> dict | None:
+        if not rows:
+            return None
+        hi = max(x["high"] for x in rows)
+        lo = min(x["low"] for x in rows)
+        return {"low": round(lo, 2), "high": round(hi, 2), "pts": round(hi - lo, 1)}
+
+    sessions = {
+        "asia": _rng([x for x in t1 if 0 <= int(x["openTime"][11:13]) < 7]),
+        "london": _rng([x for x in t1 if 7 <= int(x["openTime"][11:13]) < 16]),
+        "ny": _rng([x for x in t1 if 16 <= int(x["openTime"][11:13]) < 24]),
+    }
+
+    # The recent daily bars, so the report carries the multi-day run.
+    days: list[dict] = []
+    with suppress(Exception):
+        for d in closed(bars("1d", 300), "1d")[-8:]:
+            days.append({"date": d["openTime"][:10], "open": round(d["open"], 2),
+                         "high": round(d["high"], 2), "low": round(d["low"], 2),
+                         "close": round(d["close"], 2),
+                         "chg": round(d["close"] - d["open"], 1)})
+
+    levels: list[dict] = []
+    for rv in res[:6]:
+        levels.append({"price": round(rv, 2), "kind": "مقاومة",
+                       "dist": round(rv - live, 1)})
+    for sv in sup[:6]:
+        levels.append({"price": round(sv, 2), "kind": "دعم",
+                       "dist": round(sv - live, 1)})
+
+    # The honest conclusion, built from the numbers -- never a fixed script.
+    bullets: list[str] = []
+    bullets.append(f"الاتجاه العام: {bias} ({dn} فريم هابط · {up} صاعد من 6).")
+    if sup:
+        bullets.append(f"أقرب دعم {sup[0]:.2f} — كسره لتحت يفتح نزول أعمق.")
+    if res:
+        bullets.append(f"أقرب مقاومة {res[0]:.2f} — إغلاق ساعة فوقها يعني ارتداد.")
+    if sup and len(sup) > 1:
+        bullets.append(f"الأهداف النازلة: {sup[0]:.2f} ثم {sup[1]:.2f}.")
+    if res and len(res) > 1:
+        bullets.append(f"الأهداف الصاعدة: {res[0]:.2f} ثم {res[1]:.2f}.")
+
+    structure = ""
+    with suppress(Exception):
+        structure = _structure_read() or ""
+
+    plan_d = None
+    with suppress(Exception):
+        plan_d = plan(m)
+
+    return {
+        "symbol": SYMBOL,
+        "live": live,
+        "state": q.get("marketState"),
+        "dayDiffPercent": q.get("dayDiffPercent"),
+        "spread": q.get("spread"),
+        "dayHigh": q.get("high"),
+        "dayLow": q.get("low"),
+        "bias": bias,
+        "up": up,
+        "dn": dn,
+        "frames": frames,
+        "levels": levels,
+        "res": [round(x, 2) for x in res[:6]],
+        "sup": [round(x, 2) for x in sup[:6]],
+        "fib": fib_levels(live) if live > 0 else {},
+        "fib_line": fib_read(live) if live > 0 else "",
+        "divergence": divergence_read() if live > 0 else [],
+        "sessions": sessions,
+        "days": days,
+        "bullets": bullets,
+        "structure": structure,
+        "plan": plan_d,
         "clock": _clock(datetime.now(UTC)),
         "tz": TZ_LABEL,
     }
@@ -4187,6 +4431,7 @@ def dispatch(action: str) -> str:
         "scenarios": card_scenarios,
         "levels": card_levels,
         "map": card_map,
+        "report": card_report,
         "news": card_news,
         "open": card_open,
         "monitor": card_monitor,
@@ -5531,6 +5776,7 @@ def selftest() -> int:
     print("== recommend ==", card_recommend()[:120].replace("\n", " "))
     print("== levels ==", card_levels()[:120].replace("\n", " "))
     print("== map ==", card_map()[:120].replace("\n", " "))
+    print("== report ==", card_report()[:120].replace("\n", " "))
     print("== news ==", card_news()[:120].replace("\n", " "))
     print("== scenarios ==", card_scenarios()[:120].replace("\n", " "))
     print("== journal ==", journal_menu_text().replace("\n", " | "))

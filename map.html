@@ -131,6 +131,18 @@
   <h2>🎬 السيناريوهات</h2>
   <div id="scen">—</div>
 
+  <h2>🥇 التحليل التفصيلي (نفس تقرير البوت)</h2>
+  <div class="card">
+    <div id="rpt-head" class="muted">—</div>
+    <div id="rpt-frames"></div>
+    <div id="rpt-levels"></div>
+    <div id="rpt-sessions"></div>
+    <div id="rpt-fib"></div>
+    <div id="rpt-days"></div>
+    <div id="rpt-conc"></div>
+  </div>
+  <div id="rpt-honesty"></div>
+
   <h2>⏰ إيمتى تشتري وإيمتى تبيع</h2>
   <div class="grid">
     <div class="card">
@@ -271,12 +283,69 @@ function render(d){
   document.getElementById("diverg").innerHTML = dv.length
     ? dv.map(x=>`<div class="${x.tone==="warn"?"warn":"info"}" style="margin-bottom:8px">${x.text}</div>`).join("")
     : `<div class="muted">ما في دايفرجنس واضح هلّق.</div>`;
+
+  // The full report -- the SAME engine the bot's "التحليل التفصيلي" card reads,
+  // straight from map.json's report key. One report, two views.
+  renderReport(d.report);
+}
+
+function renderReport(r){
+  if (!r){ document.getElementById("rpt-head").textContent = "— ما في تقرير هلّق"; return; }
+  const dd = r.dayDiffPercent;
+  document.getElementById("rpt-head").innerHTML =
+    `<b>🥇 تحليلي المستقل — ${r.symbol}</b> · السعر <b>${F(r.live)}</b>` +
+    (dd!=null?` · اليوم <span class="${dd<0?'res':'sup'}">${P(dd)}%</span>`:"") +
+    ` · ${r.clock} ${r.tz}` +
+    `<br><b>الميل العام:</b> ${r.bias} (${r.dn} فريم هابط · ${r.up} صاعد من 6)`;
+
+  document.getElementById("rpt-frames").innerHTML =
+    `<div class="muted" style="margin-top:10px"><b>📊 الفريمات</b></div>` +
+    (r.frames||[]).map(f=>{
+      const ic = f.trend==-1?"🔴":(f.trend==1?"🟢":"⚪");
+      return `<div class="kv">${ic} <b>${f.label}</b> — ${f.read}</div>`;
+    }).join("");
+
+  document.getElementById("rpt-levels").innerHTML = (r.levels&&r.levels.length)
+    ? `<div class="muted" style="margin-top:10px"><b>🧭 المستويات</b></div>` +
+      r.levels.map(l=>`<div class="kv">${l.kind==="مقاومة"?"🔺":"🔻"} ${F(l.price)} <span class="muted">(${l.dist>0?"+":""}${l.dist.toFixed(0)})</span></div>`).join("")
+    : "";
+
+  const s = r.sessions||{};
+  const srow = (lbl,k)=> s[k] ? `<div class="kv">${lbl}: ${F(s[k].low)} → ${F(s[k].high)} (${s[k].pts} نقطة)</div>` : "";
+  const sess = srow("🌏 آسيا","asia")+srow("🇬🇧 لندن","london")+srow("🇺🇸 نيويورك","ny");
+  document.getElementById("rpt-sessions").innerHTML = sess
+    ? `<div class="muted" style="margin-top:10px"><b>🌏 نطاق الجلسات</b></div>`+sess : "";
+
+  document.getElementById("rpt-fib").innerHTML = r.fib_line
+    ? `<div class="kv" style="margin-top:10px"><b>📐 فيبو:</b> ${r.fib_line}</div>` : "";
+
+  document.getElementById("rpt-days").innerHTML = (r.days&&r.days.length)
+    ? `<div class="muted" style="margin-top:10px"><b>📅 آخر الأيام</b></div>` +
+      `<table><tr><th>التاريخ</th><th>فتح</th><th>قمة</th><th>قاع</th><th>إغلاق</th><th>التغيّر</th></tr>` +
+      r.days.map(d=>`<tr><td>${d.date}</td><td>${F(d.open)}</td><td>${F(d.high)}</td><td>${F(d.low)}</td><td>${F(d.close)}</td><td class="${d.chg>=0?'sup':'res'}">${d.chg>0?"+":""}${d.chg.toFixed(1)}</td></tr>`).join("") +
+      `</table>` : "";
+
+  document.getElementById("rpt-conc").innerHTML = (r.bullets&&r.bullets.length)
+    ? `<div class="muted" style="margin-top:10px"><b>🎯 الخلاصة</b></div><ul>` +
+      r.bullets.map(b=>`<li>${b}</li>`).join("") + `</ul>` : "";
+
+  document.getElementById("rpt-honesty").innerHTML = r.structure
+    ? `<div class="warn"><b>🏗️ البنية:</b> ${r.structure}</div>` : "";
 }
 
 async function tick(){
   try {
     const r = await fetch("map.json?_=" + Date.now());
     if (r.ok) render(await r.json());
+  } catch(e){}
+}
+
+// The report refreshes more often than the hourly analysis, so it tracks the
+// market the way the owner asked: fetch map.json and repaint the report only.
+async function reportTick(){
+  try {
+    const r = await fetch("map.json?_=" + Date.now());
+    if (r.ok) renderReport((await r.json()).report);
   } catch(e){}
 }
 
@@ -443,6 +512,7 @@ tick();
 chartTick();
 setInterval(tick, 3600000);
 setInterval(chartTick, 3600000);
+setInterval(reportTick, 300000);
 setInterval(priceTick, 5000);
 </script>
 </body>
