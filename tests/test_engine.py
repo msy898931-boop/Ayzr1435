@@ -1818,6 +1818,89 @@ class DivergenceTest(unittest.TestCase):
             self.assertIn("text", h)
 
 
+class AnalystEyeTest(_DbCase):
+    """The bot must carry the SAME eye the map does: the fragility tell, the
+    momentum divergence, and the better level-break entry -- each from ONE
+    producer (_fragility/_divergence_note/_entry_choice) the map also reads, so
+    the bot can no longer read the tape linearly while the map flags it."""
+
+    def _market(self, **kw):
+        base = {"q": {"marketState": "open", "stale": False}, "live": 4100.0,
+                "trends": {tf: -1 for tf in bot.FRAMES}, "rsis": {}, "atrs": {},
+                "gap": {}}
+        base.update(kw)
+        return base
+
+    def test_fragility_fires_only_when_price_rests_on_the_average(self):
+        # 6/6 down, price 0.03xATR from the average -> a hair-trigger.
+        m = self._market(gap={"15m": 0.03})
+        self.assertIsNotNone(bot._fragility(m))
+        self.assertIn("هشّ", bot._fragility_note(m) or "")
+        # A gap of half an ATR is a real trend, not a hair-trigger.
+        self.assertIsNone(bot._fragility(self._market(gap={"15m": 0.5})))
+
+    def test_fragility_says_the_side_and_count(self):
+        note = bot._fragility_note(self._market(gap={"15m": 0.1}))
+        self.assertIn("6/6", note or "")
+        self.assertIn("هابط", note or "")
+
+    def test_entry_choice_names_the_break_when_it_sizes_better(self):
+        # A market sell 6 points above a support sizes a thin R:R; the break of
+        # that support sizes wider -- the break must be named, with both R:Rs.
+        line = bot._entry_choice("short", 4100.0, [4120.0], [4094.0])
+        self.assertIsNotNone(line)
+        self.assertIn("كسر", line or "")
+        self.assertIn("R:R", line or "")
+
+    def test_entry_choice_is_silent_when_the_market_entry_is_not_worse(self):
+        # No support below -> nothing to break -> no advice invented.
+        self.assertIsNone(bot._entry_choice("short", 4100.0, [4120.0], []))
+
+    def test_the_cards_carry_the_fragility_when_it_fires(self):
+        # The recommendation and the action card must both say the tape is
+        # fragile on the same market -- the disagreement the owner caught.
+        m = self._market(gap={"15m": 0.05},
+                         q={"marketState": "open", "stale": False,
+                            "bid": 4099.9, "ask": 4100.1, "spread": 0.2,
+                            "high": 4120.0, "low": 4088.0})
+        saved = bot.read_market
+        bot.read_market = lambda: m
+        try:
+            with FakeFeed(mid=4100.0, closes={tf: [4100 - i for i in range(30)]
+                                              for tf in bot.FRAMES}):
+                rec = bot.card_recommend()
+                act = bot.card_action()
+        finally:
+            bot.read_market = saved
+        self.assertIn("هشّ", rec)
+        self.assertIn("هشّ", act)
+
+    def test_divergence_note_reports_only_the_relevant_side(self):
+        # A bullish divergence (the fall tiring) is the tell for a SELL.
+        hits = [{"tf": "15m", "kind": "دايفرجنس إيجابي",
+                 "tone": "warn", "text": "دايفرجنس إيجابي (15m)"},
+                {"tf": "1h", "kind": "دايفرجنس سلبي",
+                 "tone": "warn", "text": "دايفرجنس سلبي (1h)"}]
+        saved = bot.divergence_read
+        bot.divergence_read = lambda: hits
+        try:
+            sell_note = bot._divergence_note("short")
+            buy_note = bot._divergence_note("long")
+        finally:
+            bot.divergence_read = saved
+        self.assertIn("إيجابي", sell_note or "")
+        self.assertNotIn("سلبي", sell_note or "")
+        self.assertIn("سلبي", buy_note or "")
+
+    def test_no_divergence_no_line(self):
+        saved = bot.divergence_read
+        bot.divergence_read = list
+        try:
+            self.assertIsNone(bot._divergence_note("short"))
+        finally:
+            bot.divergence_read = saved
+
+
 class DailyAnalysisTest(unittest.TestCase):
     """daily_analysis: the full numbered Arabic report, and it always ends with
     the honesty note the owner asked for."""

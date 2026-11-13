@@ -1169,6 +1169,24 @@ def card_analysis() -> str:
     # ---- levels with strength -------------------------------------------
     lines += _levels_with_strength(live)
 
+    # ---- the analyst's eye: the same tells the map shows, one producer -----
+    eye: list[str] = []
+    frag = _fragility_note(m)
+    if frag:
+        eye.append(frag)
+    _side = ("short" if _tdir == -1 else ("long" if _tdir == 1 else None))
+    div = _divergence_note(_side)
+    if div:
+        eye.append(div)
+    if _side:
+        ec = _entry_choice(_side, live, *_levels(live))
+        if ec:
+            eye.append(ec)
+    if eye:
+        lines.append("")
+        lines.append("<b>👁 عين المحلل:</b>")
+        lines += eye
+
     # ---- verdict: the desk's own conclusion -----------------------------
     lines.append("")
     lines.append("<b>حكمي:</b>")
@@ -1297,6 +1315,19 @@ def card_scenarios() -> str:
     if nl:
         lines.append("")
         lines.append(nl)
+    # The same eye the map carries: the hair-trigger tell and the momentum
+    # divergence, so the bot does not read the tape linearly when the map flags
+    # it as fragile. Facts from one engine, never a change to the scenarios.
+    eye: list[str] = []
+    frag = _fragility_note(m)
+    if frag:
+        eye.append(frag)
+    div = _divergence_note(lean_dir)
+    if div:
+        eye.append(div)
+    if eye:
+        lines.append("")
+        lines += eye
     return "\n".join(lines)
 
 
@@ -1590,6 +1621,16 @@ def _report_lines(p: dict) -> list[str]:
         for lv in p["levels"][:8]:
             arrow = "🔺" if lv["kind"] == "مقاومة" else "🔻"
             L.append(f"{arrow} {num(lv['price'])} <i>({lv['dist']:+.0f})</i>")
+
+    if p.get("fragility"):
+        L.append("")
+        L.append(p["fragility"])
+
+    if p.get("divergence"):
+        L.append("")
+        L.append("<b>👁 الدايفرجنس:</b>")
+        for h in p["divergence"]:
+            L.append(f"  {esc(h['text'])}")
 
     s = p["sessions"]
     sline = []
@@ -2077,35 +2118,23 @@ def map_insights(m: dict, live: float, res: list[float], sup: list[float],
     """
     out: list[dict] = []
     trends = m.get("trends") or {}
-    rsis = m.get("rsis") or {}
     up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
-    r15 = rsis.get("15m")
 
-    # --- momentum divergence on 15m: RSI turning up while price makes a new low
+    # --- momentum divergence: RSI turning while price makes a new extreme ----
     with suppress(Exception):
-        b15 = closed(bars("15m", 300), "15m")
-        if len(b15) > 40:
-            cl = [x["close"] for x in b15]
-            r_now = rsis.get("15m")
-            r_prev = rsi(cl[:-8], 14)
-            lo_now = min(cl[-8:])
-            lo_prev = min(cl[-16:-8])
-            if (r_now is not None and r_prev is not None
-                    and lo_now < lo_prev and r_now > r_prev + 2):
-                out.append({"kind": "دايفرجنس", "tone": "warn",
-                            "text": (f"دايفرجنس إيجابي على 15د: السعر عمل قاع أدنى "
-                                     f"({num(lo_now)}) بس RSI طلع ({r_prev:.0f}→{r_now:.0f}). "
-                                     "أول إشارة إن الهبوط عم يتعب — راقب ارتداد.")})
+        for h in divergence_read():
+            out.append({"kind": "دايفرجنس", "tone": "warn",
+                        "text": h["text"] + " — أول إشارة إن الحركة عم تتعب."})
 
     # --- price resting on an average: the 6/6 tilt is a hair-trigger
     with suppress(Exception):
-        g = (m.get("gap") or {}).get("15m")
-        if isinstance(g, (int, float)) and g < 0.25 and (up >= 5 or dn >= 5):
-            side = "هابط" if dn >= 5 else "صاعد"
+        f = _fragility(m)
+        if f:
+            side = f[0]
             out.append({"kind": "حساس", "tone": "info",
-                        "text": (f"الاتجاه {side} 6/6 بس السعر ملزوق على المتوسط "
-                                 f"(على بعد {g:.2f}×ATR). يعني الاتجاه هشّ — شوية نقاط "
+                        "text": (f"الاتجاه {side} {f[1]}/6 بس السعر ملزوق على المتوسط "
+                                 f"(على بعد {f[2]:.2f}×ATR). يعني الاتجاه هشّ — شوية نقاط "
                                  "بتقلبو. لا تعاند المستوى هون.")})
 
     # --- the day's range position: at the extreme, late entries are worst
@@ -2470,6 +2499,7 @@ def report_payload(m: dict | None = None,
         "fib": fib_levels(live) if live > 0 else {},
         "fib_line": fib_read(live) if live > 0 else "",
         "divergence": divergence_read() if live > 0 else [],
+        "fragility": _fragility_note(m) if live > 0 else None,
         "sessions": sessions,
         "days": days,
         "bullets": bullets,
@@ -3018,6 +3048,86 @@ def _news_context(side: str | None) -> str | None:
     return "📰 <i>" + " ".join(parts) + " (معلومة فقط — مو إشارة)</i>"
 
 
+def _fragility(m: dict) -> tuple[str, int, float] | None:
+    """The hair-trigger fact: (side_label, agreeing_frames, gap_in_ATR) when a
+    5/6-6/6 tilt has price resting ON the 15m averages, else None.
+
+    ONE producer for this tell -- the bot's cards AND the map's insights both
+    format from here, so the two can never describe the same tape differently.
+    It is a FACT (price is g x ATR from the average), not a forecast.
+    """
+    g = (m.get("gap") or {}).get("15m")
+    trends = m.get("trends") or {}
+    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
+    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
+    if isinstance(g, (int, float)) and g < 0.25 and (up >= 5 or dn >= 5):
+        return ("هابط", dn, g) if dn >= 5 else ("صاعد", up, g)
+    return None
+
+
+def _fragility_note(m: dict) -> str | None:
+    """The hair-trigger warning as a card line -- the owner caught the bot
+    calling the tape "هابط" with no word that the tilt was this thin."""
+    f = _fragility(m)
+    if not f:
+        return None
+    side, n, g = f
+    return (f"⚠️ <b>الاتجاه هشّ</b> — {side} {n}/6 بس السعر ملزوق على "
+            f"المتوسط (على بعد {g:.2f}×ATR). شوية نقاط بتقلبو، "
+            "فلا تعاند المستوى هون.")
+
+
+def _divergence_note(side: str | None) -> str | None:
+    """The divergence tell, in one owner-facing line -- the map's own
+    divergence_read(), the SAME producer, so the bot and the map can never say
+    different things about momentum. Reports only the tells that matter for THIS
+    side: a bullish divergence for a sell (the fall is tiring), a bearish one for
+    a buy. A fact about the last two swings, never a prediction.
+    """
+    try:
+        hits = divergence_read()
+    except Exception:  # noqa: BLE001 - a broken frame must not kill the card
+        return None
+    if not hits:
+        return None
+    want = "دايفرجنس إيجابي" if side == "short" else (
+        "دايفرجنس سلبي" if side == "long" else None)
+    pick = [h for h in hits if h.get("kind") == want] if want else hits
+    if not pick:
+        return None
+    return "👁 " + " · ".join(h["text"] for h in pick[:2])
+
+
+def _entry_choice(side: str, live: float,
+                  res: list[float], sup: list[float]) -> str | None:
+    """When a break entry beats the market entry, say so with both R:Rs.
+
+    The owner caught the desk showing a market sell (R:R 1.67) when the level
+    break -- sell the support break -- sized R:R 2.2, the better trade. This
+    compares the two with the SAME _sized() the desk trades on and, only when
+    the break is strictly better, names it. No advice is invented: the numbers
+    come from one engine.
+    """
+    try:
+        if side == "short" and sup:
+            brk = _sized(sup[0] - 0.5, "short", sup[0])
+            mkt = _sized(live, "short", min(res) if res else None)
+            if brk["rr"] > mkt["rr"] + 0.05:
+                return (f"🎯 <b>الأفضل: بِع كسر {num(sup[0])}</b> · "
+                        f"R:R {brk['rr']:.2f} — بدل الدخول الفوري بالسعر "
+                        f"(R:R {mkt['rr']:.2f}).")
+        elif side == "long" and res:
+            brk = _sized(res[0] + 0.5, "long", res[0])
+            mkt = _sized(live, "long", max(sup) if sup else None)
+            if brk["rr"] > mkt["rr"] + 0.05:
+                return (f"🎯 <b>الأفضل: اشتري اختراق {num(res[0])}</b> · "
+                        f"R:R {brk['rr']:.2f} — بدل الدخول الفوري بالسعر "
+                        f"(R:R {mkt['rr']:.2f}).")
+    except Exception:  # noqa: BLE001 - a missing level must not kill the card
+        return None
+    return None
+
+
 def card_recommend() -> str:
     """The recommendation -- ONE answer, the same one the 'شو تعمل' card gives.
 
@@ -3040,39 +3150,56 @@ def card_recommend() -> str:
                  abs(float(t["entry"]) - float(t["stop"]))
                  if abs(float(t["entry"]) - float(t["stop"])) else 0)
         dir_txt = "شراء 🟢" if d == 1 else "بيع 🔴"
+        frag = _fragility_note(m)
+        ftail = f"\n{frag}" if frag else ""
         return ("🎯 <b>التوصية</b> — XAUUSD\n"
                 f"📂 <b>عندك صفقة مفتوحة #{t['id']}</b> ({dir_txt}) — "
                 "خلّيها تشتغل.\n"
                 f"دخل {num(t['entry'])} · وقف {num(t['stop'])} · "
                 f"هدف {num(t['target'])}\n"
                 f"حالياً <b>{r_now:+.2f}R</b> · السعر {num(live)}\n\n"
-                "<i>ما بفتح جديدة بنفس الاتجاه — صفقة وحدة بالمخاطرة.</i>")
+                "<i>ما بفتح جديدة بنفس الاتجاه — صفقة وحدة بالمخاطرة.</i>"
+                + ftail)
     if v["state"] == "enter":
         p = v["plan"]
         note = _late_note("sell" if p["direction"] == "short" else "buy",
                           m["rsis"].get("15m"))
         tail = f"\n⚠️ {note}" if note else ""
         side = "short" if p["direction"] == "short" else "long"
+        # The same eye the map carries: the fragility tell, the momentum
+        # divergence, and -- when a level break sizes a better R:R than the
+        # market entry -- the better trade named with both R:Rs. All facts, all
+        # from one engine; the plan itself is untouched.
+        live = m["live"]
+        res, sup = _levels(live)
+        extra: list[str] = []
+        for line in (_fragility_note(m), _divergence_note(side),
+                     _entry_choice(side, live, res, sup)):
+            if line:
+                extra.append(line)
+        etail = ("\n" + "\n".join(extra)) if extra else ""
         nl = _news_context(side)
         ntail = f"\n{nl}" if nl else ""
         return ("🎯 <b>التوصية</b> — " + SYMBOL + "\n" +
-                "\n".join(_plan_lines(p)) + tail + ntail + "\n\n"
+                "\n".join(_plan_lines(p)) + tail + etail + ntail + "\n\n"
                 "<i>التزام بالمخاطرة — كل صفقة على حسابك.</i>")
     # wait: the same conditions the action card states, so the two agree.
     up, dn = v["up"], v["dn"]
     lean, mark = v["lean"], v["mark"]
+    frag = _fragility_note(m)
+    ftail = f"\n{frag}" if frag else ""
     if v.get("wall"):
         want = "بيع" if v.get("direction") == "short" else "شراء"
         return ("🎯 <b>التوصية</b> — XAUUSD\n"
                 f"<b>لا صفقة بعد</b> — لسا ما لمس الجدار "
                 f"<b>{num(v['wall'])}</b>.\n"
-                f"<i>استنى يلمسه ويغلق 1س {want}، وبعدها ادخل.</i>")
+                f"<i>استنى يلمسه ويغلق 1س {want}، وبعدها ادخل.</i>" + ftail)
     if up >= CONFIRM_FRAMES or dn >= CONFIRM_FRAMES:
         way = "صاعد" if up >= CONFIRM_FRAMES else "هابط"
         return ("🎯 <b>التوصية</b> — XAUUSD\n"
                 f"<b>لا صفقة</b> — الاتجاه {way} بس السعر لسا ما وصل "
                 "لزناد الدخول.\n\n"
-                "<i>ما بدخل عالملاحقة — استنى يرتد للجدار.</i>")
+                "<i>ما بدخل عالملاحقة — استنى يرتد للجدار.</i>" + ftail)
     return ("🎯 <b>التوصية</b> — XAUUSD\n"
             f"<b>لا صفقة</b> — الفريمات ما اتفقت "
             f"({CONFIRM_FRAMES}/6 مطلوبة).\n"
@@ -3661,20 +3788,30 @@ def card_action() -> str:
                  abs(float(t["entry"]) - float(t["stop"]))
                  if abs(float(t["entry"]) - float(t["stop"])) else 0)
         dir_txt = "شراء 🟢" if d == 1 else "بيع 🔴"
+        frag = _fragility_note(m)
+        ftail = f"\n\n{frag}" if frag else ""
         return (head + f"📂 عندك صفقة مفتوحة #{t['id']} ({dir_txt}).\n"
                 f"دخل {num(t['entry'])} · وقف {num(t['stop'])} · "
                 f"هدف {num(t['target'])}\n"
                 f"حالياً <b>{r_now:+.2f}R</b> · السعر {num(live)}\n\n"
                 "<b>شو تعمل:</b> خلّيها — الوقف والهدف بيشتغلوا لحالهم.\n"
-                "<i>لا تزيد على نفس الاتجاه إلا لما تسكّرها.</i>")
+                "<i>لا تزيد على نفس الاتجاه إلا لما تسكّرها.</i>" + ftail)
 
     if v["state"] == "enter":
         p = v["plan"]
-        note = _late_note("sell" if p["direction"] == "short" else "buy",
+        side = "short" if p["direction"] == "short" else "long"
+        note = _late_note("sell" if side == "short" else "buy",
                           m["rsis"].get("15m"))
         tail = f"\n⚠️ {note}" if note else ""
+        res, sup = _levels(live)
+        extra: list[str] = []
+        for line in (_fragility_note(m), _divergence_note(side),
+                     _entry_choice(side, live, res, sup)):
+            if line:
+                extra.append(line)
+        etail = ("\n" + "\n".join(extra)) if extra else ""
         return (head + "🟢 <b>ادخل صفقة الآن</b> — الشروط مكتملة:\n" +
-                "\n".join(_plan_lines(p)) + tail + "\n\n"
+                "\n".join(_plan_lines(p)) + tail + etail + "\n\n"
                 "<i>سجّلها بالبوت أو بمنصتك — الوقف إلزامي.</i>")
 
     # wait: say why, and the single condition that flips it.
@@ -3693,10 +3830,12 @@ def card_action() -> str:
     else:
         why = f"الفريمات ما اتفقت ({v['up']}ص · {v['dn']}هـ) — السوق محتار."
         todo = "⏸️ <b>استنى</b> يتفق 4 من 6 فريمات على اتجاه."
+    _frag = _fragility_note(m)
     return (head + "⏸️ <b>لا تدخل الآن.</b>\n"
             f"<i>{why}</i>\n\n"
             f"<b>شو تعمل:</b> {todo}\n"
-            "<i>الواقف بأمان أحسن من الداخل غلط.</i>")
+            "<i>الواقف بأمان أحسن من الداخل غلط.</i>"
+            + (f"\n\n{_frag}" if _frag else ""))
 
 
 def _fib_retr(hi: float, lo: float, up: bool) -> list[tuple[str, float]]:
@@ -4102,6 +4241,9 @@ def card_full() -> str:
         L.append(f"  → <b>صاعد</b> ({up}/6)")
     else:
         L.append("  → <b>عرضي</b> (بلا اتجاه)")
+    _frag = _fragility_note(m)
+    if _frag:
+        L.append(f"  {_frag}")
 
     r15 = rsis.get("15m")
     r1h = rsis.get("1h")
@@ -4120,6 +4262,9 @@ def card_full() -> str:
             mom = "محايد"
         r1 = f" · 1س {r1h:.0f}" if isinstance(r1h, (int, float)) else ""
         L.append(f"\n<b>⚡ الزخم:</b> 15د {r15:.0f}{r1} — <b>{mom}</b>")
+    _div = _divergence_note(trend_side)
+    if _div:
+        L.append(f"  {_div}")
 
     if st:
         L.append(f"\n<b>🧱 البنية:</b> {st}")
