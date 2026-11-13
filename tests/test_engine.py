@@ -2193,11 +2193,15 @@ class ChatSplitTest(unittest.TestCase):
 
 class PullbackEntryTest(unittest.TestCase):
     """The owner asked to enter the way he reads the tape: sell the BOUNCE, not
-    the middle of the range. Measured on 2026 (backtest/entry_timing.py) this
-    lifts R/trade from +0.118 to +0.243 and holds in both halves of the year.
+    the middle of the range. The evidence is MIXED, so the switch stays OFF.
 
-    The default is "immediate" -- the switch changes NOTHING until turned on --
-    and the pending order survives a restart via PENDING_PATH."""
+    Over the full 2026 year (backtest/entry_timing.py) the pullback lifts
+    R/trade from +0.118 to +0.243; but on the owner's REAL 38-trade week
+    (backtest/week_compare.py) the immediate entry won by 13.5R, because that
+    week trended hard and the limit missed 9 winners. It wins 7 of 11 months
+    (the RANGE ones). These tests pin the MECHANICS, not a claim of edge: the
+    default is "immediate" (no change), and the pending order survives a
+    restart via PENDING_PATH."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

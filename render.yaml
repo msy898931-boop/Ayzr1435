@@ -69,10 +69,12 @@ services:
       # signal fires (the desk's historical behaviour; the switch changes
       # nothing until you set it). "pullback" = park a LIMIT 0.5*ATR(15m) back
       # from the signal price and wait up to 12 bars for the retrace, the way a
-      # human sells the BOUNCE rather than the middle of the range. Measured on
-      # the same 2026 bars (backtest/entry_timing.py): R/trade +0.118 -> +0.243,
-      # max drawdown -19R -> -13R, and the gain holds in BOTH halves of the
-      # year. Uncomment to turn it on.
+      # human sells the BOUNCE rather than the middle of the range.
+      # EVIDENCE IS MIXED, so leave this OFF unless you mean it: over the full
+      # 2026 year the pullback wins (R/trade +0.118 -> +0.243), but on your REAL
+      # 38-trade week the immediate entry won by 13.5R -- that week trended hard
+      # and the limit missed 9 winners. The pullback wins 7 of 11 months (the
+      # RANGE ones) and loses the strong-trend ones: it is a RANGE tool.
       # - key: DESK_ENTRY_MODE
       #   value: "pullback"
       # - key: DESK_PULLBACK_ATR

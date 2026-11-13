@@ -189,12 +189,16 @@ if "both" in NOCHASE_SIDES or not NOCHASE_SIDES:
 # back from the signal price -- a short sells HIGHER, a long buys LOWER -- and
 # waits PULLBACK_WINDOW bars for the retrace, cancelling if it never comes.
 # The owner asked to enter the way he reads the tape (sell the bounce, not the
-# middle of the range). Measured on the same 2026 bars, same signal, same gates,
-# same stop distance (backtest/entry_timing.py): the pullback lifts R/trade from
-# +0.118 to +0.243 and cuts the max drawdown from -19R to -13R, and the gain
-# holds in BOTH halves of the year. Entering on a BREAK of the prior swing, the
-# other idea, is the worst of all (-0.14 R/trade) -- it buys after the move.
-# Default "immediate" so the switch changes NOTHING until it is turned on.
+# middle of the range). The evidence is MIXED and the switch stays OFF:
+#   * over the full 2026 year (backtest/entry_timing.py, 796 trades) the pullback
+#     lifts R/trade from +0.118 to +0.243 and the gain holds in both halves;
+#   * but on the owner's REAL week of 38 trades (backtest/week_compare.py) the
+#     immediate entry wins by 13.5R (+12.40R vs -1.13R) -- that week was a
+#     strong downtrend, where price never retraced and the limit simply missed
+#     9 winners worth +16.5R.
+# Month by month the pullback wins 7 of 11 months -- the RANGE ones -- and loses
+# the strong-trend ones. It is a RANGE tool, not a universal upgrade, so the
+# default is "immediate" and nothing changes until the owner turns it on.
 ENTRY_MODE = os.environ.get("DESK_ENTRY_MODE", "immediate").strip().lower()
 PULLBACK_ATR = float(os.environ.get("DESK_PULLBACK_ATR", "0.5") or "0.5")
 PULLBACK_WINDOW = int(os.environ.get("DESK_PULLBACK_WINDOW", "12") or "12")

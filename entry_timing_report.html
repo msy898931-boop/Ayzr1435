@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>طريقة الدخول — مقيسة</title>
+<style>
+  :root{--bg:#0b1220;--card:#131c2e;--card2:#18233a;--line:#26344f;
+    --ink:#e8eef9;--dim:#93a3bd;--gold:#e6b450;--sell:#ff6b6b;--buy:#3ddc97;
+    --warn:#f5a524;--info:#5aa9ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI",Tahoma,system-ui,sans-serif;line-height:1.7;
+    padding:18px;max-width:1000px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 6px}
+  h2{font-size:18px;margin:28px 0 10px;border-right:4px solid var(--gold);
+    padding-right:10px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:16px}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:right}
+  th{background:var(--card2);color:var(--gold)}
+  td.num{font-variant-numeric:tabular-nums;direction:ltr;text-align:left}
+  .win{color:var(--buy);font-weight:700}
+  .lose{color:var(--sell);font-weight:700}
+  .row-hl{background:rgba(61,220,151,.09)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:16px;margin:14px 0}
+  .honest{background:rgba(245,165,36,.08);border:1px solid rgba(245,165,36,.35);
+    border-radius:10px;padding:14px;margin:16px 0}
+  .honest h2{color:var(--warn);border:none;padding:0;margin:0 0 8px;font-size:16px}
+  code{background:var(--card2);padding:2px 7px;border-radius:6px;
+    direction:ltr;display:inline-block;font-size:13px}
+  ul{margin:8px 0;padding-inline-start:20px}
+  .big{font-size:17px}
+  .foot{color:var(--dim);font-size:12px;margin-top:24px;border-top:1px solid
+    var(--line);padding-top:12px}
+</style>
+</head>
+<body>
+
+<h1>🎯 طريقة الدخول — قِستُها قبل ما أطبّقها</h1>
+<div class="sub">سؤالك: «خلّيه يدخل متلي». الجواب: اختبرت الفكرة على سنة كاملة — وهذا اللي طلع.</div>
+
+<h2>1) الاختبار — نفس الشي، يفرق بس وقت الدخول</h2>
+<p>أخذت <b>نفس الإشارة</b>، ونفس البوابات، ونفس مسافة الوقف. غيّرت شي واحد فقط:
+<b>متى ندخل</b>. البيانات: سنة 2026 كاملة (421,920 دقيقة ذهب).</p>
+<table>
+  <tr><th>طريقة الدخول</th><th>صفقات</th><th>نسبة الفوز</th><th>الصافي</th>
+      <th>ربح/صفقة</th><th>أقصى تراجع</th></tr>
+  <tr><td>فوري (الحالي — بالسوق مباشرة)</td><td class="num">796</td><td class="num">34.9%</td>
+      <td class="num">+93.6R</td><td class="num">+0.118R</td><td class="num">-19.2R</td></tr>
+  <tr class="row-hl"><td><b>ارتداد 0.5×ATR ⭐</b></td><td class="num">628</td>
+      <td class="num">38.9%</td><td class="num win">+152.8R</td>
+      <td class="num win">+0.243R</td><td class="num win">-13.4R</td></tr>
+  <tr><td>ارتداد 0.75×ATR</td><td class="num">554</td><td class="num">39.2%</td>
+      <td class="num">+140.4R</td><td class="num">+0.253R</td><td class="num">-14.6R</td></tr>
+  <tr><td>كسر القمة/القاع (فكرة معاكسة)</td><td class="num">592</td><td class="num">26.9%</td>
+      <td class="num lose">-83.2R</td><td class="num lose">-0.141R</td><td class="num lose">-97.8R</td></tr>
+</table>
+
+<h2>2) هل هي حظ؟ — قسمتُ السنة نصفين</h2>
+<table>
+  <tr><th></th><th>فوري</th><th>ارتداد 0.5×ATR</th></tr>
+  <tr><td>النصف الأول من السنة</td><td class="num">+49.4R</td><td class="num win">+73.0R</td></tr>
+  <tr><td>النصف الثاني من السنة</td><td class="num">+44.2R</td><td class="num win">+79.8R</td></tr>
+</table>
+<p>✅ الفرق <b>ثابت بالنصفين</b> — مو ربع حظ. ولو كانت حظ، كان طلع بنص واحد بس.</p>
+
+<h2>3) شو صار بالضبط؟ — ما زاد الأرباح، قصّ الخسائر</h2>
+<table>
+  <tr><th></th><th>فوز</th><th>خسارة</th></tr>
+  <tr><td>فوري</td><td class="num">278</td><td class="num lose">518</td></tr>
+  <tr class="row-hl"><td>ارتداد 0.5×ATR</td><td class="num">244</td><td class="num win">384</td></tr>
+</table>
+<p>الارتداد <b>ما ضاف صفقات رابحة</b> — بس <b>منع 134 خسارة</b>. لأنه ما بيدخل إلا لما يرجع
+السعر، فما بينضرب بالوقف فوراً. <b>هاد هو منطق فكرتك بالضبط.</b></p>
+
+<h2>4) النقطة المهمة — الفكرة المعاكسة كارثية</h2>
+<p>«اشتري الكسر» (تدخل لما يكسر القمة) طلع <b>أسوأ طريقة</b>: <b>-83R</b>، تراجع <b>-98R</b>.
+لأنه بيدخل <b>بعد</b> الحركة = مطاردة. يعني الاتجاهين مو متساويين — واحد ممتاز وواحد كارثي.</p>
+
+<div class="card">
+<h2 style="border:none;padding:0;margin:0 0 8px">⚙️ كيف تفعّلها (اختيارية، افتراضياً مطفيّة)</h2>
+<p>بنيت الميزة <b>مطفيّة افتراضياً</b> — يعني لو عملت Deploy هلّق، <b>ما بيتغير شي</b>.
+لتفعّلها، أضف في Render → Environment:</p>
+<p><code>DESK_ENTRY_MODE = pullback</code></p>
+<p>واختياري (القيم الافتراضية موصى بها):</p>
+<p><code>DESK_PULLBACK_ATR = 0.5</code> &nbsp; <code>DESK_PULLBACK_WINDOW = 12</code></p>
+<p>منطقها: لما تظهر إشارة، البوت <b>ما بيدخل بالسوق</b> — بيحط <b>أمر معلّق</b> عند
+سعر أفضل (بيع فوق السعر / شراء تحته) وبينتظر السعر يرجع. إذا رجع → بيدخل عند سعر أحسن.
+إذا ما رجع خلال 12 شمعة (ساعة) → بيلغي الأمر. وبيقول لك كل شي بالتلغرام.</p>
+</div>
+
+<div class="honest">
+<h2>⚠️ أمانة</h2>
+<ul>
+  <li>هاي <b>أرقام دراسة (backtest)</b>، مو نتائج حيّة. السنة الجاية ممكن تكون مختلفة.</li>
+  <li>الارتداد <b>بيدخل صفقات أقل</b> (628 بدل 796) — وهاد مقصود، مو عيب.</li>
+  <li>النتيجة على <b>سنة 2026</b>؛ ما ضمنت إنها تثبت لكل سوق.</li>
+  <li>«متوسط +0.243R» رقم إحصائي، <b>مو وعد</b> — كل صفقة ممكن توقف.</li>
+  <li>الافتراضي <b>immediate</b>: الفلاغ لحاله ما يغيّر شي، وأنت تقرّر تشغّله.</li>
+</ul>
+</div>
+
+<div class="foot">
+المصدر: <code>backtest/entry_timing.py</code> · بيانات duka 2026 · commit d97fec1 ·
+أُنتج آلياً · التقييم بالـR لا بالنقاط.
+</div>
+
+</body>
+</html>

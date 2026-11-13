@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>اختبار الأسبوع — البوت مقابل الارتداد</title>
+<style>
+  :root{--bg:#0b1220;--card:#131c2e;--card2:#18233a;--line:#26344f;
+    --ink:#e8eef9;--dim:#93a3bd;--gold:#e6b450;--sell:#ff6b6b;--buy:#3ddc97;
+    --warn:#f5a524;--info:#5aa9ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI",Tahoma,system-ui,sans-serif;line-height:1.75;
+    padding:18px;max-width:1020px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 6px}
+  h2{font-size:19px;margin:30px 0 10px;border-right:4px solid var(--gold);
+    padding-right:10px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:16px}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:right}
+  th{background:var(--card2);color:var(--gold)}
+  td.num{font-variant-numeric:tabular-nums;direction:ltr;text-align:left}
+  .win{color:var(--buy);font-weight:700}
+  .lose{color:var(--sell);font-weight:700}
+  .row-hl{background:rgba(61,220,151,.09)}
+  .row-bad{background:rgba(255,107,107,.10)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:16px;margin:14px 0}
+  .honest{background:rgba(245,165,36,.08);border:1px solid rgba(245,165,36,.35);
+    border-radius:10px;padding:14px;margin:16px 0}
+  .honest h2{color:var(--warn);border:none;padding:0;margin:0 0 8px;font-size:17px}
+  .verdict{background:rgba(90,169,255,.08);border:1px solid rgba(90,169,255,.4);
+    border-radius:12px;padding:18px;margin:18px 0}
+  .verdict h2{color:var(--info);border:none;padding:0;margin:0 0 10px}
+  code{background:var(--card2);padding:2px 7px;border-radius:6px;
+    direction:ltr;display:inline-block;font-size:13px}
+  ul{margin:8px 0;padding-inline-start:20px}
+  .big{font-size:18px;font-weight:700}
+  .foot{color:var(--dim);font-size:12px;margin-top:26px;border-top:1px solid
+    var(--line);padding-top:12px}
+  .badge{display:inline-block;background:var(--card2);border:1px solid var(--line);
+    border-radius:20px;padding:2px 10px;font-size:12px;color:var(--dim)}
+</style>
+</head>
+<body>
+
+<h1>🧪 اختبار صفقاتك الحقيقية — البوت مقابل الارتداد</h1>
+<div class="sub">الأسبوع الحقيقي (38 صفقة) مقابل دراسة السنة الكاملة — مين أقوى، وبأمانة.</div>
+
+<div class="card">
+<b>كيف اختبرت (بدون تلفيق):</b>
+<ul>
+  <li>سحبت <b>سجلك الحقيقي</b> (39 صفقة) من النسخة المثبّتة على تلغرام — كل صفقة مع وقتها ووقفها وهدفها.</li>
+  <li>أعدت تشغيل <b>كل صفقة</b> على الشموع الحقيقية (5 دقائق) من Dukascopy + biquote.</li>
+  <li>لكل إشارة: قِست <b>البوت الحالي (فوري)</b> و<b>نمط الارتداد</b> — نفس مسافة الوقف والهدف، الفرق الوحيد <b>وقت الدخول</b>.</li>
+  <li><b>فحص الأمانة:</b> إعادة تشغيلي طابقت سجلك <b>34/34</b> صفقة (الباقي إغلاق يدوي — قرارك). يعني المحرّك سليم.</li>
+</ul>
+</div>
+
+<h2>1) النتيجة على أسبوعك الحقيقي</h2>
+<table>
+  <tr><th>النمط</th><th>صفقات دخلت</th><th>فوز/خسارة</th><th>نسبة الفوز</th>
+      <th>الصافي</th><th>ربح/صفقة</th></tr>
+  <tr class="row-hl"><td><b>البوت الحالي (فوري)</b></td><td class="num">38/38</td>
+      <td class="num">18 / 20</td><td class="num">47.4%</td>
+      <td class="num win">+12.40R</td><td class="num win">+0.326R</td></tr>
+  <tr class="row-bad"><td>الارتداد 0.5×ATR</td><td class="num">26/38</td>
+      <td class="num">9 / 17</td><td class="num">34.6%</td>
+      <td class="num lose">−1.13R</td><td class="num lose">−0.030R</td></tr>
+</table>
+<p class="big">🔴 على أسبوعك: البوت الحالي أقوى بفرق <b>13.5R</b>.</p>
+
+<h2>2) لكن على سنة 2026 كاملة — العكس تماماً</h2>
+<table>
+  <tr><th>النمط</th><th>السنة (796 صفقة)</th><th>أسبوعك (38 صفقة)</th></tr>
+  <tr class="row-hl"><td><b>فوري (الحالي)</b></td><td class="num">+93.6R</td>
+      <td class="num win">+12.40R ✅</td></tr>
+  <tr><td>ارتداد 0.25×ATR</td><td class="num">+125.6R</td><td class="num">+2.73R</td></tr>
+  <tr><td>ارتداد 0.33×ATR</td><td class="num">+133.0R</td><td class="num">+3.73R</td></tr>
+  <tr><td>ارتداد 0.50×ATR</td><td class="num win">+152.8R</td><td class="num lose">−1.13R</td></tr>
+  <tr><td>ارتداد 0.75×ATR</td><td class="num">+140.4R</td><td class="num">+3.53R</td></tr>
+</table>
+<p>السنة: <b>كل</b> نمط ارتداد يتغلّب على الفوري. الأسبوع: <b>الفوري يتغلّب على كلهم</b>.</p>
+
+<h2>3) ليش التناقض؟ — النمط يعتمد على السوق</h2>
+<div class="card">
+<p>أسبوعك كان <b>ترند قوي جداً</b> (الذهب هبط ~250$ من 4,150 لـ3,890). بالترند القوي
+السعر <b>ما يرجع</b> — فنمط الارتداد <b>يفوته الدخول</b>:</p>
+<ul>
+  <li>فات <b>9 صفقات رابحة</b> قيمتها <b>+16.53R</b> (ركضت للهدف بلا ارتداد).</li>
+  <li>نجا من <b>3 صفقات خاسرة</b> فقط قيمتها <b>−3.00R</b>.</li>
+  <li>المحصلة: تفويت الأرباح (16.5) أكبر من تفادي الخسائر (3) → خسر.</li>
+</ul>
+<p>بس بالسوق <b>العرضي/المتذبذب</b> السعر يرتد كثير، فالارتداد يدخل بسعر أحسن ويقلّل الخسائر → يفوز.</p>
+</div>
+
+<h2>4) شهر بشهر — واضح إنه رهان على نظام السوق</h2>
+<table>
+  <tr><th>الشهر</th><th>فوري</th><th>ارتداد</th><th>الفائز</th><th>نظام السوق</th></tr>
+  <tr><td>كانون الثاني</td><td class="num">+11.6</td><td class="num">+6.4</td>
+      <td>🔴 فوري</td><td>ترند</td></tr>
+  <tr><td>شباط</td><td class="num">+1.4</td><td class="num">+6.8</td>
+      <td class="win">✅ ارتداد</td><td>عرضي</td></tr>
+  <tr><td>آذار</td><td class="num">+6.8</td><td class="num">+18.0</td>
+      <td class="win">✅ ارتداد</td><td>عرضي</td></tr>
+  <tr><td>نيسان</td><td class="num">+0.0</td><td class="num">+15.6</td>
+      <td class="win">✅ ارتداد</td><td>عرضي</td></tr>
+  <tr><td>أيار</td><td class="num">+29.6</td><td class="num">+26.2</td>
+      <td>🔴 فوري</td><td>ترند</td></tr>
+  <tr><td>حزيران</td><td class="num">+12.6</td><td class="num">+21.2</td>
+      <td class="win">✅ ارتداد</td><td>عرضي</td></tr>
+  <tr><td>تموز</td><td class="num">+13.4</td><td class="num">+16.0</td>
+      <td class="win">✅ ارتداد</td><td>عرضي</td></tr>
+  <tr><td>آب</td><td class="num">+8.2</td><td class="num">+21.4</td>
+      <td class="win">✅ ارتداد</td><td>عرضي</td></tr>
+  <tr><td>أيلول</td><td class="num">+18.8</td><td class="num">+15.8</td>
+      <td>🔴 فوري</td><td>ترند</td></tr>
+  <tr><td>تشرين الأول</td><td class="num">−7.2</td><td class="num">+8.0</td>
+      <td class="win">✅ ارتداد</td><td>عرضي</td></tr>
+  <tr class="row-bad"><td>تشرين الثاني (أسبوعك)</td><td class="num">−1.6</td>
+      <td class="num">−2.6</td><td>🔴 فوري</td><td>ترند قوي</td></tr>
+</table>
+<p>الارتداد فاز بـ<b>7 من 11 شهر</b> — الأشهر العرضية. وخسر بأسواق الترند القوي. <b>وأسبوعك من أشهر الترند.</b></p>
+
+<div class="verdict">
+<h2>🎯 الحكم — بأمانة كاملة</h2>
+<p class="big">الارتداد <b>مو أفضل دائماً</b>. هو <b>أداة لسوق عرضي</b>، مو ترقية شاملة.</p>
+<ul>
+  <li><b>على سنة كاملة (عينة كبيرة):</b> الارتداد أقوى.</li>
+  <li><b>على أسبوعك (عينة صغيرة، 5% من السنة):</b> الفوري أقوى بفارق كبير.</li>
+  <li>الدليل <b>متناقض</b> — يعني <b>ما في دليل كافي</b> لتغيير البوت الحالي.</li>
+</ul>
+<p><b>توصيتي: خلّي البوت الحالي (فوري) كما هو — ما نغيّر شي.</b> نمط الارتداد
+يضل موجود كـ<b>خيار مطفأ</b>، تستخدمه لو قررت إنه السوق صار عرضي.</p>
+</div>
+
+<div class="honest">
+<h2>⚠️ تصحيح لكلامي السابق</h2>
+<p>بالتقرير اللي قبله قلت لك «الأرتداد يتغلّب وثابت بالنصفين، فعّله». <b>كان استنتاجي متسرّع</b> —
+اعتمدت على دراسة سنة وحدة وما شفت أسبوعك الحقيقي. لمّا اختبرت أسبوعك الفعلي،
+طلع <b>العكس</b>. الصح إني أقول لك: <b>الأدلة متناقضة، ما تغيّر شي.</b></p>
+<ul>
+  <li>عينة الأسبوع 38 صفقة = <b>5%</b> من حجم السنة — صغيرة، بس <b>حقيقية</b> (مو دراسة).</li>
+  <li>الفرق بالأسبوع (13.5R) معنوي إحصائياً <b>داخل الأسبوع</b>، بس ما يعمم على كل سوق.</li>
+  <li>ممكن الأسبوع الجاي يكون عرضي والارتداد يفوز. <b>الاثنين ممكن</b> — وهاد السبب إني ما بغيّر.</li>
+</ul>
+</div>
+
+<div class="foot">
+المصدر: <code>backtest/week_compare.py</code> (سجلك الحقيقي) + <code>backtest/entry_timing.py</code> (السنة) ·
+بيانات Dukascopy + biquote · إعادة التشغيل طابقت السجل 34/34 · التقييم بالـR لا بالنقاط ·
+أُنتج آلياً · <span class="badge">لا وعد ربح</span>
+</div>
+
+</body>
+</html>
