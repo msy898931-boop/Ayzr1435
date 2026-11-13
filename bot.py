@@ -828,6 +828,23 @@ def market_open(q: dict) -> bool:
 # ========================================================================
 # the reading cards
 # ========================================================================
+def _trend_dir(trends: dict) -> tuple[int | None, int]:
+    """The desk's bias as (direction, agreeing-frames).
+
+    direction is -1 down / +1 up / None when neither side reaches CONFIRM_FRAMES;
+    the count is that side's tally. ONE place computes it, so every surface that
+    prints the structure line passes the SAME bias -- a card cannot say
+    "structure up" while its own trend tally says down.
+    """
+    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
+    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
+    if dn >= CONFIRM_FRAMES and dn > up:
+        return -1, dn
+    if up >= CONFIRM_FRAMES and up > dn:
+        return 1, up
+    return None, max(up, dn)
+
+
 def _bias(trends: dict) -> tuple[str, str]:
     """The reading's lean when no trade is confirmed.
 
@@ -860,7 +877,8 @@ def _bias(trends: dict) -> tuple[str, str]:
     return "عرضي", "⚪"
 
 
-def _structure_read() -> str | None:
+def _structure_read(trend_dir: int | None = None,
+                    agree: int | None = None) -> str | None:
     """Higher-highs/higher-lows on 1h, OR None when the tape is unreadable.
 
     Two conditions, both required: the swings must be rising AND price must
@@ -868,6 +886,12 @@ def _structure_read() -> str | None:
     last two pivots only, so after price collapsed 120 points below the last
     swing low it still announced "بنية صاعدة" -- a fact about the past that the
     present had already broken. A structure is only live while price respects it.
+
+    `trend_dir` is the desk's OWN bias (-1 down / +1 up, 0/None unknown) and
+    `agree` how many of the six frames share it. When the 1h swings point the
+    OTHER way, the line says so and labels them short-term -- otherwise the card
+    reads "بنية صاعدة" beside a 6/6 down trend and the owner is left to
+    reconcile two opposite sentences himself.
     """
     try:
         bh = bars("1h", 200)
@@ -879,12 +903,22 @@ def _structure_read() -> str | None:
         return None
     hh = highs[-1] > highs[-2]
     hl = lows[-1] > lows[-2]
-    if hh and hl and live > lows[-1]:
-        return "البنية (1س): قمم وقيعان صاعدة 🟢 (بنية صاعدة)"
     lh = highs[-1] < highs[-2]
     ll = lows[-1] < lows[-2]
+    if hh and hl and live > lows[-1]:
+        text = "البنية (1س): قمم وقيعان صاعدة 🟢"
+        if trend_dir == -1:
+            n = agree or 0
+            return (text + f" — بنية قصيرة المدى، عكس الاتجاه العام "
+                    f"({n}/6 فريمات هابطة) ⚠️")
+        return text + " (بنية صاعدة)"
     if lh and ll and live < highs[-1]:
-        return "البنية (1س): قمم وقيعان هابطة 🔴 (بنية هابطة)"
+        text = "البنية (1س): قمم وقيعان هابطة 🔴"
+        if trend_dir == 1:
+            n = agree or 0
+            return (text + f" — بنية قصيرة المدى، عكس الاتجاه العام "
+                    f"({n}/6 فريمات صاعدة) ⚠️")
+        return text + " (بنية هابطة)"
     if live < lows[-1]:
         return "البنية (1س): انكسر آخر قاع 🔴 (البنية انهارت لتحت)"
     if live > highs[-1]:
@@ -1120,7 +1154,8 @@ def card_analysis() -> str:
                      f"{_fmt(macd_v, 2)} {macd_ico}")
 
     # ---- structure: are the swings making higher highs / lower lows? -----
-    struct = _structure_read()
+    _tdir, _tagree = _trend_dir(trends)
+    struct = _structure_read(_tdir, _tagree)
     if struct:
         lines.append(struct)
 
@@ -1254,6 +1289,14 @@ def card_scenarios() -> str:
                          f"(ADX {adx_v:.0f} — بلا ترند)")
             lines.append("  اللعب: اشترِ عند الدعم إذا صمد · بِع عند المقاومة إذا رفض")
             lines.append("  <i>ما باخد صفقة ترند لما ADX تحت 20.</i>")
+    # The headlines, tied to the direction the desk leans -- context, not a call.
+    lean_dir = None
+    if res and sup:
+        lean_dir = "short" if live - sup[0] <= res[0] - live else "long"
+    nl = _news_context(lean_dir)
+    if nl:
+        lines.append("")
+        lines.append(nl)
     return "\n".join(lines)
 
 
@@ -1726,6 +1769,7 @@ def daily_analysis(now: datetime | None = None) -> str:
     trends, rsis, atrs = m["trends"], m.get("rsis") or {}, m.get("atrs") or {}
     up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
+    _tdir, _tagree = _trend_dir(trends)
     r15 = rsis.get("15m")
     now = now or datetime.now(UTC)
 
@@ -1779,7 +1823,7 @@ def daily_analysis(now: datetime | None = None) -> str:
 
     # --- 4. structure ---
     L.append("<b>٤) البنية</b>")
-    sr = _structure_read()
+    sr = _structure_read(_tdir, _tagree)
     if sr:
         L.append(f"  {sr}")
     with suppress(Exception):
@@ -2009,6 +2053,7 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
                    "والقرار قرارك. الوقف إلزامي دايماً.")
 
     return {"bias": bias, "side": bside, "verdict": verdict, "honesty": honesty,
+            "news_note": _news_context(bside or None),
             "scenarios": scen, "sell": sell, "buy": buy}
 
 
@@ -2199,9 +2244,7 @@ def map_payload() -> dict:
     # News: information only, same source the news card shows.
     news: list[dict] = []
     with suppress(Exception):
-        items = list(_news_fetch()) if NEWS_LIVE else []
-        items += [tuple(x) for x in NEWS_ITEMS]
-        for it in items[:8]:
+        for it in _news_items_merged()[:8]:
             if len(it) == 3:
                 news.append({"tag": it[0], "title": it[1], "when": it[2]})
             elif len(it) == 2:
@@ -2397,7 +2440,8 @@ def report_payload(m: dict | None = None,
 
     structure = ""
     with suppress(Exception):
-        structure = _structure_read() or ""
+        _tdir, _tagree = _trend_dir(m.get("trends") or {})
+        structure = _structure_read(_tdir, _tagree) or ""
 
     plan_d = None
     with suppress(Exception):
@@ -2531,11 +2575,7 @@ def card_news() -> str:
     lines = [f"📰 <b>أخبار {SYMBOL}</b>", ""]
     lines.append(f"🕒 آخر تحديث: <b>{_clock(datetime.now(UTC))}</b> {TZ_LABEL}")
     lines.append("")
-    items: list[tuple] = []
-    if NEWS_LIVE:
-        with suppress(Exception):      # a dead feed must not hide the list
-            items = list(_news_fetch())
-    items += [tuple(x) for x in NEWS_ITEMS]
+    items: list[tuple] = _news_items_merged()
     if not items:
         lines.append("— ما في أخبار. حدّث <code>NEWS_ITEMS</code> أو شغّل "
                      "<code>DESK_NEWS_LIVE=1</code>.")
@@ -2933,33 +2973,106 @@ def _plan_lines(p: dict) -> list[str]:
             f"📊 R:R {p['rr']:.2f} · لوت {LOT} · حساب ${ACCOUNT_USD:.0f}"]
 
 
+def _news_items_merged() -> list[tuple]:
+    """The news the cards show: live pull (if on) PLUS the owner's manual list."""
+    items: list[tuple] = []
+    if NEWS_LIVE:
+        with suppress(Exception):      # a dead feed must not hide the list
+            items = list(_news_fetch())
+    items += [tuple(x) for x in NEWS_ITEMS]
+    return items
+
+
+def _news_context(side: str | None) -> str | None:
+    """One honest line: does the news lean with or against THIS direction?
+
+    INFORMATION ONLY -- it never changes the plan or the levels, it only tells
+    the owner whether the headlines agree with the trade in front of him, the
+    same link the report makes by hand. `side` is "short"/"long"/None. Dollar
+    strength and Fed rate hikes press gold down; a US inflation print is a
+    volatility warning whatever the direction.
+    """
+    items = _news_items_merged()
+    if not items:
+        return None
+    titles = " ".join(str(it[1]) for it in items)
+    hawkish = any(k in titles for k in
+                  ("الدولار", "الفائدة", "الفيدرالي", "الفيدرال", "DXY"))
+    cpi = "CPI" in titles or "التضخم" in titles
+    parts: list[str] = []
+    if hawkish and side == "short":
+        parts.append("الخبر معك: قوة دولار/رفع فائدة — يدعم الهبوط.")
+    elif hawkish and side == "long":
+        parts.append("⚠️ الخبر ضدّك: قوة دولار/رفع فائدة — يضغط عالذهب.")
+    elif hawkish:
+        parts.append("قوة دولار/رفع فائدة — ميل هابط عالذهب.")
+    if cpi:
+        parts.append("⚠️ خطر تقلّب: بيانات التضخم الأميركي اليوم/قريباً.")
+    if not parts:
+        return None
+    return "📰 <i>" + " ".join(parts) + " (معلومة فقط — مو إشارة)</i>"
+
+
 def card_recommend() -> str:
+    """The recommendation -- ONE answer, the same one the 'شو تعمل' card gives.
+
+    It reads the shared _verdict() dict, NOT plan() alone: if a trade is already
+    open the answer is "manage it", never a fresh "enter" that contradicts the
+    action card in the same minute. plan() is the desk's trade engine; _verdict()
+    wraps it with the live state (open / closed / wait) so both cards speak from
+    one mouth.
+    """
     m = read_market()
-    p = plan(m)
-    if p is None:
-        if not market_open(m["q"]):
-            return ("🎯 <b>التوصية</b> — XAUUSD\n<b>لا صفقة</b> — السوق مسكّر.\n\n"
-                    "<i>ما بعطي إشارة على سعر ميت.</i>")
-        up = sum(1 for tf in FRAMES if m["trends"].get(tf) == 1)
-        dn = sum(1 for tf in FRAMES if m["trends"].get(tf) == -1)
-        lean, mark = _bias(m["trends"])
-        if up >= CONFIRM_FRAMES or dn >= CONFIRM_FRAMES:
-            way = "صاعد" if up >= CONFIRM_FRAMES else "هابط"
-            return ("🎯 <b>التوصية</b> — XAUUSD\n"
-                    f"<b>لا صفقة</b> — الاتجاه {way} بس السعر لسا ما وصل "
-                    "لزناد الدخول.\n\n"
-                    "<i>ما بدخل عالملاحقة — استنى يرتد للجدار.</i>")
+    v = _verdict(m)
+    if v["state"] == "closed":
+        return ("🎯 <b>التوصية</b> — XAUUSD\n<b>لا صفقة</b> — السوق مسكّر.\n\n"
+                "<i>ما بعطي إشارة على سعر ميت.</i>")
+    if v["state"] == "hold":
+        t = v["trade"]
+        d = 1 if t["direction"] == "long" else -1
+        live = m["live"]
+        r_now = ((live - float(t["entry"])) * d /
+                 abs(float(t["entry"]) - float(t["stop"]))
+                 if abs(float(t["entry"]) - float(t["stop"])) else 0)
+        dir_txt = "شراء 🟢" if d == 1 else "بيع 🔴"
         return ("🎯 <b>التوصية</b> — XAUUSD\n"
-                f"<b>لا صفقة</b> — الفريمات ما اتفقت "
-                f"({CONFIRM_FRAMES}/6 مطلوبة).\n"
-                f"ميل القراءة: {mark} <b>{lean}</b>\n\n"
-                "<i>ما بعطي إشارة لما السوق محتار.</i>")
-    note = _late_note("sell" if p["direction"] == "short" else "buy",
-                      m["rsis"].get("15m"))
-    tail = f"\n⚠️ {note}" if note else ""
-    return ("🎯 <b>التوصية</b> — " + SYMBOL + "\n" +
-            "\n".join(_plan_lines(p)) + tail + "\n\n"
-            "<i>التزام بالمخاطرة — كل صفقة على حسابك.</i>")
+                f"📂 <b>عندك صفقة مفتوحة #{t['id']}</b> ({dir_txt}) — "
+                "خلّيها تشتغل.\n"
+                f"دخل {num(t['entry'])} · وقف {num(t['stop'])} · "
+                f"هدف {num(t['target'])}\n"
+                f"حالياً <b>{r_now:+.2f}R</b> · السعر {num(live)}\n\n"
+                "<i>ما بفتح جديدة بنفس الاتجاه — صفقة وحدة بالمخاطرة.</i>")
+    if v["state"] == "enter":
+        p = v["plan"]
+        note = _late_note("sell" if p["direction"] == "short" else "buy",
+                          m["rsis"].get("15m"))
+        tail = f"\n⚠️ {note}" if note else ""
+        side = "short" if p["direction"] == "short" else "long"
+        nl = _news_context(side)
+        ntail = f"\n{nl}" if nl else ""
+        return ("🎯 <b>التوصية</b> — " + SYMBOL + "\n" +
+                "\n".join(_plan_lines(p)) + tail + ntail + "\n\n"
+                "<i>التزام بالمخاطرة — كل صفقة على حسابك.</i>")
+    # wait: the same conditions the action card states, so the two agree.
+    up, dn = v["up"], v["dn"]
+    lean, mark = v["lean"], v["mark"]
+    if v.get("wall"):
+        want = "بيع" if v.get("direction") == "short" else "شراء"
+        return ("🎯 <b>التوصية</b> — XAUUSD\n"
+                f"<b>لا صفقة بعد</b> — لسا ما لمس الجدار "
+                f"<b>{num(v['wall'])}</b>.\n"
+                f"<i>استنى يلمسه ويغلق 1س {want}، وبعدها ادخل.</i>")
+    if up >= CONFIRM_FRAMES or dn >= CONFIRM_FRAMES:
+        way = "صاعد" if up >= CONFIRM_FRAMES else "هابط"
+        return ("🎯 <b>التوصية</b> — XAUUSD\n"
+                f"<b>لا صفقة</b> — الاتجاه {way} بس السعر لسا ما وصل "
+                "لزناد الدخول.\n\n"
+                "<i>ما بدخل عالملاحقة — استنى يرتد للجدار.</i>")
+    return ("🎯 <b>التوصية</b> — XAUUSD\n"
+            f"<b>لا صفقة</b> — الفريمات ما اتفقت "
+            f"({CONFIRM_FRAMES}/6 مطلوبة).\n"
+            f"ميل القراءة: {mark} <b>{lean}</b>\n\n"
+            "<i>ما بعطي إشارة لما السوق محتار.</i>")
 
 
 # ========================================================================
@@ -3928,7 +4041,8 @@ def card_full() -> str:
     sell, buy = _zones(live)
     trend_side = "sell" if down else ("buy" if up_trend else None)
     agree = dn if down else (up if up_trend else 0)
-    st = _structure_read()
+    st = _structure_read(
+        -1 if down else (1 if up_trend else None), agree)
     mixed = bool(st and "مختلطة" in st)
     big = _big_leg(live)
     trig = _wall_trigger(live, big)
@@ -4221,11 +4335,7 @@ def card_full() -> str:
     L.append("  ⚠️ <i>صفقة واحدة فقط · الوقف مقدّس</i>")
 
     # ---- 8. the news that moves gold vs the dollar ----------------------
-    items: list[tuple] = []
-    if NEWS_LIVE:
-        with suppress(Exception):      # a dead feed must not hide the read
-            items = list(_news_fetch())
-    items += [tuple(x) for x in NEWS_ITEMS]
+    items: list[tuple] = _news_items_merged()
     if items:
         L.append("\n<b>📰 الأخبار (تأثر الذهب/الدولار):</b>")
         seen_t: set[str] = set()

@@ -232,7 +232,8 @@ function render(d){
   if (a){
     const cls = a.side==="sell"?"bear":"warn";
     document.getElementById("verdict").innerHTML =
-      `<div class="${cls}" style="margin-top:12px"><b>🎯 الحكم:</b> ${a.verdict}</div>`;
+      `<div class="${cls}" style="margin-top:12px"><b>🎯 الحكم:</b> ${a.verdict}</div>` +
+      (a.news_note ? `<div class="info" style="margin-top:8px">${a.news_note}</div>` : "");
 
     document.getElementById("scen").innerHTML = (a.scenarios||[]).map(s=>{
       const isLong = s.side==="long";

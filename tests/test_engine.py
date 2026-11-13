@@ -324,6 +324,38 @@ class VerdictTest(_DbCase):
         self.assertIn("استنى", bot._headline(v))
         self.assertTrue(bot._verdict_detail(v).startswith("⏸️"))
 
+    def test_the_recommendation_never_contradicts_the_action_card(self):
+        # The bot used to say "ادخل بيع" on the recommendation while the action
+        # card said "عندك صفقة مفتوحة، لا تفتح جديدة" -- two opposite answers in
+        # the same minute. Both now read _verdict(), so with an open trade the
+        # recommendation must say "manage it", not "enter".
+        bot.add_trade("short", 4100, 4108, 4090, bot.LOT, note="t")
+        m = self._market(live=4099.0, trends={tf: -1 for tf in bot.FRAMES})
+        saved = bot.read_market
+        bot.read_market = lambda: m
+        try:
+            rec = bot.card_recommend()
+            act = bot.card_action()
+        finally:
+            bot.read_market = saved
+        self.assertIn("صفقة مفتوحة", rec)
+        self.assertNotIn("ادخل", rec)
+        self.assertIn("صفقة مفتوحة", act)
+
+    def test_the_recommendation_offers_the_trade_when_no_trade_is_open(self):
+        m = self._market(live=4099.0, trends={tf: -1 for tf in bot.FRAMES},
+                         q={"marketState": "open", "stale": False,
+                            "bid": 4098.9, "ask": 4099.1, "spread": 0.2,
+                            "dayDiffPercent": -1.0})
+        saved = bot.read_market
+        bot.read_market = lambda: m
+        try:
+            rec = bot.card_recommend()
+        finally:
+            bot.read_market = saved
+        self.assertNotIn("صفقة مفتوحة", rec)
+        self.assertTrue("بيع" in rec or "شراء" in rec or "لا صفقة" in rec)
+
 
 class GradeTest(_DbCase):
     """A trade without a stop cannot be graded, so it is not a record. First
@@ -717,6 +749,67 @@ class NewsTest(unittest.TestCase):
         self.assertNotIn("الذهب عيار 21 في مصر", titles)
 
 
+class NewsContextTest(unittest.TestCase):
+    """The news line ties the headlines to the trade direction -- information
+    only, never a plan change. It must say 'with you' / 'against you' correctly,
+    and never invent a link when there is no hawkish headline."""
+
+    def _with_titles(self, titles):
+        saved = bot.NEWS_ITEMS, bot.NEWS_LIVE
+        bot.NEWS_ITEMS = [("🔥", t) for t in titles]
+        bot.NEWS_LIVE = False
+        return saved
+
+    def test_hawkish_news_reads_with_a_short(self):
+        saved = self._with_titles(["الدولار يرتفع", "الفيدرالي يرفع الفائدة"])
+        try:
+            line = bot._news_context("short")
+        finally:
+            bot.NEWS_ITEMS, bot.NEWS_LIVE = saved
+        self.assertIsNotNone(line)
+        self.assertIn("معك", line)
+        self.assertIn("معلومة فقط", line)
+
+    def test_hawkish_news_reads_against_a_long(self):
+        saved = self._with_titles(["الدولار يرتفع لأعلى مستوى"])
+        try:
+            line = bot._news_context("long")
+        finally:
+            bot.NEWS_ITEMS, bot.NEWS_LIVE = saved
+        self.assertIn("ضدّك", line or "")
+
+    def test_cpi_is_flagged_as_a_volatility_warning(self):
+        saved = self._with_titles(["تقرير التضخم الأميركي CPI اليوم"])
+        try:
+            line = bot._news_context("short")
+        finally:
+            bot.NEWS_ITEMS, bot.NEWS_LIVE = saved
+        self.assertIn("تقلّب", line or "")
+
+    def test_no_relevant_headline_returns_none(self):
+        saved = self._with_titles(["الذهب يستقر مع هدوء الأسواق"])
+        try:
+            line = bot._news_context("short")
+        finally:
+            bot.NEWS_ITEMS, bot.NEWS_LIVE = saved
+        self.assertIsNone(line)
+
+    def test_the_recommendation_carries_the_news_when_it_enters(self):
+        # A trade signal must carry the headline link, the way the report does.
+        saved_items, saved_live = bot.NEWS_ITEMS, bot.NEWS_LIVE
+        bot.NEWS_ITEMS = [("🔥", "الدولار يرتفع والفيدرالي يرفع الفائدة")]
+        bot.NEWS_LIVE = False
+        close = [4100 - i for i in range(60)]
+        try:
+            with FakeFeed(mid=close[-1], closes={tf: close for tf in bot.FRAMES}):
+                rec = bot.card_recommend()
+                plan_d = bot.plan()
+        finally:
+            bot.NEWS_ITEMS, bot.NEWS_LIVE = saved_items, saved_live
+        if plan_d is not None and not bot.open_trades():
+            self.assertIn("الخبر", rec)
+
+
 class WatchLevelsTest(unittest.TestCase):
     """The owner's levels (4138 / 4108) must be watchable, and a crossing of
     one must speak -- via the env extension and the existing watch."""
@@ -899,6 +992,37 @@ class StructureReadTest(unittest.TestCase):
             self.assertIn("صاعدة", txt or "")
         finally:
             bot.bars = saved
+
+    def test_rising_swings_against_a_down_trend_are_labelled_short_term(self):
+        # A "بنية صاعدة" beside a 6/6 down trend reads as a contradiction. With
+        # the desk's own bias passed in, the line must say so and call the swings
+        # short-term -- the owner is not left to reconcile two opposite sentences.
+        saved = bot.bars
+        try:
+            bot.bars = lambda tf, limit=300: self._zigzag(4050.0)
+            txt = bot._structure_read(-1, 6)
+        finally:
+            bot.bars = saved
+        self.assertIn("قصيرة المدى", txt or "")
+        self.assertIn("عكس الاتجاه العام", txt or "")
+        self.assertIn("6/6", txt or "")
+
+    def test_structure_agreeing_with_the_trend_has_no_warning(self):
+        saved = bot.bars
+        try:
+            bot.bars = lambda tf, limit=300: self._zigzag(4050.0)
+            txt = bot._structure_read(1, 6)
+        finally:
+            bot.bars = saved
+        self.assertNotIn("عكس الاتجاه", txt or "")
+
+    def test_trend_dir_counts_the_agreeing_frames(self):
+        d, n = bot._trend_dir({tf: -1 for tf in bot.FRAMES})
+        self.assertEqual((d, n), (-1, 6))
+        d, n = bot._trend_dir({tf: 1 for tf in bot.FRAMES})
+        self.assertEqual((d, n), (1, 6))
+        d, n = bot._trend_dir({tf: 0 for tf in bot.FRAMES})
+        self.assertEqual(d, None)
 
 
 class FullCardTest(unittest.TestCase):
