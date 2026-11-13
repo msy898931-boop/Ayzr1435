@@ -1105,3 +1105,37 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   them.
 - Suite still **219**; mypy 3 (pre-existing); ruff 46 (baseline, app.py's 3 are
   old). Commit `4dbf6a5`, pushed `a67ed42..4dbf6a5`.
+
+## MarketDesk — the entry BASIS + the target LADDER (2026-11-13)
+
+- ⭐ **The owner's core rule, finally in the engine: no market entry except on a
+  BASIS** — a **rejected bounce off a level** (بيع الارتداد) or a **confirmed
+  break** (بيع الكسر بإغلاق ساعة). Never an immediate entry in the middle of the
+  range. Switch `ENTRY_BASIS_ON` (env `DESK_ENTRY_BASIS`, default ON); producer
+  `_entry_setup(direction, live, res, sup, b1=...)`; refusal `_no_setup_detail()`.
+  This is what "act like me" means.
+- ⭐ **The basis gate is the LAST gate in `plan_check()`** so it never masks a
+  more specific reason (quality, no-chase). A retrace requires the price to still
+  BE at the level (a level 10 pts away = the chase the owner forbids). The **wall
+  trade is its own basis and is exempt** — a wall entry IS a rejection.
+- ⭐ **A card must not contradict the plan.** `_verdict` carried the fib wall even
+  when the frames AGREED, so `card_action` said "wait for the wall" while
+  `plan()` (basis met) said "sell now". The wall is a basis ONLY for the
+  no-confirmed-trend case (`up < CONFIRM_FRAMES and dn < CONFIRM_FRAMES`).
+- ⭐ **The target LADDER** (owner: 2–4 rungs by the market, capped at $40 total).
+  One producer `_target_ladder()` + `_ladder_line()`; `TARGET_LADDER_ON`
+  (env `DESK_TARGET_LADDER`), `TARGET_LADDER_MAX_USD` (40), `TARGET_LADDER_RUNGS`
+  (4). **Rung 1 IS the graded target** (record unchanged); rungs 2..n are real
+  levels ahead of the entry inside the cap. A ladder must be SPREAD — min step
+  `max(POINT_VALUE*3, first_gain*0.25)`, so a clustered level is not a rung and a
+  lone level returns `[]`. Shown on `_plan_lines`, `card_scenarios`, the map
+  playbook, and `daily_analysis` §11 — one producer, same rungs everywhere.
+- ⭐ **Isolation tests must toggle a NEW gate OFF.** Old tests assumed `plan()`
+  fires on a frame-agreed trend with no basis — the very behaviour removed. Add
+  `bot.ENTRY_BASIS_ON = False` (save/restore) wherever a test isolates another
+  gate. New `EntryBasisTest` + `TargetLadderTest`. Suite **245** (was 232).
+- ⭐ **A `work-1-*` download link is a SESSION host — it dies with its sandbox.**
+  The owner's archive link 404s; the file is on disk at
+  `/workspace/Ayzr1435-download/Ayzr1435-full.tar.gz` (SHA-256 `2081bfd4…`).
+  Re-serve on THIS host: `python3 -m http.server 12000` in that dir. Check disk
+  before believing a dead link.

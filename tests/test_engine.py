@@ -146,8 +146,10 @@ class PlanGateTest(unittest.TestCase):
         closes = {tf: rising for tf in bot.FRAMES}
         saved = bot.FILTERS_ON
         saved_nc = bot.NOCHASE_ON
+        saved_eb = bot.ENTRY_BASIS_ON
         bot.FILTERS_ON = False
         bot.NOCHASE_ON = False
+        bot.ENTRY_BASIS_ON = False
         try:
             with FakeFeed(mid=4059.0, closes=closes):
                 p = bot.plan()
@@ -157,6 +159,7 @@ class PlanGateTest(unittest.TestCase):
         finally:
             bot.FILTERS_ON = saved
             bot.NOCHASE_ON = saved_nc
+            bot.ENTRY_BASIS_ON = saved_eb
 
     def test_frame_agrees_fails_open_on_a_missing_frame(self):
         # A broken feed must not stop the desk trading entirely: the filter is a
@@ -241,14 +244,17 @@ class FilterStatusTest(unittest.TestCase):
         closes = {tf: rising for tf in bot.FRAMES}
         saved = bot.FILTERS_ON
         saved_nc = bot.NOCHASE_ON
+        saved_eb = bot.ENTRY_BASIS_ON
         bot.FILTERS_ON = False
         bot.NOCHASE_ON = False
+        bot.ENTRY_BASIS_ON = False
         try:
             with FakeFeed(mid=4059.0, closes=closes):
                 self.assertIsNotNone(bot.plan())
         finally:
             bot.FILTERS_ON = saved
             bot.NOCHASE_ON = saved_nc
+            bot.ENTRY_BASIS_ON = saved_eb
 
 
 class IndicatorTest(unittest.TestCase):
@@ -650,8 +656,10 @@ class NewsTest(unittest.TestCase):
         closes = {tf: rising for tf in bot.FRAMES}
         fs = bot.FILTERS_ON
         saved_nc = bot.NOCHASE_ON
+        saved_eb = bot.ENTRY_BASIS_ON
         bot.FILTERS_ON = False
         bot.NOCHASE_ON = False
+        bot.ENTRY_BASIS_ON = False
         try:
             bot.NEWS_ITEMS = []
             with FakeFeed(mid=4059.0, closes=closes):
@@ -665,6 +673,7 @@ class NewsTest(unittest.TestCase):
             bot.NEWS_ITEMS = saved
             bot.FILTERS_ON = fs
             bot.NOCHASE_ON = saved_nc
+            bot.ENTRY_BASIS_ON = saved_eb
 
     def test_live_news_is_merged_and_still_labelled_not_a_signal(self):
         saved_items, saved_live = bot.NEWS_ITEMS, bot.NEWS_LIVE
@@ -1428,8 +1437,13 @@ class OpinionTest(unittest.TestCase):
         import math
         tape = [4000 + 0.2 * i + 10 * math.sin(i / 2.0) for i in range(90)]
         closes = {tf: tape for tf in bot.FRAMES}
-        with FakeFeed(mid=tape[-1], closes=closes):
-            p = bot.plan()
+        saved_eb = bot.ENTRY_BASIS_ON
+        bot.ENTRY_BASIS_ON = False
+        try:
+            with FakeFeed(mid=tape[-1], closes=closes):
+                p = bot.plan()
+        finally:
+            bot.ENTRY_BASIS_ON = saved_eb
         self.assertIsNotNone(p)
         assert p is not None
         self.assertEqual(p["direction"], "long")
@@ -1468,8 +1482,13 @@ class OpinionTest(unittest.TestCase):
         import math
         rising = [4000 + 0.2 * i + 10 * math.sin(i / 2.0) for i in range(90)]
         closes = {tf: rising for tf in bot.FRAMES}
-        with FakeFeed(mid=rising[-1], closes=closes):
-            p = bot.plan()
+        saved_eb = bot.ENTRY_BASIS_ON
+        bot.ENTRY_BASIS_ON = False
+        try:
+            with FakeFeed(mid=rising[-1], closes=closes):
+                p = bot.plan()
+        finally:
+            bot.ENTRY_BASIS_ON = saved_eb
         self.assertIsNotNone(p)
         assert p is not None
         self.assertEqual(p["r15"], bot.rsi(rising))
@@ -2050,9 +2069,16 @@ class PlanCheckTest(unittest.TestCase):
         self.assertEqual(pc["reason"], "no_signal")
 
     def test_a_clean_long_is_ok_with_an_empty_detail(self):
+        # The reason plumbing in isolation: the entry basis is turned off so a
+        # frame-agreed long is judged on its own (the basis has its own tests).
         tape = self._live_tape(up=True)
-        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
-            pc = bot.plan_check()
+        saved_eb = bot.ENTRY_BASIS_ON
+        bot.ENTRY_BASIS_ON = False
+        try:
+            with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+                pc = bot.plan_check()
+        finally:
+            bot.ENTRY_BASIS_ON = saved_eb
         self.assertEqual(pc["reason"], "ok")
         self.assertIsNotNone(pc["plan"])
         self.assertEqual(pc["detail"], "")
@@ -2088,6 +2114,166 @@ class PlanCheckTest(unittest.TestCase):
             self.assertEqual(bot.plan(), bot.plan_check()["plan"])
 
 
+class EntryBasisTest(unittest.TestCase):
+    """THE ENTRY BASIS -- the owner's rule: the desk may not open at market in
+    the middle of the range. A frame-agreed entry must have EARNED the price on
+    the last closed 1h bar, one of two ways only:
+
+      * a level REJECTED (a short whose bar poked resistance and closed back
+        below it; a long whose bar dipped to support and closed back above it);
+      * a level BROKEN (a short closed below support; a long closed above
+        resistance).
+
+    Anything else is the chase the owner keeps refusing, so plan() stands aside
+    with reason "no_setup" and names what it needs.
+    """
+
+    def _down(self, n=90):
+        import math
+        return [4000.0 - 0.2 * i - 10 * math.sin(i / 2.0) for i in range(n)]
+
+    def test_the_switch_defaults_on(self):
+        self.assertTrue(bot.ENTRY_BASIS_ON)
+
+    def test_a_mid_range_entry_is_refused_and_the_basis_is_named(self):
+        # Six frames down, a live tape -- every other gate passes -- but the
+        # last 1h bar closed nowhere near a level. The desk must stand aside.
+        tape = self._down()
+        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+            pc = bot.plan_check()
+        self.assertIsNone(pc["plan"])
+        self.assertEqual(pc["reason"], "no_setup")
+        self.assertIn("نص النطاق", pc["detail"])
+
+    def test_a_rejected_retrace_is_taken(self):
+        # A short's bar that pokes resistance and closes back BELOW it, with the
+        # price still AT the level -- the bounce the owner sells. The setup
+        # producer must name it, and the plan must carry the basis.
+        b1 = [{"openTime": _iso(i), "open": 3900, "high": 3900.4,
+               "low": 3899.6, "close": 3900, "isOpen": False} for i in range(30)]
+        b1.append({"openTime": "2026-11-07T30:00:00Z", "open": 3901,
+                   "high": 3903.0, "low": 3900.5, "close": 3901.5,
+                   "isOpen": False})
+        s = bot._entry_setup("short", 3901.5, [3902.0], [3880.0], b1=b1)
+        self.assertIsNotNone(s)
+        assert s is not None
+        self.assertEqual(s["kind"], "retrace")
+        self.assertEqual(s["level"], 3902.0)
+
+    def test_a_confirmed_break_is_taken(self):
+        # A short's bar that CLOSES below the nearest support: the breakdown the
+        # owner sells, entered a hair past the level.
+        b1 = [{"openTime": _iso(i), "open": 3900, "high": 3900.4,
+               "low": 3899.6, "close": 3900, "isOpen": False} for i in range(30)]
+        b1.append({"openTime": "2026-11-07T30:00:00Z", "open": 3900,
+                   "high": 3900.2, "low": 3894.0, "close": 3894.0,
+                   "isOpen": False})
+        s = bot._entry_setup("short", 3894.0, [3902.0], [3895.0], b1=b1)
+        self.assertIsNotNone(s)
+        assert s is not None
+        self.assertEqual(s["kind"], "break")
+        self.assertEqual(s["level"], 3895.0)
+
+    def test_a_retrace_the_price_has_left_is_not_a_setup(self):
+        # The rejection happened on the last bar, but the price has since run
+        # 20 points away: entering now is a chase, not a bounce.
+        b1 = [{"openTime": _iso(i), "open": 3900, "high": 3900.4,
+               "low": 3899.6, "close": 3900, "isOpen": False} for i in range(30)]
+        b1.append({"openTime": "2026-11-07T30:00:00Z", "open": 3901,
+                   "high": 3903.0, "low": 3900.5, "close": 3901.5,
+                   "isOpen": False})
+        s = bot._entry_setup("short", 3880.0, [3902.0], [3860.0], b1=b1)
+        self.assertIsNone(s)
+
+    def test_the_wall_is_its_own_basis_and_not_gated(self):
+        # The wall path is exempt from the basis gate: with a rejected fib wall
+        # and a split tape, plan() still fires. (The card's own wall fixture.)
+        rise = [4000 + (4148 - 4000) * (i / 19) for i in range(20)]
+        drop = [4148 - (4148 - 4013) * (i / 24) for i in range(25)]
+        tail = [4058 + (3 if i % 2 else -3) for i in range(30)]
+        h1 = [4030 + i * 0.3 for i in range(20)] + [4056, 4060, 4058, 4066.2,
+                                                    4058.0]
+        feed = {"1d": [4060.0] * 30, "4h": rise + drop, "1h": h1,
+                "30m": tail, "15m": tail, "5m": tail}
+        with FakeFeed(mid=4058.0, closes=feed):
+            p = bot.plan()
+        self.assertIsNotNone(p)
+        assert p is not None
+        self.assertEqual(p["direction"], "short")
+
+    def test_the_switch_off_restores_the_immediate_entry(self):
+        # DESK_ENTRY_BASIS=0 must take the frame-agreed trade at market again --
+        # the gate is a switch, not a hard wall.
+        tape = self._down()
+        saved = bot.ENTRY_BASIS_ON
+        bot.ENTRY_BASIS_ON = False
+        try:
+            with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+                pc = bot.plan_check()
+        finally:
+            bot.ENTRY_BASIS_ON = saved
+        self.assertNotEqual(pc["reason"], "no_setup")
+
+
+class TargetLadderTest(unittest.TestCase):
+    """THE TARGET LADDER -- the owner asked to stop taking a single ~$20 target
+    and run a LADDER of take-profit rungs set by the market's own levels: 2, 3
+    or 4 as the levels allow, capped at TARGET_LADDER_MAX_USD for the whole
+    ladder. Rung 1 is the graded target (the record never moves); the rest are
+    runners. Every card quotes the SAME ladder, from this one producer."""
+
+    def test_the_ladder_is_ordered_and_capped(self):
+        # A short from 3900, first rung $10, supports at 3882/3874/3866 -> four
+        # rungs, gains strictly rising and none over the cap.
+        lad = bot._target_ladder("short", 3900.0, 3910.0, [],
+                                 [3882.0, 3874.0, 3866.0], 10.0)
+        self.assertEqual(len(lad), 4)
+        self.assertTrue(lad[0]["first"])
+        gains = [r["gain_usd"] for r in lad]
+        self.assertEqual(gains, sorted(gains))
+        self.assertLessEqual(max(gains), bot.TARGET_LADDER_MAX_USD)
+
+    def test_a_crowded_level_is_not_a_rung(self):
+        # A level a dollar past the first rung is not a ladder step: with only
+        # that level, there is no ladder (one rung is not a ladder).
+        lad = bot._target_ladder("short", 3900.0, 3910.0, [], [3889.0], 10.0)
+        self.assertEqual(lad, [])
+
+    def test_a_level_beyond_the_cap_is_dropped(self):
+        # A single support $50 away exceeds the $40 ladder cap, so no rung.
+        lad = bot._target_ladder("short", 3900.0, 3910.0, [], [3850.0], 10.0)
+        self.assertEqual(lad, [])
+
+    def test_the_first_rung_is_the_graded_target(self):
+        # The ladder's first rung must equal the plan's single target, so the
+        # record (graded on the first touch) is unchanged.
+        s = bot._sized(3900.0, "short", 3910.0)
+        lad = bot._target_ladder("short", 3900.0, s["stop"], [],
+                                 [3882.0, 3874.0], s["gain_usd"])
+        self.assertTrue(lad)
+        self.assertAlmostEqual(lad[0]["level"], s["target"], places=2)
+
+    def test_the_switch_off_returns_no_ladder(self):
+        saved = bot.TARGET_LADDER_ON
+        bot.TARGET_LADDER_ON = False
+        try:
+            lad = bot._target_ladder("short", 3900.0, 3910.0, [],
+                                     [3882.0, 3874.0], 10.0)
+        finally:
+            bot.TARGET_LADDER_ON = saved
+        self.assertEqual(lad, [])
+
+    def test_the_card_shows_the_ladder_when_it_has_one(self):
+        p = {"direction": "short", "entry": 3900.0, "stop": 3910.0,
+             "target": 3890.0, "gain_usd": 10.0, "risk_usd": 10.0,
+             "risk_pts": 10.0, "rr": 2.0,
+             "ladder": [{"level": 3890.0, "gain_usd": 10.0, "first": True},
+                        {"level": 3874.0, "gain_usd": 26.0, "first": False}]}
+        text = "\n".join(bot._plan_lines(p))
+        self.assertIn("سلّم الأهداف", text)
+        self.assertIn("3,874.00", text)
+
+
 class NoChaseTest(unittest.TestCase):
     """The no-chase gate: never SELL into deep oversold (nor BUY into deep
     overbought) on the filter frame. The owner's own read refused exactly this
@@ -2114,10 +2300,17 @@ class NoChaseTest(unittest.TestCase):
 
     def test_a_short_above_the_floor_is_taken(self):
         # The same falling tape, but slower: the 1h RSI sits above the floor, so
-        # the entry is not late and the plan is taken.
+        # the entry is not late and the plan is taken. The entry basis is off
+        # here so this pins ONE rule (the no-chase gate); the basis has its own
+        # tests.
         tape = self._tape(-0.35, -11.0)
-        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
-            pc = bot.plan_check()
+        saved = bot.ENTRY_BASIS_ON
+        bot.ENTRY_BASIS_ON = False
+        try:
+            with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+                pc = bot.plan_check()
+        finally:
+            bot.ENTRY_BASIS_ON = saved
         self.assertEqual(pc["reason"], "ok")
         self.assertIsNotNone(pc["plan"])
         assert pc["plan"] is not None
@@ -2138,19 +2331,27 @@ class NoChaseTest(unittest.TestCase):
     def test_the_gate_is_off_when_the_owner_turns_it_off(self):
         tape = self._tape(-0.5, -12.0)
         saved = bot.NOCHASE_ON
+        saved_eb = bot.ENTRY_BASIS_ON
         bot.NOCHASE_ON = False
+        bot.ENTRY_BASIS_ON = False
         try:
             with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
                 pc = bot.plan_check()
             self.assertEqual(pc["reason"], "ok")
         finally:
             bot.NOCHASE_ON = saved
+            bot.ENTRY_BASIS_ON = saved_eb
 
     def test_the_taken_plan_carries_the_reading_and_the_why(self):
         tape = self._tape(-0.35, -11.0)
-        with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
-            pc = bot.plan_check()
-            why = "\n".join(bot._why_taken(pc["plan"]))
+        saved_eb = bot.ENTRY_BASIS_ON
+        bot.ENTRY_BASIS_ON = False
+        try:
+            with FakeFeed(mid=tape[-1], closes={tf: tape for tf in bot.FRAMES}):
+                pc = bot.plan_check()
+                why = "\n".join(bot._why_taken(pc["plan"]))
+        finally:
+            bot.ENTRY_BASIS_ON = saved_eb
         self.assertIsNotNone(pc["plan"])
         self.assertIsNotNone(pc["plan"]["nochase_rsi"])
         self.assertIn("ما بمشي ورا الحركة", why)

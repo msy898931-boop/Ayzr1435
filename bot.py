@@ -90,6 +90,16 @@ STOP_PICK_USD = 9.0              # the validated sweet spot; a near level may mo
 # 2.2. A WIDER stop, or an ATR-scaled stop, both tested WORSE on the same data.
 TARGET_RR = 2.2                  # 9 * 2.2 = $19.8, inside the reward window
 MIN_RR = 1.5                     # below this a plan is not worth stating
+# THE TARGET LADDER. The owner asked to stop taking a single ~$20 target and
+# instead run a LADDER of take-profit rungs, set by the market's own levels:
+# 2, 3 or 4 rungs as the levels allow, with the whole ladder capped at this many
+# dollars. The first rung is still a valid trade (>= MIN_RR); the rest are the
+# runner levels the owner may hold for. Grading stays on the FIRST rung, so the
+# desk's record is unchanged -- the ladder is the upside plan, not a new bet.
+TARGET_LADDER_ON = os.environ.get("DESK_TARGET_LADDER", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
+TARGET_LADDER_MAX_USD = float(os.environ.get("DESK_TARGET_LADDER_MAX", "40") or "40")
+TARGET_LADDER_RUNGS = int(os.environ.get("DESK_TARGET_LADDER_RUNGS", "4") or "4")
 # The desk's OWN replay over 2026 (the same year as duka_2026.json, the SAME
 # rules the desk trades -- see backtest/bot2026.py, which now READS these
 # constants instead of hardcoding them). A STUDY figure, never a live reading:
@@ -249,6 +259,20 @@ ENTRY_NEAR_PTS = float(os.environ.get("DESK_ENTRY_NEAR_PTS", "6") or "6")
 # A break is confirmed a hair PAST the level, not at it -- a touch is not a
 # break. One constant so every card that names a break quotes the same price.
 BREAK_EPS = 0.5
+# THE ENTRY BASIS. The owner's rule, stated three times: the desk may NOT open
+# at market in the middle of the range. A trade is only taken when price has
+# EARNED it one of two ways --
+#   * "retrace": price came back to a level (support for a long, resistance for
+#     a short) and the last closed 1h bar REJECTED it -- its close came back on
+#     the trend's side of the level;
+#   * "break": the last closed 1h bar closed a hair PAST the nearest level
+#     (below support for a short, above resistance for a long).
+# Anything else -- price parked mid-range -- is a chase, and the desk waits.
+# This is the switch that turns the rule on; set DESK_ENTRY_BASIS=0 to fall back
+# to the old immediate entry. The band is how close counts as "at the level".
+ENTRY_BASIS_ON = os.environ.get("DESK_ENTRY_BASIS", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
+ENTRY_BASIS_PTS = float(os.environ.get("DESK_ENTRY_BASIS_PTS", "6") or "6")
 
 
 # ---- menus --------------------------------------------------------------
@@ -996,7 +1020,8 @@ def _verdict(m: dict) -> dict:
     op = open_trades()
     if op:
         return {"state": "hold", "trade": op[0], "live": m["live"]}
-    p = plan(m)
+    pc = plan_check(m)
+    p = pc["plan"]
     if p is not None:
         return {"state": "enter", "plan": p}
     trends = m["trends"]
@@ -1007,17 +1032,25 @@ def _verdict(m: dict) -> dict:
     # so a "wait" here means one of two things: the price is retracing a real
     # leg and has not reached the wall yet, or the frames simply disagree.
     # Carry the wall so the 'شو تعمل' card can name the level it is waiting for.
+    # Only when the frames do NOT confirm a direction: once they agree, the
+    # entry basis (a rejected level or a confirmed break) is the trigger, and
+    # showing the fib wall too would name two different levels for one wait.
     wall = None
-    big = _big_leg(m["live"])
-    if big is not None:
-        bhi, blo, bdown, pos = big
-        span = bhi - blo
-        if bdown and 0.25 <= pos <= 0.62:
-            wall = blo + span * 0.382
-        elif not bdown and 0.38 <= pos <= 0.75:
-            wall = bhi - span * 0.382
+    if up < CONFIRM_FRAMES and dn < CONFIRM_FRAMES:
+        big = _big_leg(m["live"])
+        if big is not None:
+            bhi, blo, bdown, pos = big
+            span = bhi - blo
+            if bdown and 0.25 <= pos <= 0.62:
+                wall = blo + span * 0.382
+            elif not bdown and 0.38 <= pos <= 0.75:
+                wall = bhi - span * 0.382
     return {"state": "wait", "up": up, "dn": dn, "wall": wall,
             "lean": lean, "mark": mark,
+            # The engine's OWN reason for standing aside, so the card can name
+            # the basis it is waiting for (a rejected level or a confirmed
+            # break) instead of a generic "no entry".
+            "reason": pc["reason"], "detail": pc["detail"],
             "direction": "long" if up >= CONFIRM_FRAMES else
             ("short" if dn >= CONFIRM_FRAMES else None)}
 
@@ -1039,6 +1072,8 @@ def _headline(v: dict) -> str:
     if v.get("wall"):
         d = "بيع" if v.get("direction") == "short" else "شراء"
         return f"⏸️ استنى — لمس الجدار {num(v['wall'])} ثم {d}"
+    if v.get("reason") == "no_setup":
+        return "⏸️ استنى — الاتجاه واضح بس ما في أساس للدخول"
     if v["up"] >= CONFIRM_FRAMES:
         return "⏸️ استنى — الاتجاه صاعد بس ما في دخول مؤكد"
     if v["dn"] >= CONFIRM_FRAMES:
@@ -1064,6 +1099,8 @@ def _verdict_detail(v: dict) -> str:
         d = "بيع" if v.get("direction") == "short" else "شراء"
         return (f"⏸️ السعر بيمشي عكس موجة كبيرة — <b>بستنى يلمس الجدار "
                 f"{num(v['wall'])}</b> ثم يغلق 1س {d}، وبعدها أدخل.")
+    if v.get("reason") == "no_setup":
+        return f"⏸️ {v.get('detail') or 'الاتجاه واضح بس ما في أساس للدخول.'}"
     if v["up"] >= CONFIRM_FRAMES:
         return (f"⏸️ الاتجاه <b>صاعد</b> ({v['up']}/6) — بس السعر لسا ما وصل "
                 "لزناد الدخول.")
@@ -1292,19 +1329,25 @@ def card_scenarios() -> str:
     if up_trig is not None:
         p = _sized(up_trig, "long", res[0])
         nxt = f" · المقاومة التالية {num(res[1])}" if len(res) > 1 else ""
+        lad = _ladder_line("long", up_trig, p["stop"], res, sup, p["gain_usd"])
         lines += ["<b>🟢 سيناريو صعود</b>",
                   f"  المشغّل: اختراق <b>{num(up_trig)}</b> "
                   f"(+{up_trig - live:.1f} نقطة){nxt}",
                   f"  الوقف: {num(p['stop'])} · الهدف: {num(p['target'])}",
                   f"  R:R ≈ {p['rr']:.2f} (مخاطرة ${p['risk_usd']:.0f})", ""]
+        if lad:
+            lines.insert(len(lines) - 1, f"  🎯 سلّم الأهداف: {lad}")
     if dn_trig is not None:
         p = _sized(dn_trig, "short", sup[0])
         nxt = f" · الدعم التالي {num(sup[1])}" if len(sup) > 1 else ""
+        lad = _ladder_line("short", dn_trig, p["stop"], res, sup, p["gain_usd"])
         lines += ["<b>🔴 سيناريو هبوط</b>",
                   f"  المشغّل: كسر <b>{num(dn_trig)}</b> "
                   f"(−{live - dn_trig:.1f} نقطة){nxt}",
                   f"  الوقف: {num(p['stop'])} · الهدف: {num(p['target'])}",
                   f"  R:R ≈ {p['rr']:.2f} (مخاطرة ${p['risk_usd']:.0f})", ""]
+        if lad:
+            lines.insert(len(lines) - 1, f"  🎯 سلّم الأهداف: {lad}")
     lines.append("<i>سيناريوهات مشروطة — ما تنفّذ إلا لما يتحقق المشغّل. "
                  f"الوقف والهدف من قواعدي (مخاطرة ${STOP_MIN_USD:.0f}-"
                  f"${STOP_MAX_USD:.0f}، R:R {TARGET_RR}).</i>")
@@ -1971,18 +2014,18 @@ def daily_analysis(now: datetime | None = None) -> str:
     # --- 11. the playbook ---
     L.append("<b>١١) إيمتى تشتري وإيمتى تبيع</b>")
     if a:
-        if a["sell"]:
-            L.append("  🔴 البيع:")
-            for pl in a["sell"][:3]:
-                L.append(f"    • {pl['kind']} — {pl['when']}: دخول {num(pl['entry'])} · "
-                         f"وقف {num(pl['stop'])} · هدف {num(pl['target'])} · "
-                         f"R:R {pl['rr']:.2f}")
-        if a["buy"]:
-            L.append("  🟢 الشراء:")
-            for pl in a["buy"][:3]:
-                L.append(f"    • {pl['kind']} — {pl['when']}: دخول {num(pl['entry'])} · "
-                         f"وقف {num(pl['stop'])} · هدف {num(pl['target'])} · "
-                         f"R:R {pl['rr']:.2f}")
+        for side_key, side_lbl in (("sell", "🔴 البيع"), ("buy", "🟢 الشراء")):
+            if a[side_key]:
+                L.append(f"  {side_lbl}:")
+                for pl in a[side_key][:3]:
+                    L.append(f"    • {pl['kind']} — {pl['when']}: دخول {num(pl['entry'])} · "
+                             f"وقف {num(pl['stop'])} · هدف {num(pl['target'])} · "
+                             f"R:R {pl['rr']:.2f}")
+                    if pl.get("ladder"):
+                        rungs = " · ".join(
+                            f"{i + 1}) {num(r['level'])} (+${r['gain_usd']:.0f})"
+                            for i, r in enumerate(pl["ladder"]))
+                        L.append(f"       🎯 سلّم الأهداف: {rungs}")
     L.append("")
 
     # --- 12. the honest note (the owner's one non-negotiable) ---
@@ -2068,26 +2111,37 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
     # --- the playbook: WHEN to sell and WHEN to buy, each priced ---
     sell: list[dict] = []
     buy: list[dict] = []
+
+    def with_ladder(direction: str, entry: float, s: dict) -> dict:
+        lad = _target_ladder(direction, entry, s["stop"], res, sup,
+                             s["gain_usd"])
+        return {**s, "ladder": lad} if lad else s
+
     if res:
         s = _sized(res[0], "short", res[0])
-        sell.append({"kind": "بيع ارتداد (متحفّظ)",
-                     "when": f"لمس {num(res[0])} ورفض", **s})
+        sell.append(with_ladder("short", res[0],
+                                {"kind": "بيع ارتداد (متحفّظ)",
+                                 "when": f"لمس {num(res[0])} ورفض", **s}))
     if sup:
         s = _sized(sup[0] - BREAK_EPS, "short", sup[0])
-        sell.append({"kind": "بيع كسر (اختراقي) ⭐",
-                     "when": f"كسر {num(sup[0])} بإغلاق", **s})
+        sell.append(with_ladder("short", sup[0] - BREAK_EPS,
+                                {"kind": "بيع كسر (اختراقي) ⭐",
+                                 "when": f"كسر {num(sup[0])} بإغلاق", **s}))
     if plan_d and plan_d.get("direction") == "short":
         s = _sized(live, "short", min(res) if res else None)
-        sell.append({"kind": "بيع فوري (مع الاتجاه)",
-                     "when": "بالسعر الحالي", **s})
+        sell.append(with_ladder("short", live,
+                                {"kind": "بيع فوري (مع الاتجاه)",
+                                 "when": "بالسعر الحالي", **s}))
     if sup:
         s = _sized(sup[0], "long", sup[0])
-        buy.append({"kind": "شراء عند الدعم",
-                     "when": f"لمس {num(sup[0])} ورفض", **s})
+        buy.append(with_ladder("long", sup[0],
+                               {"kind": "شراء عند الدعم",
+                                "when": f"لمس {num(sup[0])} ورفض", **s}))
     if res:
         s = _sized(res[0] + BREAK_EPS, "long", res[0])
-        buy.append({"kind": "شراء اختراق",
-                     "when": f"إغلاق فوق {num(res[0])}", **s})
+        buy.append(with_ladder("long", res[0] + BREAK_EPS,
+                               {"kind": "شراء اختراق",
+                                "when": f"إغلاق فوق {num(res[0])}", **s}))
 
     # --- the plain-spoken verdict ---
     if bside == "sell" and isinstance(r15, (int, float)) and r15 <= 30:
@@ -2786,6 +2840,60 @@ def _sized(entry: float, direction: str, stop_level: float | None) -> dict:
             "risk_pts": risk_usd / POINT_VALUE, "gain_usd": gain_usd}
 
 
+def _target_ladder(direction: str, entry: float, stop: float,
+                   res: list[float], sup: list[float],
+                   first_gain: float) -> list[dict]:
+    """The take-profit ladder, from the market's own levels -- one producer.
+
+    The owner asked for a ladder instead of a single ~$20 target: 2, 3 or 4
+    rungs as the levels allow, in order, capped at TARGET_LADDER_MAX_USD for the
+    whole ladder. Each rung is a real level ahead of the entry (resistance for a
+    long, support for a short) between the first rung and the cap, so the ladder
+    is the market's structure, not a set of arbitrary increments. The FIRST rung
+    is the graded target -- unchanged -- so the record never moves; the rest are
+    the runner levels the owner may hold for. Returns [] when the switch is off
+    or no level qualifies, so every caller falls back to the single target.
+    """
+    if not TARGET_LADDER_ON or TARGET_LADDER_RUNGS < 2:
+        return []
+    d = 1 if direction == "long" else -1
+    first_tgt = entry + d * (first_gain / POINT_VALUE)
+    # A ladder must be SPREAD, not two levels a dollar apart: each new rung has
+    # to clear the previous one by a real step, so the owner reads a plan and not
+    # a cluster.
+    min_step = max(POINT_VALUE * 3.0, first_gain * 0.25)
+    levels = sorted((res if direction == "long" else sup),
+                    key=lambda x: abs(x - entry))
+    rungs: list[dict] = [{"level": first_tgt, "gain_usd": first_gain,
+                          "first": True}]
+    for lv in levels:
+        # Only levels AHEAD of the entry, past the first rung, inside the cap.
+        if (lv - entry) * d <= (first_tgt - entry) * d:
+            continue
+        gain = abs(lv - entry) * POINT_VALUE
+        if gain > TARGET_LADDER_MAX_USD:
+            continue
+        if gain - rungs[-1]["gain_usd"] < min_step:
+            continue
+        rungs.append({"level": lv, "gain_usd": gain, "first": False})
+        if len(rungs) >= TARGET_LADDER_RUNGS:
+            break
+    if len(rungs) < 2:
+        return []
+    return rungs
+
+
+def _ladder_line(direction: str, entry: float, stop: float,
+                 res: list[float], sup: list[float], gain_usd: float) -> str | None:
+    """The ladder as one owner-facing line, or None -- one formatter, so every
+    card that shows the ladder shows the SAME numbers."""
+    lad = _target_ladder(direction, entry, stop, res, sup, gain_usd)
+    if not lad:
+        return None
+    return " · ".join(f"{i + 1}) {num(r['level'])} (+${r['gain_usd']:.0f})"
+                      for i, r in enumerate(lad))
+
+
 def frame_agrees(direction: str, live: float,
                  b15: list[dict] | None = None) -> bool:
     """Does the live price agree with `direction` on the filter frame?
@@ -2899,6 +3007,84 @@ def nochase_status(direction: str, b15: list[dict] | None = None) -> dict:
     return {"ok": ok, "rsi": r, "tf": NOCHASE_TF, "limit": limit}
 
 
+def _no_setup_detail(direction: str, res: list[float],
+                     sup: list[float]) -> str:
+    """The owner-facing reason the desk is waiting: name BOTH bases it needs.
+
+    A refusal must teach the owner what would change the answer -- "ما في أساس"
+    alone is the kind of vague non-answer he keeps catching.
+    """
+    if direction == "short":
+        retrace = min(res) if res else None
+        brk = sup[0] if sup else None
+        bits = []
+        if retrace is not None:
+            bits.append(f"ارتداد لـ {num(retrace)} ورفض")
+        if brk is not None:
+            bits.append(f"كسر {num(brk)} بإغلاق ساعة")
+        what = " أو ".join(bits) if bits else "مستوى واضح"
+        return f"الاتجاه هابط بس ما في أساس — بدي {what}، مو دخول بنص النطاق."
+    retrace = max(sup) if sup else None
+    brk = res[0] if res else None
+    bits = []
+    if retrace is not None:
+        bits.append(f"ارتداد لـ {num(retrace)} ورفض")
+    if brk is not None:
+        bits.append(f"إغلاق ساعة فوق {num(brk)}")
+    what = " أو ".join(bits) if bits else "مستوى واضح"
+    return f"الاتجاه صاعد بس ما في أساس — بدي {what}، مو مطاردة."
+
+
+def _entry_setup(direction: str, live: float,
+                 res: list[float], sup: list[float],
+                 b1: list[dict] | None = None) -> dict | None:
+    """Has the price EARNED an entry on `direction`? The desk's entry basis.
+
+    The owner's rule, stated three times: no entry in the middle of the range.
+    Two bases, and only two:
+      * "retrace" -- price is AT the level it bets against and the last CLOSED
+        1h bar rejected it: a short whose bar poked resistance and closed back
+        BELOW it; a long whose bar dipped to support and closed back ABOVE it;
+      * "break" -- the last CLOSED 1h bar closed a hair PAST the level it bets
+        with: a short below support (sup[0] - BREAK_EPS), a long above
+        resistance (res[0] + BREAK_EPS).
+    Returns {"kind", "level", "entry"} or None. `entry` is the market price the
+    trade would take now -- the basis was met on THIS closed bar, so it is the
+    desk's own setup, not a chase.
+    """
+    if direction == "short":
+        level = min(res) if res else None
+    else:
+        level = max(sup) if sup else None
+    if level is None:
+        return None
+    try:
+        b1 = closed(b1 if b1 is not None else bars("1h", 300), "1h")
+    except Exception:  # noqa: BLE001 - a broken feed must not open a trade
+        return None
+    if not b1:
+        return None
+    last = b1[-1]
+    hi, lo, cl = last["high"], last["low"], last["close"]
+    if direction == "short":
+        if sup and cl < sup[0] - BREAK_EPS:
+            return {"kind": "break", "level": sup[0],
+                    "entry": sup[0] - BREAK_EPS}
+        # A retrace only counts while price is STILL at the level: a rejection
+        # the price has since run away from is a chase, not a bounce.
+        if (hi >= level - ENTRY_BASIS_PTS and cl < level
+                and abs(live - level) <= ENTRY_BASIS_PTS):
+            return {"kind": "retrace", "level": level, "entry": live}
+    else:
+        if res and cl > res[0] + BREAK_EPS:
+            return {"kind": "break", "level": res[0],
+                    "entry": res[0] + BREAK_EPS}
+        if (lo <= level + ENTRY_BASIS_PTS and cl > level
+                and abs(live - level) <= ENTRY_BASIS_PTS):
+            return {"kind": "retrace", "level": level, "entry": live}
+    return None
+
+
 def plan_check(m: dict | None = None) -> dict:
     """The one decision engine, WITH its reason -- the owner asked to hear why
     a trade is taken, and (just as important) why one is NOT.
@@ -2932,14 +3118,16 @@ def plan_check(m: dict | None = None) -> dict:
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
     res, sup = _levels(live)
 
-    def sized(direction: str, level: float | None = None) -> dict:
+    def sized(direction: str, level: float | None = None,
+              entry: float | None = None) -> dict:
         # A long's stop belongs just BELOW the nearest support; a short's just
         # ABOVE the nearest resistance. `level` overrides that when the caller
-        # knows the exact wall the trade is betting against.
+        # knows the exact wall the trade is betting against. `entry` overrides
+        # the market print when the basis named its own price.
         if level is None:
             level = (max(sup) if sup else None) if direction == "long" \
                 else (min(res) if res else None)
-        p = _sized(live, direction, level)
+        p = _sized(live if entry is None else entry, direction, level)
         p["up"], p["dn"] = up, dn
         p["strong"] = (up if direction == "long" else dn) >= STRONG_FRAMES
         # Carry the 15m RSI so the open card can say the entry is late, the
@@ -2974,6 +3162,16 @@ def plan_check(m: dict | None = None) -> dict:
     # closed back on the leg's side. So the trend filter applies ONLY to a
     # frame-agreed entry, not to the wall.
     from_trend = up >= CONFIRM_FRAMES or dn >= CONFIRM_FRAMES
+
+    # THE ENTRY BASIS. The owner's rule: never open at market in the middle of
+    # the range. A frame-agreed entry must have EARNED the price -- a level
+    # rejected on the last closed 1h bar, or a level broken on it. A wall trade
+    # already IS a rejection, so the gate does not apply to it. Computed here
+    # but judged LAST, so a more specific refusal (a dead tape, a chase) keeps
+    # its own name.
+    setup = None
+    if ENTRY_BASIS_ON and from_trend:
+        setup = _entry_setup(direction, live, res, sup)
 
     # The 15m bars are read ONCE and shared by both filters, so a plan sized
     # from one read can never be judged against a different one -- and only when
@@ -3011,6 +3209,28 @@ def plan_check(m: dict | None = None) -> dict:
                            f"ما بمشي ورا الحركة.")}
     p["nochase_rsi"] = cs["rsi"]
     p["nochase_tf"] = cs["tf"]
+
+    # 5. THE ENTRY BASIS, judged last so a more specific refusal keeps its name.
+    #    No rejected level and no confirmed break on the last closed 1h bar
+    #    means the price is parked mid-range: that is the chase the owner keeps
+    #    refusing, so the desk waits and names what it needs.
+    if ENTRY_BASIS_ON and from_trend:
+        if setup is None:
+            return {"plan": None, "reason": "no_setup",
+                    "detail": _no_setup_detail(direction, res, sup)}
+        # Size from the basis price, not the raw market print, so the card's
+        # entry IS the level the setup names -- one number, not two.
+        p = sized(direction, level, entry=setup["entry"])
+        p["nochase_rsi"] = cs["rsi"]
+        p["nochase_tf"] = cs["tf"]
+        p["basis"] = setup["kind"]
+        p["basis_level"] = setup["level"]
+    # The take-profit ladder, from the market's own levels. Attached to every
+    # taken plan (basis or wall) so no card can quote a different ladder.
+    ladder = _target_ladder(p["direction"], p["entry"], p["stop"], res, sup,
+                            p["gain_usd"])
+    if ladder:
+        p["ladder"] = ladder
     return {"plan": p, "reason": "ok", "detail": ""}
 
 
@@ -3026,12 +3246,26 @@ def plan(m: dict | None = None) -> dict | None:
 
 def _plan_lines(p: dict) -> list[str]:
     d = "شراء 🟢" if p["direction"] == "long" else "بيع 🔴"
-    return [f"{d} · دخول {num(p['entry'])}",
-            f"🛡 الوقف {num(p['stop'])} "
-            f"(−{p['risk_pts']:.1f} نقطة = −${p['risk_usd']:.0f})",
-            f"🎯 الهدف {num(p['target'])} "
-            f"(+{p['gain_usd']/POINT_VALUE:.1f} نقطة = +${p['gain_usd']:.0f})",
-            f"📊 R:R {p['rr']:.2f} · لوت {LOT} · حساب ${ACCOUNT_USD:.0f}"]
+    lines = [f"{d} · دخول {num(p['entry'])}",
+             f"🛡 الوقف {num(p['stop'])} "
+             f"(−{p['risk_pts']:.1f} نقطة = −${p['risk_usd']:.0f})"]
+    ladder = p.get("ladder") or []
+    if ladder:
+        # The ladder: rung 1 is the graded target, the rest are runners.
+        lines.append(f"🎯 الهدف ١ {num(ladder[0]['level'])} "
+                     f"(+${ladder[0]['gain_usd']:.0f})")
+        rest = ladder[1:]
+        if rest:
+            rungs = " · ".join(
+                f"{i + 2}) {num(r['level'])} (+${r['gain_usd']:.0f})"
+                for i, r in enumerate(rest))
+            lines.append(f"🎯 سلّم الأهداف: {rungs}")
+    else:
+        lines.append(f"🎯 الهدف {num(p['target'])} "
+                     f"(+{p['gain_usd']/POINT_VALUE:.1f} نقطة = "
+                     f"+${p['gain_usd']:.0f})")
+    lines.append(f"📊 R:R {p['rr']:.2f} · لوت {LOT} · حساب ${ACCOUNT_USD:.0f}")
+    return lines
 
 
 def _news_items_merged() -> list[tuple]:
@@ -3239,6 +3473,11 @@ def card_recommend() -> str:
                 f"<b>لا صفقة بعد</b> — لسا ما لمس الجدار "
                 f"<b>{num(v['wall'])}</b>.\n"
                 f"<i>استنى يلمسه ويغلق 1س {want}، وبعدها ادخل.</i>" + ftail)
+    if v.get("reason") == "no_setup":
+        return ("🎯 <b>التوصية</b> — XAUUSD\n"
+                f"<b>لا صفقة</b> — {v.get('detail')}\n\n"
+                "<i>ما بدخل بنص النطاق — بدي ارتداد مرفوض أو كسر مؤكد.</i>"
+                + ftail)
     if up >= CONFIRM_FRAMES or dn >= CONFIRM_FRAMES:
         way = "صاعد" if up >= CONFIRM_FRAMES else "هابط"
         return ("🎯 <b>التوصية</b> — XAUUSD\n"
@@ -3866,6 +4105,9 @@ def card_action() -> str:
                f"<b>{num(v['wall'])}</b>.")
         todo = (f"⏸️ <b>استنى</b> يلمس <b>{num(v['wall'])}</b> ويغلق 1س {want}، "
                 "وبعدها ادخل.")
+    elif v.get("reason") == "no_setup":
+        why = v.get("detail") or "الاتجاه واضح، بس ما في أساس للدخول."
+        todo = "⏸️ <b>استنى</b> يرتد لمستوى ويرفضه، أو يكسره بإغلاق ساعة."
     elif v["up"] >= CONFIRM_FRAMES:
         why = "الاتجاه صاعد، بس لسا ما في دخول مؤكد."
         todo = "⏸️ <b>استنى</b> إغلاق 1س يثبّت الاتجاه."
@@ -5239,6 +5481,13 @@ def _why_taken(p: dict, m: dict | None = None) -> list[str]:
     fs = filter_status(side)
     rd = fs["readings"]
     out = []
+    # 0. The basis: the level the entry EARNED, one of the two the owner allows.
+    if p.get("basis"):
+        lvl = num(p.get("basis_level")) if p.get("basis_level") else "—"
+        if p["basis"] == "break":
+            out.append(f"✅ أساس الدخول: كسر {lvl} بإغلاق ساعة")
+        else:
+            out.append(f"✅ أساس الدخول: ارتداد لـ {lvl} ورفض")
     # 1. The trend: how many frames agree.
     agree = p.get("dn") if side == "short" else p.get("up")
     way = "هابط" if side == "short" else "صاعد"
