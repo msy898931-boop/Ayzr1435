@@ -319,6 +319,19 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
 
 ## MarketDesk — @Ayzr1324_bot (the owner's ONE bot), 2026-11-07
 
+- ⭐ **The repo is `/workspace/Ayzr1435` (remote `msy898931-boop/Ayzr1435`), NOT
+  `/workspace/project`.** `/workspace/project` holds a STALE 35 KB `bot.py` and a
+  git dir with **no commits**; the live 273 KB bot + `app.py` + `map.html` are in
+  `/workspace/Ayzr1435` (Render's `render.yaml` builds `bot.py app.py` there, and
+  `app.py` serves `map.html` from its own dir). Always edit and commit in
+  `/workspace/Ayzr1435`.
+- ⭐ **"The report is the same" means ONE text, not one engine.** `report_payload`
+  was already shared, but each surface re-formatted the payload, and the report
+  read FRESH `_levels` while the map showed the STICKY pool — so the page
+  contradicted its own level list. Fix (`8d34cee`): `report_payload()["lines"]` is
+  built ONCE; `card_report()` returns it and `map.html` prints it verbatim. The
+  report now reads `_display_levels()` (the sticky pool the map shows); trade
+  surfaces (plan/scenarios/recommend) keep the FRESH levels on purpose. 209 tests.
 - ⭐ **The owner has exactly ONE bot: `@Ayzr1324_bot` (id 9012677710).** The
   repo also names two other bots in its own memory (`@Xauusd14355_bot`,
   `@Xauusd1435_bot` / GoldBot) — those belong to the CODE, not to him. He said
