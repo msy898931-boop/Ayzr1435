@@ -1168,3 +1168,10 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   "إجماع". `_bias`/`BIG_FRAMES`/`SMALL_FRAMES` deleted. Word honesty too: the
   verdict says "مائل" (not "بوضوح") on a lean; a tie's continuation tag is
   "بلا أفضلية" (no invented edge). Guard test on the mixed 4/2 tape. Suite 248.
+- ✅ **Deploy confirmed (2026-11-13):** the owner pressed Deploy in Render and
+  `/health` now reads `commit: d769fc2` with `uptime_s` reset -- the one-voice
+  fix IS live. Live `/map.json` shows the unified read (`report.bias = هابط`,
+  `dn 6 up 0`, and the "🧭 الميل العام: هابط (6 فريم هابط · 0 صاعد من 6)" line)
+  -- so the card and the map read ONE word from `_market_bias` on the real tape.
+  The deploy truth stands: the owner must press Deploy himself; the API key is
+  the wrong (suspended) account. Verify a deploy by `/health` commit + uptime_s.
