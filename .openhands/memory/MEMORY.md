@@ -1159,3 +1159,12 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
     bias and `report_payload`; unify them too if a card is caught disagreeing.)
 - Suite 247 (two regression tests). ruff 46, mypy 3 pre-existing. `pairwise`
   beats `zip(x, x[1:])` for ruff RUF007.
+- ⭐ **"All voices one voice" is structural, not cosmetic.** Making the surfaces
+  *agree once* is not the fix; the fix is **one producer**. Three functions used
+  to compute the market lean their own way (`_bias` big-frames rule, the map and
+  report `dn>=5`, `_trend_side` majority) -- on a 4/6 tape they split. Now ONE
+  `_market_bias(trends) -> (dir, word, mark)` feeds `_trend_side`, `_verdict`,
+  `map_analysis`, `report_payload`, the card's frame line and the map's
+  "إجماع". `_bias`/`BIG_FRAMES`/`SMALL_FRAMES` deleted. Word honesty too: the
+  verdict says "مائل" (not "بوضوح") on a lean; a tie's continuation tag is
+  "بلا أفضلية" (no invented edge). Guard test on the mixed 4/2 tape. Suite 248.
