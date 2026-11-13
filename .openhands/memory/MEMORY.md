@@ -1139,3 +1139,23 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   `/workspace/Ayzr1435-download/Ayzr1435-full.tar.gz` (SHA-256 `2081bfd4…`).
   Re-serve on THIS host: `python3 -m http.server 12000` in that dir. Check disk
   before believing a dead link.
+
+## MarketDesk — "all voices, one voice" (2026-11-13, commit 1d584b4)
+
+- ⭐ **A card that disagrees with itself is a broken read, not two opinions.**
+  `card_full` printed a SELL stance AND "تصحيح داخل صعود → اشترِ عند الجدار" on
+  ONE screen. Fix at the source, never a new producer:
+  - **`_big_leg` must name the DOMINANT swing, not the last leg.** During a
+    215-pt drop with a 68-pt bounce the last leg is the bounce; naming it the
+    "big picture" flips the plan to "buy the dip" mid-downtrend. Rule: among the
+    swings whose range still HOLDS the price, take the most RECENT within 0.6x
+    the largest span.
+  - **`_zigzag` must keep the OPENING leg.** The first extreme never became a
+    pivot, so a window opened inside a big drop kept only the tail. Seed it from
+    whichever extreme (hi/lo) came FIRST.
+  - **One direction threshold everywhere.** `card_full` had its own `dn>=4`;
+    the map used the majority. Both now read `_trend_side(m)`, the same producer
+    the news line uses. (Other sites still use `dn>=5`/majority -- the map's
+    bias and `report_payload`; unify them too if a card is caught disagreeing.)
+- Suite 247 (two regression tests). ruff 46, mypy 3 pre-existing. `pairwise`
+  beats `zip(x, x[1:])` for ruff RUF007.
