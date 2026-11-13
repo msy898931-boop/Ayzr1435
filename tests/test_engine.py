@@ -754,6 +754,19 @@ class NewsContextTest(unittest.TestCase):
     only, never a plan change. It must say 'with you' / 'against you' correctly,
     and never invent a link when there is no hawkish headline."""
 
+    def test_trend_side_is_one_reading_of_the_frame_count(self):
+        # The side the news/divergence helpers lean must come from the frame
+        # count, not the distance to the nearest level: a 6/6 down tape is a
+        # SHORT lean no matter where the price sits between two levels.
+        self.assertEqual(bot._trend_side({"trends": {
+            "1d": -1, "4h": -1, "1h": -1, "30m": -1, "15m": -1, "5m": -1}}),
+            "short")
+        self.assertEqual(bot._trend_side({"trends": {
+            "1d": 1, "4h": 1, "1h": 1, "30m": 1, "15m": 1, "5m": 1}}),
+            "long")
+        self.assertIsNone(bot._trend_side({"trends": {
+            "1d": 1, "4h": -1, "1h": 1, "30m": -1, "15m": 1, "5m": -1}}))
+
     def _with_titles(self, titles):
         saved = bot.NEWS_ITEMS, bot.NEWS_LIVE
         bot.NEWS_ITEMS = [("🔥", t) for t in titles]

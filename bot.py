@@ -1323,10 +1323,10 @@ def card_scenarios() -> str:
                          f"(ADX {adx_v:.0f} — بلا ترند)")
             lines.append("  اللعب: اشترِ عند الدعم إذا صمد · بِع عند المقاومة إذا رفض")
             lines.append("  <i>ما باخد صفقة ترند لما ADX تحت 20.</i>")
-    # The headlines, tied to the direction the desk leans -- context, not a call.
-    lean_dir = None
-    if res and sup:
-        lean_dir = "short" if live - sup[0] <= res[0] - live else "long"
+    # The headlines, tied to the direction the TAPE leans (the frame count) --
+    # context, not a call. Never the distance to the nearest level: that flipped
+    # the wording to "against you" on a 6/6 down tape, contradicting the map.
+    lean_dir = _trend_side(m)
     nl = _news_context(lean_dir)
     if nl:
         lines.append("")
@@ -2010,16 +2010,22 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
     r15 = rsis.get("15m")
 
+    # The side comes from ONE producer (_trend_side), so the map's bias, the
+    # scenario card's news line and the divergence tell can never lean two ways
+    # on the same tape. `bside` stays "sell"/"buy" for the verdict below;
+    # `side` is the canonical "short"/"long" the news/divergence helpers take.
+    side = _trend_side(m)
+    bside = "sell" if side == "short" else "buy" if side == "long" else None
     if dn >= 5:
-        bias, bside = "هابط", "sell"
+        bias = "هابط"
     elif up >= 5:
-        bias, bside = "صاعد", "buy"
-    elif dn > up:
-        bias, bside = "مائل للهبوط", "sell"
-    elif up > dn:
-        bias, bside = "مائل للصعود", "buy"
+        bias = "صاعد"
+    elif side == "short":
+        bias = "مائل للهبوط"
+    elif side == "long":
+        bias = "مائل للصعود"
     else:
-        bias, bside = "عرضي", None
+        bias = "عرضي"
     down = dn >= up
 
     # --- the three named scenarios: continuation, retrace, reversal ---
@@ -2114,7 +2120,7 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
                    "والقرار قرارك. الوقف إلزامي دايماً.")
 
     return {"bias": bias, "side": bside, "verdict": verdict, "honesty": honesty,
-            "news_note": _news_context(bside or None),
+            "news_note": _news_context(side),
             "scenarios": scen, "sell": sell, "buy": buy}
 
 
@@ -3036,6 +3042,24 @@ def _news_items_merged() -> list[tuple]:
             items = list(_news_fetch())
     items += [tuple(x) for x in NEWS_ITEMS]
     return items
+
+
+def _trend_side(m: dict) -> str | None:
+    """The side the FRAME COUNT leans -- one producer for every "which way".
+
+    The news line and the divergence tell are tied to the direction the desk
+    leans, and that must be the trend, not the distance to the nearest level:
+    the owner caught the scenario card reading the news "against you" (long)
+    while the map read it "with you" (short) on the SAME 6/6 down tape.
+    """
+    trends = m.get("trends") or {}
+    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
+    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
+    if dn > up:
+        return "short"
+    if up > dn:
+        return "long"
+    return None
 
 
 def _news_context(side: str | None) -> str | None:
@@ -4343,7 +4367,8 @@ def card_full() -> str:
             mom = "محايد"
         r1 = f" · 1س {r1h:.0f}" if isinstance(r1h, (int, float)) else ""
         L.append(f"\n<b>⚡ الزخم:</b> 15د {r15:.0f}{r1} — <b>{mom}</b>")
-    _div = _divergence_note(trend_side)
+    _div = _divergence_note(
+        "short" if down else ("long" if up_trend else None))
     if _div:
         L.append(f"  {_div}")
 
