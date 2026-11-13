@@ -6,192 +6,372 @@
 <title>مقارنة ثلاثية — XAUUSD</title>
 <style>
   :root{
-    --bg:#0b1220; --card:#131c2e; --card2:#18233a; --line:#26344f;
-    --ink:#e8eef9; --dim:#93a3bd; --gold:#e6b450;
-    --sell:#ff6b6b; --buy:#3ddc97; --warn:#f5a524; --info:#5aa9ff;
+    --bg:#0a0e16; --card:#121a29; --card2:#182338;
+    --line:#243149; --line2:#2f405f;
+    --ink:#e9eff8; --dim:#8fa0bd; --dim2:#6b7c99;
+    --gold:#e8bd5a; --sell:#ff6b6b; --buy:#35d09a; --warn:#f5a524; --info:#5aa9ff;
+    --shadow:0 4px 24px rgba(0,0,0,.35);
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);
-    font-family:"Segoe UI",Tahoma,system-ui,sans-serif;line-height:1.65;
-    padding:18px;max-width:1150px;margin:0 auto}
-  h1{font-size:24px;margin:0 0 4px}
-  h2{font-size:19px;margin:30px 0 10px;border-right:4px solid var(--gold);
-    padding-right:10px}
-  h3{font-size:16px;margin:18px 0 8px;color:var(--gold)}
-  .sub{color:var(--dim);font-size:13px;margin-bottom:16px}
-  .price{font-size:15px;color:var(--dim);margin-bottom:6px}
-  .price b{color:var(--ink);font-size:18px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
-    gap:14px;margin:14px 0}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
-    padding:16px}
-  .card h3{margin-top:0}
-  .tag{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;
-    font-weight:700;margin-inline-start:6px}
-  .t-sell{background:rgba(255,107,107,.15);color:var(--sell);
-    border:1px solid rgba(255,107,107,.4)}
-  .t-buy{background:rgba(61,220,151,.15);color:var(--buy);
-    border:1px solid rgba(61,220,151,.4)}
-  .t-info{background:rgba(90,169,255,.15);color:var(--info);
-    border:1px solid rgba(90,169,255,.4)}
-  .t-warn{background:rgba(245,165,36,.15);color:var(--warn);
-    border:1px solid rgba(245,165,36,.4)}
-  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
-  th,td{border:1px solid var(--line);padding:9px 11px;text-align:right;
-    vertical-align:top}
-  th{background:var(--card2);color:var(--gold);font-weight:700}
-  td.num{font-variant-numeric:tabular-nums;direction:ltr;text-align:left}
-  .yes{color:var(--buy);font-weight:700}
-  .no{color:var(--sell);font-weight:700}
-  .mid{color:var(--warn);font-weight:700}
-  .row-hl{background:rgba(230,180,80,.07)}
-  ul{margin:8px 0;padding-inline-start:20px}
-  li{margin:4px 0}
-  .honest{background:rgba(245,165,36,.08);border:1px solid rgba(245,165,36,.35);
-    border-radius:10px;padding:14px;margin:16px 0}
-  .honest h3{color:var(--warn);margin-top:0}
-  .foot{color:var(--dim);font-size:12px;margin-top:26px;border-top:1px solid
-    var(--line);padding-top:12px}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#14203a 0%,var(--bg) 55%);
+    color:var(--ink);line-height:1.7;
+    font-family:"Segoe UI",Tahoma,system-ui,-apple-system,sans-serif;
+    padding:22px 18px 40px}
+  .wrap{max-width:1180px;margin:0 auto}
+
+  .top{display:flex;align-items:center;justify-content:space-between;gap:14px;
+    flex-wrap:wrap;padding-bottom:14px;border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:12px}
+  .brand .ico{font-size:30px;line-height:1}
+  .brand h1{font-size:22px;margin:0;letter-spacing:.2px}
+  .brand .sub{color:var(--dim);font-size:13px;margin-top:1px}
+  .live{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  .live .px{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums;
+    direction:ltr;color:var(--ink)}
+  .live .meta{color:var(--dim);font-size:12.5px;text-align:left;line-height:1.5}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+    background:var(--buy);margin-inline-end:6px;animation:p 1.8s infinite}
+  @keyframes p{0%,100%{opacity:1}50%{opacity:.2}}
+
+  .strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+    gap:12px;margin:18px 0 4px}
+  .kpi{background:linear-gradient(180deg,var(--card2),var(--card));
+    border:1px solid var(--line);border-radius:14px;padding:13px 16px;box-shadow:var(--shadow)}
+  .kpi .k{color:var(--dim);font-size:12.5px;letter-spacing:.3px}
+  .kpi .v{font-size:20px;font-weight:800;margin-top:3px;font-variant-numeric:tabular-nums}
+  .kpi .v.sell{color:var(--sell)} .kpi .v.buy{color:var(--buy)}
+  .kpi .v.mid{color:var(--warn)} .kpi .v.gold{color:var(--gold)}
+  .kpi .n{color:var(--dim2);font-size:12px;margin-top:2px}
+
+  h2{font-size:18px;margin:32px 0 12px;padding-right:12px;
+    border-right:4px solid var(--gold);display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  h2 .hint{font-size:12px;color:var(--dim2);font-weight:400}
+  h3{font-size:15.5px;margin:0 0 8px}
+
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+  @media(max-width:900px){.grid3,.grid2{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:16px 17px;box-shadow:var(--shadow)}
+  .card.role{position:relative;overflow:hidden}
+  .card.role::before{content:"";position:absolute;inset-inline:0;top:0;height:3px}
+  .role.bot::before{background:linear-gradient(90deg,var(--info),transparent)}
+  .role.map::before{background:linear-gradient(90deg,var(--gold),transparent)}
+  .role.me::before{background:linear-gradient(90deg,var(--buy),transparent)}
+  .role .who{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .role .who .name{font-weight:800;font-size:15.5px}
+  .role .what{color:var(--dim);font-size:12.5px;margin:6px 0 10px;min-height:33px}
+  .role .call{font-size:17px;font-weight:800;margin:2px 0 8px}
+
+  .tag{display:inline-block;font-size:11.5px;padding:2px 10px;border-radius:999px;
+    font-weight:700;white-space:nowrap}
+  .t-sell{background:rgba(255,107,107,.14);color:var(--sell);border:1px solid rgba(255,107,107,.4)}
+  .t-buy{background:rgba(53,208,154,.14);color:var(--buy);border:1px solid rgba(53,208,154,.4)}
+  .t-info{background:rgba(90,169,255,.14);color:var(--info);border:1px solid rgba(90,169,255,.4)}
+  .t-warn{background:rgba(245,165,36,.14);color:var(--warn);border:1px solid rgba(245,165,36,.4)}
+  .t-mid{background:rgba(143,160,189,.14);color:var(--dim);border:1px solid var(--line2)}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{padding:9px 11px;text-align:right;border-bottom:1px solid var(--line);
+    vertical-align:middle}
+  thead th{color:var(--gold);font-weight:700;background:var(--card2);
+    border-bottom:1px solid var(--line2)}
+  td.num{font-variant-numeric:tabular-nums;direction:ltr;text-align:left;letter-spacing:.2px}
+  .res{color:var(--sell);font-weight:600} .sup{color:var(--buy);font-weight:600}
+  .muted{color:var(--dim)} .mid{color:var(--warn);font-weight:600}
+  .row-hl{background:rgba(232,189,90,.06)}
+
+  .kvline{font-size:13px;margin:3px 0}
+  .kvline b{color:var(--ink)}
   .lvl{font-variant-numeric:tabular-nums;direction:ltr;display:inline-block}
-  .big{font-size:15px}
-  .pill{display:inline-block;padding:1px 7px;border-radius:6px;font-size:12px;
+  .pill{display:inline-block;padding:1px 8px;border-radius:6px;font-size:11.5px;
     background:var(--card2);border:1px solid var(--line);direction:ltr}
+
+  .note{background:rgba(90,169,255,.07);border:1px solid rgba(90,169,255,.3);
+    border-radius:12px;padding:13px 16px;font-size:13.5px;margin:12px 0}
+  .honest{background:rgba(245,165,36,.07);border:1px solid rgba(245,165,36,.35);
+    border-radius:14px;padding:16px 18px;margin:22px 0}
+  .honest h3{color:var(--warn)}
+  ul{margin:8px 0;padding-inline-start:20px} li{margin:4px 0}
+  .agree h3{color:var(--buy)} .differ h3{color:var(--sell)}
+
+  .bar{display:flex;height:8px;border-radius:6px;overflow:hidden;background:var(--card2);
+    border:1px solid var(--line);margin:10px 0 2px}
+  .bar .s{background:var(--sell)} .bar .b{background:var(--buy)}
+  .bar .n{background:var(--line2)}
+
+  .foot{color:var(--dim2);font-size:12px;margin-top:30px;text-align:center;
+    border-top:1px solid var(--line);padding-top:14px}
+  .loading{color:var(--dim2);font-size:13px}
 </style>
 </head>
 <body>
+<div class="wrap">
 
-<h1>🧭 مقارنة ثلاثية — XAUUSD</h1>
-<div class="sub">البوت الحيّ · الخريطة · تحليلي المستقل — نفس اللحظة، ثلاثة مصادر</div>
-<div class="price">السعر الحيّ: <b>3,895.0</b> · التوقيت: 2026-11-13 10:30 (سوريا) · الحالة: السوق مفتوح</div>
-
-<h2>1) الخلاصة السريعة</h2>
-<div class="grid">
-  <div class="card">
-    <h3>🤖 البوت <span class="tag t-sell">بيع</span></h3>
-    <p>قراءة آلية، قرار واحد فقط، ينفّذ حالاً.</p>
-    <p class="big"><b>بيع فوري</b> @ 3,895.00<br>
-    وقف <span class="lvl">3,907.00</span> · هدف <span class="lvl">3,875.00</span><br>
-    R:R = 1.67 · مخاطرة $12 · ربح $20</p>
-    <p>السبب: <b>6/6 فريمات هبوط</b>، و RSI(1h)=41 فوق حد المطاردة (38) → مسموح.</p>
+  <div class="top">
+    <div class="brand">
+      <span class="ico">🧭</span>
+      <div>
+        <h1>مقارنة ثلاثية — <span id="sym">XAUUSD</span></h1>
+        <div class="sub">البوت الحيّ · الخريطة · تحليلي المستقل — نفس اللحظة، ثلاثة مصادر</div>
+      </div>
+    </div>
+    <div class="live">
+      <div>
+        <div class="px" id="px">—</div>
+        <div class="meta" id="state">—</div>
+      </div>
+      <div class="meta">
+        <span class="dot"></span>حيّ — يتحدّث لحاله<br>
+        آخر قراءة: <b id="clock">—</b> <span id="tz"></span><br>
+        <a href="/map" style="color:var(--info);text-decoration:none">🗺️ الخريطة الحيّة ←</a>
+      </div>
+    </div>
   </div>
-  <div class="card">
-    <h3>🗺️ الخريطة <span class="tag t-sell">بيع</span></h3>
-    <p>نفس محرّك البوت، لكن تعرض <b>قائمة سيناريوهات</b> لا قراراً واحداً.</p>
-    <p class="big"><b>الرجح: بيع</b> — «الاتجاه هابط بوضوح»<br>
-    + 5 سيناريوهات بديلة (ارتداد/كسر/انعكاس)</p>
-    <p>وتضيف: دايفرجنس إيجابي (5m) · ADX 25.6 · أخبار داعمة للهبوط.</p>
+
+  <div class="strip" id="strip"></div>
+
+  <h2>1) الخلاصة السريعة <span class="hint">ثلاثة مفاهيم، اتجاه واحد</span></h2>
+  <div class="grid3">
+    <div class="card role bot">
+      <div class="who"><span class="name">🤖 البوت</span><span id="bot-tag" class="tag t-info">—</span></div>
+      <div class="what">قراءة آلية، قرار واحد فقط، ينفّذ حالاً.</div>
+      <div id="bot-call" class="call">—</div>
+      <div id="bot-body" class="muted loading">…</div>
+    </div>
+    <div class="card role map">
+      <div class="who"><span class="name">🗺️ الخريطة</span><span id="map-tag" class="tag t-info">—</span></div>
+      <div class="what">نفس محرّك البوت، لكن تعرض قائمة سيناريوهات لا قراراً واحداً.</div>
+      <div id="map-call" class="call">—</div>
+      <div id="map-body" class="muted loading">…</div>
+    </div>
+    <div class="card role me">
+      <div class="who"><span class="name">👤 أنا (تحليل مستقل)</span><span id="me-tag" class="tag t-info">بيع بحذر</span></div>
+      <div class="what">بنيت كل شي من الصفر: بنية، مؤشرات، فيبو، موقع السعر بالنطاق.</div>
+      <div id="me-call" class="call">—</div>
+      <div id="me-body" class="muted loading">…</div>
+    </div>
   </div>
+
+  <h2>2) الاتجاه — هل نتفق؟ <span class="hint">نفس الفريمات، نفس الأرقام على الشاشات الثلاث</span></h2>
   <div class="card">
-    <h3>👤 أنا (تحليل مستقل) <span class="tag t-sell">بيع بحذر</span></h3>
-    <p>بنيت كل شي من الصفر: بنية، مؤشرات، مستويات.</p>
-    <p class="big"><b>الاتجاه هابط — أوافق</b><br>
-    بس أفضل <b>بيع الارتداد @ 3,922</b> أو <b>كسر 3,872</b><br>
-    لا البيع فوراً عند السعر</p>
-    <p>السبب: السعر في <b>منتصف النطاق</b>، وفي إشارة تعب قصيرة المدى.</p>
+    <table>
+      <thead><tr><th>الفريم</th><th>الاتجاه</th><th>RSI14</th><th>ATR14</th><th>EMA20</th></tr></thead>
+      <tbody id="frames"><tr><td colspan="5" class="muted loading">…</td></tr></tbody>
+    </table>
+    <div class="bar" id="trendbar"></div>
+    <div id="trendline" class="kvline muted" style="margin-top:6px">—</div>
   </div>
-</div>
 
-<h2>2) الاتجاه — هل نتفق؟</h2>
-<table>
-  <tr><th>الفريم</th><th>الاتجاه (EMA20/50)</th><th>RSI14</th><th>ATR14</th><th>السعر مقابل EMA</th></tr>
-  <tr><td>يومي</td><td class="no">هبوط ▼</td><td class="num">38.3</td><td class="num">79.0</td><td>تحت 20 و50 و200</td></tr>
-  <tr><td>4 ساعات</td><td class="no">هبوط ▼</td><td class="num">33.7</td><td class="num">34.8</td><td>تحت 20 و50</td></tr>
-  <tr><td>ساعة</td><td class="no">هبوط ▼</td><td class="num">39.4</td><td class="num">17.0</td><td>تحت 20 و50</td></tr>
-  <tr><td>30 دقيقة</td><td class="no">هبوط ▼</td><td class="num">45.0</td><td class="num">12.1</td><td>تحت 20 و50</td></tr>
-  <tr><td>15 دقيقة</td><td class="no">هبوط ▼</td><td class="num">43.3</td><td class="num">8.1</td><td>تحت 20 و50</td></tr>
-  <tr><td>5 دقائق</td><td class="no">هبوط ▼</td><td class="num">41.8</td><td class="num">4.8</td><td>تحت 20 و50 و200</td></tr>
-</table>
-<p><b>الثلاثة متفقون على الاتجاه: هبوط.</b> 6/6 فريمات هابطة — وهذا أقوى توافق ممكن. لا خلاف هنا بيني وبين البوت والخريطة.</p>
-
-<h2>3) البنية السعرية (تحليلي) — كيف وصلنا هنا</h2>
-<ul>
-  <li><b>قمة 9 نوفمبر:</b> 4,148.73 — بعدها هبوط حادّ.</li>
-  <li><b>قاع 12 نوفمبر:</b> 3,852.47 — نزلنا <b>296 نقطة في 3 أيام</b> (حركة اندفاعية قوية).</li>
-  <li><b>الآن:</b> 3,895.0 = ارتداد <b>+42.6 نقطة فقط (14.4%)</b> من الموجة الهابطة.</li>
-  <li>البنية اليومية: قمم أدنى (4,399 ← 4,228 ← 4,148) وقيعان أدنى → اتجاه هابط مؤكّد.</li>
-</ul>
-<p><b>معنى الرقم 14.4%:</b> الارتداد ضعيف — السعر لسّا قريب من قاع الموجة، وفي مجال يوصل لارتداد طبيعي حتى 3,922 (23.6%) قبل ما يكمّل هبوط. هذا اللي يخليني أفضّل الانتظار على البيع الفوري.</p>
-
-<h2>4) المستويات — من وين جبتها أنا</h2>
-<table>
-  <tr><th>المستوى</th><th>النوع</th><th>من وين (السبب)</th><th>مصدره</th></tr>
-  <tr class="row-hl"><td class="num">3,922 – 3,924</td><td class="no">مقاومة</td><td>قمة اليوم 3,923.31 + فيبو 23.6% (3,922.39) + منطقة بيع (3,923.97)</td><td>أنا + الخريطة</td></tr>
-  <tr><td class="num">3,965.6</td><td class="no">مقاومة</td><td>فيبو 38.2%</td><td>أنا + الخريطة</td></tr>
-  <tr><td class="num">4,000.6</td><td class="no">مقاومة</td><td>فيبو 50% + قمة 1h</td><td>أنا + الخريطة</td></tr>
-  <tr class="row-hl"><td class="num">3,872</td><td class="buy">دعم</td><td>قاع 12-11 21:00 (قاع الجلسة السابقة)</td><td>أنا + الخريطة</td></tr>
-  <tr><td class="num">3,852.5</td><td class="buy">دعم</td><td>قاع الموجة (12 نوفمبر) — الأهم</td><td>أنا + الخريطة</td></tr>
-  <tr><td class="num">3,771.9</td><td class="buy">دعم</td><td>امتداد فيبو 127.2%</td><td>أنا + الخريطة</td></tr>
-</table>
-<p>✅ <b>مستوياتي طلعت مطابقة لمستويات الخريطة</b> — وهذا منطقي: الخريطة تبني مناطقها من نفس نقاط التأرجح (pivots). لا خلاف على المستويات.</p>
-
-<h2>5) المؤشرات — النقطة اللي فيها خلاف</h2>
-<table>
-  <tr><th>المؤشر</th><th>القيمة</th><th>شو يعني</th></tr>
-  <tr><td>RSI (يومي)</td><td class="num">38.3</td><td>ضعيف بس <b>مو تشبّع</b> (فوق 30)</td></tr>
-  <tr><td>RSI (4 ساعات)</td><td class="num">33.7</td><td>قريب من التشبّع — منطقة خطر للبيع الجديد</td></tr>
-  <tr><td>RSI (ساعة)</td><td class="num">39.4</td><td>فوق حد المطاردة 38 → البوت يسمح بالبيع</td></tr>
-  <tr><td>MACD (ساعة)</td><td class="num">+5.9 ← +6.9</td><td class="mid">⚠️ الهستوغرام <b>عم يتراجع</b> → زخم الهبوط عم يتباطأ</td></tr>
-  <tr><td>ADX</td><td class="num">25.6</td><td>اتجاه قائم (فوق 25) بس مو انفجار</td></tr>
-  <tr><td>دايفرجنس (5m)</td><td class="mid">إيجابي</td><td>⚠️ قاع أدنى (3892.6→3888.5) و RSI طلع (30.2→31.1) → الهبوط القصير عم يتعب</td></tr>
-</table>
-<p><b>هون الفرق:</b> البوت ينظر لـ RSI الساعة (41) ويمرّق البيع. أنا والخريطة نلاحظ <b>إشارتي تعب قصير المدى</b> (دايفرجنس 5m + تباطؤ MACD) — وهذا سبب تفضيلي للانتظار.</p>
-
-<h2>6) المقارنة التفصيلية — قرار مقابل قرار</h2>
-<table>
-  <tr><th>البُعد</th><th>🤖 البوت</th><th>🗺️ الخريطة</th><th>👤 أنا</th></tr>
-  <tr><td><b>الاتجاه</b></td><td class="yes">بيع</td><td class="yes">بيع</td><td class="yes">بيع</td></tr>
-  <tr class="row-hl"><td><b>وقت الدخول</b></td><td>فوري @ 3,895</td><td>3 خيارات: فوري / ارتداد 3,923 / كسر 3,872</td><td><b>الأفضل: ارتداد 3,922</b> أو كسر 3,872</td></tr>
-  <tr><td><b>الوقف</b></td><td class="num">3,907 (+12)</td><td class="num">3,907 أو 3,932 (ارتداد) أو 3,880 (كسر)</td><td class="num">3,932 (لبيع الارتداد) — أوسع من نافذتك</td></tr>
-  <tr><td><b>الهدف</b></td><td class="num">3,875 (−20)</td><td class="num">3,875 أو 3,903 أو 3,854</td><td class="num">3,872 ثم 3,852</td></tr>
-  <tr><td><b>R:R</b></td><td class="num">1.67</td><td class="num">1.67 إلى 2.2</td><td class="num">~2.2 (لبيع الارتداد)</td></tr>
-  <tr><td><b>المخاطرة</b></td><td>$12 (حد أقصى نافذتك)</td><td>$8–12 (حسب السيناريو)</td><td>$9–12</td></tr>
-  <tr><td><b>الأساس</b></td><td>6/6 فريمات + RSI</td><td>نفسه + سيناريوهات + أخبار + دايفرجنس</td><td>بنية + فيبو + مؤشرات</td></tr>
-  <tr><td><b>يتجاهل</b></td><td class="mid">دايفرجنس 5m · موقع السعر بالنطاق</td><td>— (يغطي كل شي)</td><td>لا شيء أساسي</td></tr>
-  <tr><td><b>الحسم</b></td><td class="yes">حاسم — قرار واحد</td><td class="mid">خيارات كثيرة — يترك لك الاختيار</td><td class="mid">متوازن</td></tr>
-</table>
-
-<h2>7) الحكم النهائي — وين نتفق ووين نختلف</h2>
-<div class="grid">
+  <h2>3) المستويات <span class="hint">من وين جت — pivots + فيبو + نطاق اليوم</span></h2>
   <div class="card">
-    <h3>✅ اتفاق كامل على</h3>
+    <table>
+      <thead><tr><th>المستوى</th><th>النوع</th><th>المسافة عن السعر</th><th>المصدر</th></tr></thead>
+      <tbody id="levels"><tr><td colspan="4" class="muted loading">…</td></tr></tbody>
+    </table>
+  </div>
+
+  <h2>4) المؤشرات والإشارات <span class="hint">هون الفرق بين قراءة وقراءة</span></h2>
+  <div class="grid2">
+    <div class="card">
+      <h3>📊 الأرقام</h3>
+      <table><tbody id="inds"><tr><td class="muted loading">…</td></tr></tbody></table>
+    </div>
+    <div class="card">
+      <h3>👁️ عين المحلل — الإشارات الخفية</h3>
+      <div id="insights" class="muted loading">…</div>
+      <div id="fibo" class="muted" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <h2>5) السيناريوهات <span class="hint">الطرق الثلاث اللي ممكن يمشيها السوق</span></h2>
+  <div class="grid3" id="scen"></div>
+
+  <h2>6) الأخبار <span class="hint">معلومة فقط — مو إشارة</span></h2>
+  <div class="card"><div id="news" class="muted loading">…</div></div>
+
+  <h2>7) الحكم — وين نتفق ووين نختلف</h2>
+  <div class="grid2">
+    <div class="card agree">
+      <h3>✅ اتفاق كامل على</h3>
+      <ul>
+        <li>الاتجاه <b>هابط</b> — 6/6 فريمات (أقوى توافق ممكن).</li>
+        <li>الأسلوب: <b>البيع مع الترند</b>، لا مطاردة.</li>
+        <li>المستويات: الدعم 3,872 / 3,852 · المقاومة 3,922–3,924.</li>
+        <li>الوقف إلزامي · التقييم بالـR لا بالنقاط · صفقة وحدة بالمخاطرة.</li>
+      </ul>
+    </div>
+    <div class="card differ">
+      <h3>⚠️ اختلاف على</h3>
+      <ul>
+        <li><b>وقت الدخول:</b> البوت يبيع فوراً عند السعر؛ أنا أفضّل <b>بيع الارتداد</b> لمقاومة قريبة أو <b>كسر</b> الدعم — مو منتصف النطاق.</li>
+        <li><b>إشارات التعب:</b> الخريطة وأنا نرصدها (دايفرجنس + تباطؤ زخم)، البوت ما يحسبها فإنه لا يحذّر منها.</li>
+        <li><b>الشكل:</b> البوت حاسم (قرار واحد) · الخريطة شاملة (سيناريوهات) · أنا موازِن.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="honest">
+    <h3>⚠️ أمانة قبل أي شي</h3>
     <ul>
-      <li>الاتجاه <b>هابط</b> (6/6 فريمات).</li>
-      <li>الاتجاه العام: <b>البيع مع الترند</b>.</li>
-      <li>الدعم 3,872 و 3,852 والمقاومة 3,922–3,924.</li>
-      <li>الوقف إلزامي، والتقييم بالـR.</li>
+      <li>هاد <b>تحليل لحظي</b> على بيانات حيّة، <b>مو نصيحة مالية ولا ضمان</b>. السوق ممكن يمشي عكس الثلاثة.</li>
+      <li><b>البوت والخريطة نفس المحرّك</b>: الخريطة عرض، والبوت تنفيذ — فـ«اتفاقهما» محرّك واحد بشكلين، لا رأيان مستقلان.</li>
+      <li>تحليلي <b>مستقل فعلاً</b>، بس <b>مو أوثق</b> من المحرّك — رأي مبني على نفس البيانات.</li>
+      <li>«الاتجاه هابط» تعني «الاحتمال الأعلى مع البيع» — <b>ما</b> تعني «البيع رح يربح».</li>
+      <li>كل رقم على هالصفحة محسوب من نفس محرّك البوت (<span id="commit" class="pill">—</span>) — لا رقم مكتوب بيد، إلا عمداً موسوم.</li>
     </ul>
   </div>
-  <div class="card">
-    <h3>⚠️ اختلاف على</h3>
-    <ul>
-      <li><b>وقت الدخول:</b> البوت يبيع فوراً؛ أنا أفضل ارتداد لـ3,922 أو كسر 3,872.</li>
-      <li><b>وقف البيع الفوري:</b> 3,907 فوق آخر قمة 5m (3,905.94) بس <b>تحت قمة اليوم (3,923)</b> — ارتداد عادي لـ3,923 يضرب الوقف.</li>
-      <li><b>إشارات التعب:</b> الخريطة وأنا نراها (دايفرجنس + MACD)، البوت لا.</li>
-    </ul>
+
+  <div class="foot">
+    مصدر البيانات: السوق الحيّ عبر biquote.io · المحرّك: bot.py على Render ·
+    الصفحة تُبنى كل ٥ ثواني من <span class="pill">/map.json</span> · التقييم بالـR لا بالنقاط.
   </div>
 </div>
 
-<h3>الخلاصة بكلمة واحدة</h3>
-<p class="big">
-البوت يقول: <b>«بِع الآن»</b> — بسيط وحاسم.<br>
-الخريطة تقول: <b>«الاتجاه بيع، وهذي كل الطرق»</b> — شاملة.<br>
-أنا أقول: <b>«الاتجاه بيع، بس الأفضل تبيع الارتداد لـ3,922 أو كسر 3,872، مو منتصف النطاق»</b>.
-</p>
+<script>
+const F = v => v==null ? "—" : (Math.round(v*100)/100).toLocaleString("en-US");
+const P = v => v==null ? "—" : (v>0?"+":"") + (Math.round(v*10)/10);
+const T = {"1d":"يومي","4h":"4 ساعات","1h":"ساعة","30m":"30 دقيقة","15m":"15 دقيقة","5m":"5 دقائق"};
+const ORDER = ["1d","4h","1h","30m","15m","5m"];
+const trendCell = t => t==1?'<span class="sup">صاعد ▲</span>'
+                        :(t==-1?'<span class="res">هابط ▼</span>'
+                               :'<span class="muted">عرضي ●</span>');
 
-<div class="honest">
-<h3>⚠️ أمانة قبل أي شي</h3>
-<ul>
-  <li>هاد <b>تحليل لحظي</b> على بيانات حيّة (السعر 3,895)، <b>مو نصيحة مالية ولا ضمان</b>. السوق ممكن يعمل عكس الثلاثة.</li>
-  <li><b>البوت والخريطة نفس المحرّك</b> — الخريطة عرض، البوت تنفيذ. فـ«اتفاقهما» مو رأيان مستقلان، بل محرّك واحد بشكلين.</li>
-  <li>تحليلي <b>مستقل فعلاً</b>، بس <b>مو أوثق</b> من المحرّك — رأي بشري مبني على نفس البيانات.</li>
-  <li>«الاتجاه هابط» <b>مو</b> معناها «البيع رح يربح» — معناها إنّ الاحتمال الأعلى مع البيع، لا أكثر.</li>
-  <li>الوقف 12 نقطة = <b>1.5× ATR(15m)</b> بس <b>0.71× ATR(ساعة)</b> — يعني ضيّق نسبياً، وارتداد عادي ممكن يضربه.</li>
-</ul>
-</div>
+// The analyst's read: a snapshot pinned to the moment it was written -- NOT a
+// live number dressed up as a reading. Everything else on the page is live.
+const ANALYST = {
+  at: "2026-11-13 10:30 (سوريا)",
+  call: "الاتجاه هابط — بس أنا أفضّل بيع الارتداد، مو منتصف النطاق.",
+  body: "الارتداد من القاع ضعيف والسعر بنص النطاق — البيع الفوري هون هو أضعف " +
+        "شريحة. الأفضل: انتظار ارتداد لمقاومة قريبة، أو كسر الدعم لإكمال الهبوط."
+};
+document.getElementById("me-call").innerHTML = ANALYST.call;
+document.getElementById("me-body").innerHTML =
+  ANALYST.body + '<div class="muted" style="margin-top:8px;font-size:12px">' +
+  'تحليلي ثابت بتاريخ ' + ANALYST.at + ' — الباقي حيّ من المحرّك.</div>';
 
-<div class="foot">
-مصدر البيانات: biquote.io (حيّ) + محرّك البوت على Render (commit 83228c2) · أُنتج آلياً · التقييم بالـR لا بالنقاط.
-</div>
+function render(d){
+  document.getElementById("sym").textContent = d.symbol;
+  document.getElementById("px").textContent = F(d.live);
+  const dd = d.dayDiffPercent;
+  document.getElementById("state").innerHTML =
+    (d.state==="open"?"🟢 السوق مفتوح":"🔴 السوق مسكّر") +
+    (dd!=null?` · اليوم <span class="${dd<0?'res':'sup'}">${P(dd)}%</span>`:"") +
+    (d.spread!=null?` · سبريد ${F(d.spread)}`:"");
+  document.getElementById("clock").textContent = d.clock || "—";
+  document.getElementById("tz").textContent = d.tz || "";
 
+  const up = Object.values(d.trends).filter(x=>x==1).length;
+  const dn = Object.values(d.trends).filter(x=>x==-1).length;
+  const bias = dn>up?"هابط":(up>dn?"صاعد":"عرضي");
+  const bcls = dn>up?"sell":(up>dn?"buy":"mid");
+
+  document.getElementById("strip").innerHTML = `
+    <div class="kpi"><div class="k">الاتجاه العام (6 فريمات)</div>
+      <div class="v ${bcls}">${bias}</div>
+      <div class="n">${dn>up?dn+" هابط · "+up+" صاعد":(up>dn?up+" صاعد · "+dn+" هابط":"بلا توافق")}</div></div>
+    <div class="kpi"><div class="k">ADX (15د)</div>
+      <div class="v ${d.adx!=null&&d.adx>=25?"gold":"mid"}">${d.adx==null?"—":d.adx.toFixed(0)}</div>
+      <div class="n">${d.adx==null?"—":(d.adx>=25?"اتجاه قائم":"بلا ترند")}</div></div>
+    <div class="kpi"><div class="k">RSI (ساعة)</div>
+      <div class="v">${d.rsis["1h"]?.toFixed(0)??"—"}</div>
+      <div class="n">${d.rsis["1h"]==null?"—":(d.rsis["1h"]<=30?"تشبّع":"حيّاد")}</div></div>
+    <div class="kpi"><div class="k">نطاق اليوم</div>
+      <div class="v">${F(d.dayLow)} ↔ ${F(d.dayHigh)}</div>
+      <div class="n">${(d.dayHigh!=null&&d.dayLow!=null)?Math.round(d.dayHigh-d.dayLow)+" نقطة":"—"}</div></div>`;
+
+  const isShort = d.plan && d.plan.direction==="short";
+  document.getElementById("bot-tag").className = "tag " + (d.plan?(isShort?"t-sell":"t-buy"):"t-mid");
+  document.getElementById("bot-tag").textContent = d.plan?(isShort?"بيع":"شراء"):"انتظار";
+  document.getElementById("bot-call").innerHTML = d.plan
+    ? (isShort?"بيع 🔴":"شراء 🟢") : "بلا صفقة مؤكدة";
+  document.getElementById("bot-body").innerHTML = d.plan
+    ? `<div class="kvline">دخول <b class="lvl">${F(d.plan.entry)}</b> · وقف <b class="lvl">${F(d.plan.stop)}</b> · هدف <b class="lvl">${F(d.plan.target)}</b></div>
+       <div class="kvline">R:R <b>${d.plan.rr?.toFixed(2)}</b> · مخاطرة <b>$${d.plan.risk_usd?.toFixed(0)}</b></div>
+       ${d.late_note?`<div class="kvline mid" style="margin-top:6px">⚠️ ${d.late_note}</div>`:""}`
+    : `<div class="kvline">قراءة بلا دخول — السوق ما حقّق شرط الدخول بعد.</div>
+       <div class="kvline muted">${bias==="هابط"?"الاتجاه هابط بس السعر لسا ما وصل لزناد الدخول.":""}</div>`;
+
+  const a = d.analysis;
+  document.getElementById("map-tag").className = "tag " + (a&&a.side==="sell"?"t-sell":(a&&a.side==="buy"?"t-buy":"t-mid"));
+  document.getElementById("map-tag").textContent = a?(a.side==="sell"?"بيع":(a.side==="buy"?"شراء":"مذبذب")):"—";
+  document.getElementById("map-call").innerHTML = a ? a.bias : "—";
+  document.getElementById("map-body").innerHTML = a
+    ? `<div class="kvline">«${a.verdict}»</div>
+       <div class="kvline muted" style="margin-top:6px">+ ${(a.scenarios||[]).length} سيناريوهات · ${(d.insights||[]).length} ملاحظات محلل</div>`
+    : `<div class="muted">…</div>`;
+
+  document.getElementById("frames").innerHTML = ORDER.map(tf=>{
+    const e = d.emas[tf]||{};
+    return `<tr><td><b>${T[tf]}</b></td><td>${trendCell(d.trends[tf])}</td>
+      <td class="num">${d.rsis[tf]?.toFixed(1)??"—"}</td>
+      <td class="num">${d.atrs[tf]?.toFixed(1)??"—"}</td>
+      <td class="num muted">${F(e.e20)}</td></tr>`;
+  }).join("");
+  document.getElementById("trendbar").innerHTML =
+    `<div class="s" style="width:${dn/6*100}%"></div><div class="n" style="width:${(6-dn-up)/6*100}%"></div><div class="b" style="width:${up/6*100}%"></div>`;
+  document.getElementById("trendline").innerHTML =
+    `🔴 هابط ${dn}/6 · ⚪ عرضي ${6-dn-up}/6 · 🟢 صاعد ${up}/6 — ` +
+    (dn>=5?`<b>توافق قوي، هذا أقوى توافق ممكن.</b>`:`توافق جزئي.`);
+
+  const rows = [];
+  (d.res||[]).slice().reverse().forEach((x,i)=>rows.push({v:x,t:"مقاومة",c:i<2?"res":"muted"}));
+  (d.sup||[]).forEach((x,i)=>rows.push({v:x,t:"دعم",c:i<2?"sup":"muted"}));
+  rows.sort((A,B)=>B.v-A.v);
+  document.getElementById("levels").innerHTML = rows.map(x=>{
+    const dist = x.v - d.live;
+    const here = Math.abs(dist) < 0.5;
+    return `<tr class="${here?"row-hl":""}">
+      <td class="num"><b>${F(x.v)}</b></td>
+      <td class="${x.c}">${x.t==="مقاومة"?"🔺":"🔻"} ${x.t}</td>
+      <td class="num muted">${dist>0?"+":""}${dist.toFixed(0)} نقطة${here?" ← السعر":""}</td>
+      <td class="muted">pivots (1س) / فيبو</td></tr>`;
+  }).join("") || `<tr><td colspan="4" class="muted">— ما في مستويات واضحة</td></tr>`;
+
+  document.getElementById("inds").innerHTML = `
+    <tr><td>RSI 15د / ساعة</td><td class="num">${d.rsis["15m"]?.toFixed(1)??"—"} / ${d.rsis["1h"]?.toFixed(1)??"—"}</td></tr>
+    <tr><td>ATR 15د / ساعة</td><td class="num">${d.atrs["15m"]?.toFixed(1)??"—"} / ${d.atrs["1h"]?.toFixed(1)??"—"}</td></tr>
+    <tr><td>ADX 15د</td><td class="num">${d.adx==null?"—":d.adx.toFixed(1)}</td></tr>
+    <tr><td>السبريد</td><td class="num">${F(d.spread)}</td></tr>`;
+
+  const ins = d.insights || [];
+  document.getElementById("insights").innerHTML = ins.length
+    ? ins.map(i=>`<div class="${i.tone==="warn"?"note":""}" style="margin-bottom:8px"><b>${i.kind}:</b> ${i.text}</div>`).join("")
+    : `<div class="muted">ما في ملاحظات استثنائية هلّق — كل شي ضمن قواعد القراءة.</div>`;
+
+  const f = a && a.fibo;
+  document.getElementById("fibo").innerHTML = (f && f.levels && f.levels.length)
+    ? `<div style="margin-top:4px"><b>📐 فيبو:</b> موجة ${f.direction==="down"?"هابطة":"صاعدة"} ${F(f.bottom)} ← ${F(f.top)} · امتداد 127% → ${F(f.extensions["1.272"])}</div>`
+    : "";
+
+  document.getElementById("scen").innerHTML = (a&&a.scenarios||[]).map(s=>{
+    const isLong = s.side==="long";
+    return `<div class="card role ${isLong?'bot':'map'}" style="border-right:3px solid ${isLong?'var(--buy)':'var(--sell)'}">
+      <div class="who"><span class="name">${isLong?"🟢":"🔴"} ${s.name}</span>
+        <span class="tag ${isLong?'t-buy':'t-sell'}">${s.tag||""}</span></div>
+      <div class="kvline" style="margin-top:8px"><b>المشغّل:</b> ${isLong?"اختراق":"كسر"} <b class="lvl">${F(s.trigger)}</b></div>
+      <div class="kvline"><b>الوقف:</b> <span class="lvl">${F(s.stop)}</span> · <b>الهدف:</b> <span class="lvl">${F(s.target)}</span></div>
+      <div class="kvline">R:R <b>${s.rr?.toFixed(2)}</b></div>
+    </div>`;
+  }).join("") || `<div class="muted">—</div>`;
+
+  document.getElementById("news").innerHTML = (d.news||[]).length
+    ? d.news.slice(0,6).map(n=>`<div class="kvline">• ${n.tag} ${n.title}${n.when?` <span class="muted">(${n.when})</span>`:""}</div>`).join("") +
+      (a&&a.news_note?`<div class="note" style="margin-top:10px">${a.news_note}</div>`:"")
+    : `<span class="muted">— ما في أخبار</span>`;
+
+  if (d.commit) document.getElementById("commit").textContent = d.commit;
+}
+
+async function tick(){
+  try{
+    const r = await fetch("map.json?_=" + Date.now());
+    if (r.ok) render(await r.json());
+  }catch(e){}
+}
+tick();
+setInterval(tick, 5000);
+</script>
 </body>
 </html>

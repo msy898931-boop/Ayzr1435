@@ -43,6 +43,7 @@ MAP_CACHE_S = 15     # the live map is a heavy read; serve it from a short cache
 CHART_CACHE_S = 20   # the candle chart reads one frame; a slightly longer cache
 PRICE_CACHE_S = 2    # the price is one light call; let it feel near-instant
 MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "map.html")
+COMPARE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comparison.html")
 
 # The live map: /map serves the page, /map.json serves the numbers. The numbers
 # come from bot.map_payload() -- the SAME functions the Telegram cards call --
@@ -144,6 +145,15 @@ class Health(BaseHTTPRequestHandler):
                     self._send_raw(200, "text/html; charset=utf-8", fh.read())
             except Exception as exc:  # noqa: BLE001
                 self._send(500, {"error": f"map page missing: {exc}"})
+            return
+        if path in ("/compare", "/comparison"):
+            # The three-way comparison page: bot vs map vs the analyst's read.
+            # It reads the SAME /map.json, so it cannot go stale or disagree.
+            try:
+                with open(COMPARE_PATH, "rb") as fh:
+                    self._send_raw(200, "text/html; charset=utf-8", fh.read())
+            except Exception as exc:  # noqa: BLE001
+                self._send(500, {"error": f"comparison page missing: {exc}"})
             return
         if path in ("/", "/health"):
             # Liveness is the whole point of this endpoint, so it must answer

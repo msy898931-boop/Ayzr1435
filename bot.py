@@ -2285,7 +2285,12 @@ def map_payload() -> dict:
         "live": live,
         "state": q.get("marketState"),
         "dayDiffPercent": q.get("dayDiffPercent"),
+        "dayHigh": q.get("high"),
+        "dayLow": q.get("low"),
         "spread": q.get("spread"),
+        # The running commit, so the comparison page can say WHICH engine built
+        # every number it shows. Render injects RENDER_GIT_COMMIT.
+        "commit": (os.environ.get("RENDER_GIT_COMMIT") or "")[:7] or None,
         "trends": m["trends"],
         "rsis": m["rsis"],
         "atrs": m["atrs"],
