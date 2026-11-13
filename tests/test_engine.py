@@ -1192,6 +1192,39 @@ class FullCardTest(unittest.TestCase):
         self.assertIn("الصورة الكبيرة", t)
         self.assertIn("فيبو", t)
 
+    def test_the_big_picture_is_the_dominant_leg_not_the_last_bounce(self):
+        # A 296-pt drop, then a 68-pt bounce. The bounce is the LAST leg, but the
+        # drop is the leg still in play: naming the bounce the "big picture"
+        # flips the whole read -- the card said "تصحيح داخل صعود → اشترِ" during
+        # a downtrend while its own stance and scenarios said SELL. The leg must
+        # be the DROP.
+        drop = [4148 - (4148 - 3852) * (i / 24) for i in range(25)]
+        bounce = [3852 + (3920 - 3852) * (i / 7) for i in range(8)]
+        with FakeFeed(mid=3920.0, closes={"4h": drop + bounce}):
+            leg = bot._big_leg(3920.0)
+        self.assertIsNotNone(leg)
+        assert leg is not None
+        self.assertTrue(leg[2])                       # a DOWN leg
+        self.assertGreaterEqual(leg[0], 4100.0)       # top = the drop's high
+        self.assertLessEqual(leg[1], 3900.0)          # low = the drop's low
+
+    def test_a_down_tape_never_prints_a_buy_in_the_plan(self):
+        # The owner's rule: all voices one voice. On a down tape (frames lean
+        # short) the plan section must not offer a counter-trend buy -- the
+        # contradiction he caught ("اشترِ عند الجدار" beside a sell stance).
+        decline = [4200 - (4200 - 3800) * (i / 59) for i in range(60)]
+        bounce = [3800 + (3830 - 3800) * (i / 4) for i in range(5)]
+        tape = decline + bounce
+        tail = [3830 + (3 if i % 2 else -3) for i in range(30)]
+        with FakeFeed(mid=3830.0, closes={"1d": tape, "4h": tape, "1h": tape,
+                                          "30m": tail, "15m": tail,
+                                          "5m": tail}):
+            t = bot.card_full()
+        plan = t.split("خطتي")[-1].split("الأخبار")[0]
+        self.assertIn("البيع", plan)
+        self.assertNotIn("تصحيح داخل صعود", plan)
+        self.assertNotIn("اشترِ عند الجدار", plan)
+
     def test_a_range_stance_yields_to_a_real_leg(self):
         # Direct check on the stance: frames say range (side=None), but the
         # price sits mid-retrace of a real drop -> the wall must be named.

@@ -30,6 +30,7 @@ from contextlib import closing, suppress
 from datetime import UTC, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape as _unescape
+from itertools import pairwise
 from pathlib import Path
 
 HOME = Path(__file__).resolve().parent
@@ -4145,19 +4146,31 @@ def _zigzag(h: list, l: list, thr: float) -> list[tuple[int, float, bool]]:
 
     A pivot from a fixed window (the k-th bar being the local max) turns every
     quiet stretch into a "swing", so a 6-point chop named a leg while a real
-    135-point drop was ignored. A threshold makes a pivot mean a MOVE.
+    135-point drop was ignored. A threshold makes a pivot mean a MOVE. The FIRST
+    leg counts too: the extreme the opening move leaves behind is a pivot, or a
+    window that opens inside a big drop loses the drop and keeps only the tail.
     """
     if len(h) < 2:
         return []
     out: list[tuple[int, float, bool]] = []
     up: bool | None = None
     ei, ext = 0, l[0]
+    hi_i, hi = 0, h[0]
+    lo_i, lo = 0, l[0]
     for i in range(1, len(h)):
         if up is None:
-            if h[i] - l[ei] >= thr:
-                up, ei, ext = True, i, h[i]
-            elif l[ei] - l[i] >= thr:
-                up, ei, ext = False, i, l[i]
+            if h[i] > hi:
+                hi_i, hi = i, h[i]
+            if l[i] < lo:
+                lo_i, lo = i, l[i]
+            if hi - lo >= thr:
+                # The opening leg runs from whichever extreme came FIRST.
+                if hi_i < lo_i:                 # high first -> a down leg
+                    out.append((hi_i, hi, True))
+                    up, ei, ext = False, lo_i, lo
+                else:                           # low first -> an up leg
+                    out.append((lo_i, lo, False))
+                    up, ei, ext = True, hi_i, hi
         elif up:
             if h[i] > ext:
                 ei, ext = i, h[i]
@@ -4200,24 +4213,29 @@ def _big_leg(live: float) -> tuple[float, float, bool, float] | None:
     piv = _zigzag(h, l, thr)
     if len(piv) < 2:
         return None
-    # The LAST leg is often just a retracement of the one before it. The big
-    # picture is the dominant swing, so when the current move is the smaller
-    # counter-move, anchor to the prior leg -- that is the drop the owner sees
-    # and the retracement he is trading against.
-    if len(piv) >= 3:
-        (_, pa, a_high), (_, pb, _b_high), (_, pc, _c_high) = (
-            piv[-3], piv[-2], piv[-1])
-        if abs(pc - pb) < abs(pb - pa):
-            hi, lo = (pa, pb) if a_high else (pb, pa)
-            if hi > lo:
-                return hi, lo, a_high, (live - lo) / (hi - lo)
-    (_pi, pp, p_high), (_ci, cp, c_high) = piv[-2], piv[-1]
-    if p_high == c_high:            # not an alternating pair -- no clean leg
-        return None
-    hi, lo = (pp, cp) if p_high else (cp, pp)
+    # The DOMINANT swing, not merely the last leg. In a big drop with a small
+    # bounce the LAST leg is the bounce, and naming THAT the "big picture" flips
+    # the whole read: the card then says "buy the dip" while the drop the owner
+    # sees on his chart is still the trade. Among the recent swings that still
+    # hold the price, take the most RECENT one comparable in size to the largest
+    # -- so a small bounce does not outvote the drop it retraces, and a drop
+    # that is itself the tail of a bigger move back is that bigger move.
+    legs: list[tuple[float, float, float, bool]] = []
+    for (_, pa, _ah), (_, pb, _bh) in pairwise(piv):
+        hi, lo = (pa, pb) if pa > pb else (pb, pa)
+        if hi > lo and lo - thr <= live <= hi + thr:
+            legs.append((hi - lo, hi, lo, pa > pb))
+    if legs:
+        biggest = max(x[0] for x in legs)
+        for span, hi, lo, bdown in reversed(legs):
+            if span >= 0.6 * biggest:
+                return hi, lo, bdown, (live - lo) / (hi - lo)
+    # Price has left every recent leg; fall back to the last swing.
+    (_pi, pp, _p_high), (_ci, cp, _c_high) = piv[-2], piv[-1]
+    hi, lo = (pp, cp) if pp > cp else (cp, pp)
     if hi <= lo:
         return None
-    return hi, lo, p_high, (live - lo) / (hi - lo)
+    return hi, lo, pp > cp, (live - lo) / (hi - lo)
 
 
 def _wall_trigger(live: float,
@@ -4513,8 +4531,11 @@ def card_full() -> str:
     icon = {1: "🟢", -1: "🔴", 0: "⚪"}
     up = sum(1 for tf in FRAMES if m["trends"].get(tf) == 1)
     dn = sum(1 for tf in FRAMES if m["trends"].get(tf) == -1)
-    down = dn >= 4
-    up_trend = up >= 4
+    # ONE "which way": the same _trend_side the map and the news line read, so
+    # this card cannot call a 4/6 tape "down" while the map calls it "mixed".
+    tside = _trend_side(m)
+    down = tside == "short"
+    up_trend = tside == "long"
 
     try:
         day_open = float(bars("1d", 5)[-1]["open"])
