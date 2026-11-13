@@ -1912,8 +1912,8 @@ class AnalystEyeTest(_DbCase):
     def test_edge_note_names_the_bounce_and_the_break(self):
         note = bot._edge_note("sell", [4120.0], [4094.0])
         self.assertIn("لحاق", note)
-        self.assertIn("4,094", note)   # the break below the support
-        self.assertIn("4,120", note)   # the bounce up to the resistance
+        self.assertIn("4,093.5", note)   # the break below the support (level - hair)
+        self.assertIn("4,120", note)     # the bounce up to the resistance
 
     def test_opinion_drops_the_confidence_when_the_spot_is_a_chase(self):
         # 6/6 down would be "عالية", but price sits ON the support -> a chase:
@@ -1936,6 +1936,16 @@ class AnalystEyeTest(_DbCase):
             False, [3923.0], [3840.0], 15.0))
         self.assertNotIn("لحاق", out)
         self.assertIn("عالية", out)
+
+    def test_break_levels_are_a_hair_past_the_level(self):
+        # One producer for every "break": the trigger is the level +/- a hair,
+        # so the read card and the scenario card cannot quote two numbers.
+        down, up = bot._break_levels([3923.31], [3888.46])
+        self.assertEqual(down, 3887.96)
+        self.assertEqual(up, 3923.81)
+        # No level on a side -> no break invented on that side.
+        self.assertEqual(bot._break_levels([], [3888.46]), (3887.96, None))
+        self.assertEqual(bot._break_levels([3923.31], []), (None, 3923.81))
 
 
 class DailyAnalysisTest(unittest.TestCase):

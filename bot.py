@@ -246,6 +246,9 @@ NEAR_STOP_FRAC = 0.30            # within this fraction of the entry->stop span
 # the desk's buy/sell zones, carrying the trade it implies -- the owner asked
 # to hear BEFORE an entry, not after. ~0.15% of the price on gold.
 ENTRY_NEAR_PTS = float(os.environ.get("DESK_ENTRY_NEAR_PTS", "6") or "6")
+# A break is confirmed a hair PAST the level, not at it -- a touch is not a
+# break. One constant so every card that names a break quotes the same price.
+BREAK_EPS = 0.5
 
 
 # ---- menus --------------------------------------------------------------
@@ -1254,6 +1257,20 @@ def card_levels() -> str:
     return "\n".join(lines)
 
 
+def _break_levels(res: list[float],
+                  sup: list[float]) -> tuple[float | None, float | None]:
+    """The price that CONFIRMS a break, both directions, from one rule.
+
+    A break is a hair past the level (BREAK_EPS), not a touch. Every card that
+    names a break reads this, so the bot cannot quote two different break prices
+    for the same level -- the owner caught the read card breaking the day's low
+    while the scenario card broke the pivot, two numbers for one idea.
+    """
+    down = round(sup[0] - BREAK_EPS, 2) if sup else None
+    up = round(res[0] + BREAK_EPS, 2) if res else None
+    return down, up
+
+
 def card_scenarios() -> str:
     """The two conditional trades, priced by the desk's own rules.
 
@@ -1266,27 +1283,26 @@ def card_scenarios() -> str:
     m = read_market()
     live = m["live"]
     res, sup = _levels(live)
+    dn_trig, up_trig = _break_levels(res, sup)
     lines = [f"🎬 <b>السيناريوهات</b> — {SYMBOL}",
              f"السعر <b>{num(live)}</b>", ""]
     if not res and not sup:
         lines.append("ما قدرت أقرأ المستويات الآن.")
         return "\n".join(lines)
-    if res:
-        trig = res[0] + 0.5
-        p = _sized(trig, "long", res[0])
+    if up_trig is not None:
+        p = _sized(up_trig, "long", res[0])
         nxt = f" · المقاومة التالية {num(res[1])}" if len(res) > 1 else ""
         lines += ["<b>🟢 سيناريو صعود</b>",
-                  f"  المشغّل: اختراق <b>{num(trig)}</b> "
-                  f"(+{trig - live:.1f} نقطة){nxt}",
+                  f"  المشغّل: اختراق <b>{num(up_trig)}</b> "
+                  f"(+{up_trig - live:.1f} نقطة){nxt}",
                   f"  الوقف: {num(p['stop'])} · الهدف: {num(p['target'])}",
                   f"  R:R ≈ {p['rr']:.2f} (مخاطرة ${p['risk_usd']:.0f})", ""]
-    if sup:
-        trig = sup[0] - 0.5
-        p = _sized(trig, "short", sup[0])
+    if dn_trig is not None:
+        p = _sized(dn_trig, "short", sup[0])
         nxt = f" · الدعم التالي {num(sup[1])}" if len(sup) > 1 else ""
         lines += ["<b>🔴 سيناريو هبوط</b>",
-                  f"  المشغّل: كسر <b>{num(trig)}</b> "
-                  f"(−{live - trig:.1f} نقطة){nxt}",
+                  f"  المشغّل: كسر <b>{num(dn_trig)}</b> "
+                  f"(−{live - dn_trig:.1f} نقطة){nxt}",
                   f"  الوقف: {num(p['stop'])} · الهدف: {num(p['target'])}",
                   f"  R:R ≈ {p['rr']:.2f} (مخاطرة ${p['risk_usd']:.0f})", ""]
     lines.append("<i>سيناريوهات مشروطة — ما تنفّذ إلا لما يتحقق المشغّل. "
@@ -2010,33 +2026,37 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
     scen: list[dict] = []
     if down:
         if sup:
-            s = _sized(sup[0] - 0.5, "short", sup[0])
+            s = _sized(sup[0] - BREAK_EPS, "short", sup[0])
             scen.append({"side": "short", "name": "استمرار الهبوط",
-                         "tag": "مع الاتجاه · الأرجح", "trigger": sup[0] - 0.5,
+                         "tag": "مع الاتجاه · الأرجح",
+                         "trigger": sup[0] - BREAK_EPS,
                          "targets": sup[1:4], **s})
             s = _sized(live, "long", sup[0])
             scen.append({"side": "long", "name": "ارتداد تصحيحي (قصير)",
                          "tag": "مضاد · نصّ الحجم", "trigger": live,
                          "targets": ([res[0]] if res else []), **s})
         if res:
-            s = _sized(res[0] + 0.5, "long", res[0])
+            s = _sized(res[0] + BREAK_EPS, "long", res[0])
             scen.append({"side": "long", "name": "انعكاس صاعد",
-                         "tag": "يحتاج إثبات", "trigger": res[0] + 0.5,
+                         "tag": "يحتاج إثبات",
+                         "trigger": res[0] + BREAK_EPS,
                          "targets": res[1:4], **s})
     else:
         if res:
-            s = _sized(res[0] + 0.5, "long", res[0])
+            s = _sized(res[0] + BREAK_EPS, "long", res[0])
             scen.append({"side": "long", "name": "استمرار الصعود",
-                         "tag": "مع الاتجاه · الأرجح", "trigger": res[0] + 0.5,
+                         "tag": "مع الاتجاه · الأرجح",
+                         "trigger": res[0] + BREAK_EPS,
                          "targets": res[1:4], **s})
             s = _sized(live, "short", res[0])
             scen.append({"side": "short", "name": "ارتداد تصحيحي (قصير)",
                          "tag": "مضاد · نصّ الحجم", "trigger": live,
                          "targets": ([sup[0]] if sup else []), **s})
         if sup:
-            s = _sized(sup[0] - 0.5, "short", sup[0])
+            s = _sized(sup[0] - BREAK_EPS, "short", sup[0])
             scen.append({"side": "short", "name": "انكاس هابط",
-                         "tag": "يحتاج إثبات", "trigger": sup[0] - 0.5,
+                         "tag": "يحتاج إثبات",
+                         "trigger": sup[0] - BREAK_EPS,
                          "targets": sup[1:4], **s})
 
     # --- the playbook: WHEN to sell and WHEN to buy, each priced ---
@@ -2047,7 +2067,7 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
         sell.append({"kind": "بيع ارتداد (متحفّظ)",
                      "when": f"لمس {num(res[0])} ورفض", **s})
     if sup:
-        s = _sized(sup[0] - 0.5, "short", sup[0])
+        s = _sized(sup[0] - BREAK_EPS, "short", sup[0])
         sell.append({"kind": "بيع كسر (اختراقي) ⭐",
                      "when": f"كسر {num(sup[0])} بإغلاق", **s})
     if plan_d and plan_d.get("direction") == "short":
@@ -2059,7 +2079,7 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
         buy.append({"kind": "شراء عند الدعم",
                      "when": f"لمس {num(sup[0])} ورفض", **s})
     if res:
-        s = _sized(res[0] + 0.5, "long", res[0])
+        s = _sized(res[0] + BREAK_EPS, "long", res[0])
         buy.append({"kind": "شراء اختراق",
                      "when": f"إغلاق فوق {num(res[0])}", **s})
 
@@ -2242,12 +2262,12 @@ def map_payload() -> dict:
     scen: list[dict] = []
     if live > 0:
         if res:
-            trig = res[0] + 0.5
+            trig = res[0] + BREAK_EPS
             s = _sized(trig, "long", res[0])
             scen.append({"side": "long", "trigger": trig, "level": res[0],
                          "next": res[1] if len(res) > 1 else None, **s})
         if sup:
-            trig = sup[0] - 0.5
+            trig = sup[0] - BREAK_EPS
             s = _sized(trig, "short", sup[0])
             scen.append({"side": "short", "trigger": trig, "level": sup[0],
                          "next": sup[1] if len(sup) > 1 else None, **s})
@@ -3109,18 +3129,19 @@ def _entry_choice(side: str, live: float,
     come from one engine.
     """
     try:
-        if side == "short" and sup:
-            brk = _sized(sup[0] - 0.5, "short", sup[0])
+        dn_trig, up_trig = _break_levels(res, sup)
+        if side == "short" and sup and dn_trig is not None:
+            brk = _sized(dn_trig, "short", sup[0])
             mkt = _sized(live, "short", min(res) if res else None)
             if brk["rr"] > mkt["rr"] + 0.05:
-                return (f"🎯 <b>الأفضل: بِع كسر {num(sup[0])}</b> · "
+                return (f"🎯 <b>الأفضل: بِع كسر {num(dn_trig)}</b> · "
                         f"R:R {brk['rr']:.2f} — بدل الدخول الفوري بالسعر "
                         f"(R:R {mkt['rr']:.2f}).")
-        elif side == "long" and res:
-            brk = _sized(res[0] + 0.5, "long", res[0])
+        elif side == "long" and res and up_trig is not None:
+            brk = _sized(up_trig, "long", res[0])
             mkt = _sized(live, "long", max(sup) if sup else None)
             if brk["rr"] > mkt["rr"] + 0.05:
-                return (f"🎯 <b>الأفضل: اشتري اختراق {num(res[0])}</b> · "
+                return (f"🎯 <b>الأفضل: اشتري اختراق {num(up_trig)}</b> · "
                         f"R:R {brk['rr']:.2f} — بدل الدخول الفوري بالسعر "
                         f"(R:R {mkt['rr']:.2f}).")
     except Exception:  # noqa: BLE001 - a missing level must not kill the card
@@ -4016,21 +4037,23 @@ def _edge_note(side: str, res: list[float], sup: list[float]) -> str:
 
     It names the two better plays -- the bounce or the break -- so the read is
     honest about the spot without contradicting the desk's own market entry
-    (the desk still takes the trade; this says the SPOT is a chase).
+    (the desk still takes the trade; this says the SPOT is a chase). The break
+    is named with the SAME trigger _break_levels() gives every other card.
     """
+    dn_trig, up_trig = _break_levels(res, sup)
     if side == "sell":
         bits = []
         if res:
             bits.append(f"بِع الارتداد لفوق عند <b>{num(res[0])}</b>")
-        if sup:
-            bits.append(f"بِع الكسر تحت <b>{num(sup[0])}</b>")
+        if dn_trig is not None:
+            bits.append(f"بِع الكسر تحت <b>{num(dn_trig)}</b>")
         tail = (" الأفضل: " + " أو ".join(bits)) if bits else ""
         return f"📍 السعر ملزوق على الدعم — البيع من هون <b>لحاق متأخر</b>.{tail}."
     bits = []
     if sup:
         bits.append(f"اشتري الارتداد لتحت عند <b>{num(sup[0])}</b>")
-    if res:
-        bits.append(f"اشتري الاختراق فوق <b>{num(res[0])}</b>")
+    if up_trig is not None:
+        bits.append(f"اشتري الاختراق فوق <b>{num(up_trig)}</b>")
     tail = (" الأفضل: " + " أو ".join(bits)) if bits else ""
     return f"📍 السعر ملزوق على المقاومة — الشراء من هون <b>لحاق متأخر</b>.{tail}."
 
@@ -4256,6 +4279,7 @@ def card_full() -> str:
     thin = bool(pnow is not None and g1 is not None and a1
                 and g1 * a1 < pnow["risk_pts"])
     res_lv, sup_lv = _levels(live)
+    dn_trig, up_trig = _break_levels(res_lv, sup_lv)
     L += _opinion(live, trend_side, agree, sell, buy, rsis.get("15m"), mixed,
                   big, trig, pnow, thin, res_lv, sup_lv, a1)
 
@@ -4374,39 +4398,37 @@ def card_full() -> str:
     L.append("\n<b>👀 السيناريوهات (بلا احتمال مخترع):</b>")
     atr1 = atrs.get("1h") or 10.0
     if down:
-        below = [z for z, _n in buy if z < lo]
-        above = [z for z, _n in sell if z > live]
-        dn1 = max(below) if below else lo - atr1
-        up1 = min(above) if above else live + atr1
-        L.append(f"  <b>A</b> استمرار هبوط: كسر <b>{num(lo)}</b> بإغلاق → "
+        # The break is the SAME break every other card names: the nearest pivot
+        # support + BREAK_EPS, from _break_levels/_levels -- not the day's low.
+        # The owner caught this card breaking 3,878.89 while the scenario card
+        # broke the pivot, two numbers for one idea.
+        brk = dn_trig if dn_trig is not None else lo
+        dn1 = sup_lv[1] if len(sup_lv) > 1 else brk - atr1
+        L.append(f"  <b>A</b> استمرار هبوط: كسر <b>{num(brk)}</b> بإغلاق → "
                  f"هدف <b>{num(dn1)}</b>")
         # B and C name the SAME resistance, and that is correct: it is where a
         # bounce dies OR where a close flips the trend. The card must say which
         # is which, or the two read as one. So B is a TOUCH that gets rejected,
         # C is a 1h CLOSE above it -- and each says so in words. Both levels are
-        # the nearest resistance ABOVE the price; taking sell[0] instead picked
-        # a zone the price had already left behind (below it), which is no
-        # level at all.
-        rev = up1
-        rev_t = sorted(above)[1] if len(above) > 1 else rev + atr1
+        # the nearest resistance ABOVE the price (the same one the levels
+        # section shows).
+        rev = res_lv[0] if res_lv else live + atr1
+        rev_t = res_lv[1] if len(res_lv) > 1 else rev + atr1
         L.append(f"  <b>B</b> ارتداد لفوق: يلمس <b>{num(rev)}</b> ويرتد منها → "
                  f"يرجع يهبط · <i>فرصة بيع</i>")
         L.append(f"  <b>C</b> انقلاب صاعد: إغلاق 1س <b>فوق</b> <b>{num(rev)}</b> "
                  f"<i>(إغلاق، مو مجرد لمس)</i> → هدف <b>{num(rev_t)}</b> · "
                  f"<i>وقّف البيع</i>")
     elif up_trend:
-        below = [z for z, _n in buy if z < live]
-        above = [z for z, _n in sell if z > hi]
-        dn1 = max(below) if below else live - atr1
-        up1 = min(above) if above else hi + atr1
-        L.append(f"  <b>A</b> استمرار صعود: اختراق <b>{num(hi)}</b> بإغلاق → "
+        brk = up_trig if up_trig is not None else hi
+        up1 = res_lv[1] if len(res_lv) > 1 else brk + atr1
+        L.append(f"  <b>A</b> استمرار صعود: اختراق <b>{num(brk)}</b> بإغلاق → "
                  f"هدف <b>{num(up1)}</b>")
         # Mirror of the down branch: B and C share the nearest support BELOW the
         # price -- a touch that holds (still buy) vs a 1h close below it (flip
-        # down). Taking buy[0] instead could name a support the price already
-        # sits above, which is no level at all.
-        rev = dn1
-        rev_t = sorted(below)[-2] if len(below) > 1 else rev - atr1
+        # down).
+        rev = sup_lv[0] if sup_lv else live - atr1
+        rev_t = sup_lv[1] if len(sup_lv) > 1 else rev - atr1
         L.append(f"  <b>B</b> ارتداد لتحت: يلمس <b>{num(rev)}</b> ويرتد منها → "
                  f"يرجع يطلع · <i>فرصة شراء</i>")
         L.append(f"  <b>C</b> انقلاب هابط: إغلاق 1س <b>تحت</b> <b>{num(rev)}</b> "
