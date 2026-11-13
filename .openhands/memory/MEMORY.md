@@ -1175,3 +1175,12 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   -- so the card and the map read ONE word from `_market_bias` on the real tape.
   The deploy truth stands: the owner must press Deploy himself; the API key is
   the wrong (suspended) account. Verify a deploy by `/health` commit + uptime_s.
+- ⚠️ **The sandbox `TELEGRAM_BOT_TOKEN` secret is STALE** (35 chars, no
+  `bot_id:` prefix; `getMe` -> 404, and 404+id-prefix -> Unauthorized). The
+  LIVE Render service has its own working `TG_TOKEN`. So a message can NOT be
+  sent from the sandbox with the injected secret -- but it CAN with the bot's
+  real token. `bot.token()` already validates identity via `token_identity`
+  (a stale string 404s). The owner's chat is `933571066`; the bot is
+  `@Ayzr1324_bot` (id 9012677710). Send with
+  `curl -X POST .../sendMessage --data-urlencode chat_id=... --data-urlencode text@file`.
+  Never store the token value anywhere.
