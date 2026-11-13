@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import sys
 import tempfile
 import unittest
@@ -904,6 +905,20 @@ class FullCardTest(unittest.TestCase):
     """card_full is MY OWN read of the tape (the owner asked for the agent's
     analysis, not the desk's verdict). It must stay inside Telegram's limit and
     carry the sections plus a concrete call."""
+
+    def setUp(self):
+        # card_full reads the journal for the win-rate line. Pin it to a fresh
+        # EMPTY db so the card renders its "no trades yet" branch regardless of
+        # what the developer's real data/journal.db happens to hold -- otherwise
+        # this suite passes on a clean checkout and fails on a working one.
+        self._tmp = tempfile.mkdtemp()
+        self._db = bot.DB_PATH
+        bot.DB_PATH = pathlib.Path(self._tmp) / "journal.db"
+        bot._init_db()
+
+    def tearDown(self):
+        bot.DB_PATH = self._db
+        shutil.rmtree(self._tmp, ignore_errors=True)
 
     def _feed(self):
         # A wavy 1h series: real pivots, so structure and zones are present.
