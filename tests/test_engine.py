@@ -2149,6 +2149,38 @@ class ReportTest(unittest.TestCase):
         self.assertIn("bias", mp["report"])
         self.assertEqual(mp["report"]["live"], mp["live"])
 
+    def test_the_card_prints_the_report_lines_verbatim(self):
+        # The owner's rule: the report on the bot and on the map is the SAME
+        # text, word for word. The card must print report_payload()["lines"]
+        # with nothing added, reordered or reformatted -- so the two surfaces
+        # cannot drift, because there is only one text.
+        with FakeFeed(mid=4100.0, closes={"1h": self._rise()}):
+            p = bot.report_payload()
+            t = bot.card_report()
+        self.assertEqual(t, "\n".join(p["lines"]))
+        self.assertTrue(p["lines"])
+
+    def test_the_report_text_is_carried_in_the_map_payload(self):
+        # The page prints report.lines verbatim, so the map payload MUST carry
+        # the very same list the card prints. Same read -> same lines.
+        with FakeFeed(mid=4100.0, closes={"1h": self._rise()}):
+            mp = bot.map_payload()
+            p = bot.report_payload()
+        self.assertIn("lines", mp["report"])
+        self.assertTrue(mp["report"]["lines"])
+
+    def test_the_report_levels_match_the_map_display_levels(self):
+        # The report's level ladder must be the SAME set the map's own level
+        # list shows (the sticky display pool), or the two sections of one page
+        # would name different prices.
+        with FakeFeed(mid=4100.0, closes={"1h": self._rise()}):
+            mp = bot.map_payload()
+        rep = mp["report"]
+        rep_res = [lv["price"] for lv in rep["levels"] if lv["kind"] == "مقاومة"]
+        rep_sup = [lv["price"] for lv in rep["levels"] if lv["kind"] == "دعم"]
+        self.assertEqual(rep_res, mp["res"][:len(rep_res)])
+        self.assertEqual(rep_sup, mp["sup"][:len(rep_sup)])
+
     def test_the_card_fits_the_telegram_limit(self):
         with FakeFeed(mid=4100.0, closes={"1h": self._rise()}):
             t = bot.card_report()

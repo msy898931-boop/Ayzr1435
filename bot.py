@@ -1476,17 +1476,45 @@ def card_map() -> str:
     return "\n".join(lines)
 
 
-def card_report() -> str:
-    """The full analysis report as a Telegram card -- the SAME engine as the map.
+def _display_levels(live: float) -> tuple[list[float], list[float]]:
+    """The levels the map DISPLAYS: the sticky pool, split by the live price.
 
-    Reads report_payload(), so the card and the live page can never disagree:
-    one report, two views. Every figure is the live tape's, and the closing
-    lines say plainly that this is a reading, not a promise.
+    The map shows the sticky pool -- a level once named is never dropped -- so
+    the report reads the SAME set here. A standalone report (the Telegram card)
+    therefore names the same prices the live page does; the trade surfaces keep
+    the FRESH levels, because a trade may not fire off a level the market left.
+    """
+    if live <= 0:
+        return [], []
+    fres, fsup = _levels(live)
+    try:
+        st = _sticky_map(live, fres, fsup, [], [], [], [])
+        return list(st["res"]), list(st["sup"])
+    except Exception:  # noqa: BLE001 - a bad pool must not kill the report
+        return fres, fsup
+
+
+def card_report() -> str:
+    """The full analysis report as a Telegram card -- the SAME text as the map.
+
+    It prints report_payload()["lines"] verbatim: the very lines the live page
+    prints, so the report is word-for-word identical on the two surfaces. One
+    text, two views -- they cannot drift, because there is only one text.
     """
     p = report_payload()
+    return "\n".join(p["lines"])
+
+
+def _report_lines(p: dict) -> list[str]:
+    """The report as ONE list of HTML lines -- the canonical text.
+
+    The Telegram card and the live map page both print these lines VERBATIM, so
+    the report is word-for-word identical on both. Telegram HTML and the page
+    share the same subset (<b>, <i>), so one list serves both.
+    """
     live = p["live"]
     if not live:
-        return "⚠️ ما في قراءة سوق هلّق — جرّب بعد شوي."
+        return ["⚠️ ما في قراءة سوق هلّق — جرّب بعد شوي."]
 
     L = [f"🥇 <b>تحليلي المستقل — {esc(p['symbol'])}</b>"]
     dd = p.get("dayDiffPercent")
@@ -1496,49 +1524,62 @@ def card_report() -> str:
     L.append(head)
     L.append(f"<i>{p['clock']} {p['tz']}</i>")
 
-    L.append(f"\n<b>🧭 الميل العام:</b> {esc(p['bias'])} "
+    L.append(f"<b>🧭 الميل العام:</b> {esc(p['bias'])} "
              f"({p['dn']} فريم هابط · {p['up']} صاعد من 6)")
 
-    L.append("\n<b>📊 الفريمات:</b>")
+    L.append("")
+    L.append("<b>📊 الفريمات:</b>")
     for f in p["frames"]:
         icon = "🔴" if f["trend"] == -1 else ("🟢" if f["trend"] == 1 else "⚪")
         r = f"{f['rsi']:.0f}" if f["rsi"] is not None else "—"
         a = f"{f['atr']:.1f}" if f["atr"] is not None else "—"
-        L.append(f"  {icon} <b>{f['label']}</b> — RSI {r} · ATR {a}")
+        L.append(f"{icon} <b>{f['label']}</b> — RSI {r} · ATR {a}")
         if f["read"]:
-            L.append(f"     <i>{esc(f['read'])}</i>")
+            L.append(f"   <i>{esc(f['read'])}</i>")
 
     if p["structure"]:
-        L.append(f"\n<b>🏗️ البنية:</b> {esc(p['structure'])}")
+        L.append("")
+        L.append(f"<b>🏗️ البنية:</b> {esc(p['structure'])}")
 
     if p["levels"]:
-        L.append("\n<b>🧭 المستويات:</b>")
+        L.append("")
+        L.append("<b>🧭 المستويات:</b>")
         for lv in p["levels"][:8]:
             arrow = "🔺" if lv["kind"] == "مقاومة" else "🔻"
-            L.append(f"  {arrow} {num(lv['price'])} <i>({lv['dist']:+.0f})</i>")
+            L.append(f"{arrow} {num(lv['price'])} <i>({lv['dist']:+.0f})</i>")
 
     s = p["sessions"]
     sline = []
-    if s.get("asia"):
-        sline.append(f"آسيا {s['asia']['pts']:.0f}")
-    if s.get("london"):
-        sline.append(f"لندن {s['london']['pts']:.0f}")
-    if s.get("ny"):
-        sline.append(f"نيويورك {s['ny']['pts']:.0f}")
+    for lbl, key in (("آسيا", "asia"), ("لندن", "london"), ("نيويورك", "ny")):
+        if s.get(key):
+            sline.append(f"{lbl} {num(s[key]['low'])} → {num(s[key]['high'])} "
+                         f"({s[key]['pts']:.1f})")
     if sline:
-        L.append(f"\n<b>🌏 نطاق الجلسات (نقطة):</b> {' · '.join(sline)}")
+        L.append("")
+        L.append("<b>🌏 نطاق الجلسات:</b>")
+        L.extend(sline)
 
     if p["fib_line"]:
-        L.append(f"\n<b>📐 فيبو:</b> {esc(p['fib_line'])}")
+        L.append("")
+        L.append(f"<b>📐 فيبو:</b> {esc(p['fib_line'])}")
+
+    if p["days"]:
+        L.append("")
+        L.append("<b>📅 آخر الأيام (فتح · قمة · قاع · إغلاق · تغيّر):</b>")
+        for d in p["days"]:
+            ic = "🟢" if d["chg"] >= 0 else "🔴"
+            L.append(f"{d['date'][5:]} — {num(d['open'])} · {num(d['high'])} · "
+                     f"{num(d['low'])} · {num(d['close'])} ({ic} {d['chg']:+.1f})")
 
     if p["bullets"]:
-        L.append("\n<b>🎯 الخلاصة:</b>")
-        for b in p["bullets"]:
-            L.append(f"  • {esc(b)}")
+        L.append("")
+        L.append("<b>🎯 الخلاصة:</b>")
+        L.extend(f"• {esc(b)}" for b in p["bullets"])
 
-    L.append("\n<i>قراءة فنية من بيانات حيّة — مو توصية ولا وعد ربح. "
+    L.append("")
+    L.append("<i>قراءة فنية من بيانات حيّة — مو توصية ولا وعد ربح. "
              "الوقف إلزامي دايماً.</i>")
-    return "\n".join(L)
+    return L
 
 
 def _ema_last(vals: list[float], n: int) -> float | None:
@@ -2188,11 +2229,13 @@ def map_payload() -> dict:
 
     # The full report -- the SAME engine the bot's "التحليل التفصيلي" card reads,
     # so the page and the card can never disagree. Guarded: a failure drops the
-    # section, it never blanks the page. Pass the reads we already have so the
-    # page pays for ONE tape read, not two.
+    # section, it never blanks the page. It gets the SAME sticky display levels
+    # the page's own level list shows, so the report's "المستويات" cannot differ
+    # from the "خريطة المستويات" right above it. Pass the reads we already have
+    # so the page pays for ONE tape read, not two.
     report = None
     with suppress(Exception):
-        report = report_payload(m, res, sup, frame_bars)
+        report = report_payload(m, sticky["res"], sticky["sup"], frame_bars)
 
     return {
         "symbol": SYMBOL,
@@ -2270,7 +2313,7 @@ def report_payload(m: dict | None = None,
         m = read_market()
     q, live = m["q"], m["live"]
     if res is None or sup is None:
-        res, sup = _levels(live) if live > 0 else ([], [])
+        res, sup = _display_levels(live)
     fb = frames_bars or {}
 
     frames: list[dict] = []
@@ -2360,7 +2403,7 @@ def report_payload(m: dict | None = None,
     with suppress(Exception):
         plan_d = plan(m)
 
-    return {
+    out = {
         "symbol": SYMBOL,
         "live": live,
         "state": q.get("marketState"),
@@ -2386,6 +2429,8 @@ def report_payload(m: dict | None = None,
         "clock": _clock(datetime.now(UTC)),
         "tz": TZ_LABEL,
     }
+    out["lines"] = _report_lines(out)
+    return out
 
 
 def _rsi_series(vals: list[float], n: int = 14) -> list[float | None]:
