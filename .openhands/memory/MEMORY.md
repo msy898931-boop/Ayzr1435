@@ -1064,3 +1064,26 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   `map.html` `#rpt-*` section repainted every 5 min. Live-verified, `9a87ddb`.
 - ⚠️ **`test_every_menu_action_is_wired` keeps its OWN `known` set** — a new
   menu action fails until added there by hand; it does not read `dispatch`.
+
+## 2026-11-07 (later) — one mouth: the THREE defects and the rule behind them
+
+- ⭐ **Where the same data lands on several surfaces, give it ONE producer — and
+  check WHO reads the live *state*, not just the plan.** The bot contradicted
+  ITSELF in one minute: `card_action` read `_verdict(m)` → "open trade, don't
+  enter"; `card_recommend` read `plan(m)` ONLY → "enter now". `plan()` is
+  stateless; the state (hold/enter/wait) is not. `card_recommend` now reads
+  `_verdict(m)` too. Lesson generalizes: two cards "both reading the plan" can
+  still disagree if only one folds in the live open-trade state.
+- ⭐ **A merged-source helper (`_news_items_merged()`) is the report-text trick
+  again**: `card_news`, `map_payload` and `daily_analysis` each used to rebuild
+  "live feed + manual NEWS_ITEMS" by hand — three copies that could drift. One
+  producer now feeds all three. `_news_context(side)` ties the headlines to a
+  direction ("الخبر معك/ضدّك", CPI = تقلّب) on the recommendation, scenarios and
+  map verdict — INFORMATION ONLY, never a plan input.
+- ⭐ **A factual sub-reading that contradicts the headline above it reads as the
+  bot arguing with itself.** `_structure_read()` said "بنية صاعدة" while price
+  sat a hair below the last 1h pivot beside a 6/6 down trend. It now takes the
+  desk's bias via `_trend_dir(trends)` → (dir, count) and labels opposite swings
+  "بنية قصيرة المدى، عكس الاتجاه العام (n/6)". Reconcile or label — never bare.
+- Suite **219** (was 209). mypy **3** (was 4 — fixed news-item typing). ruff 43
+  (pre-existing). Commit `7eec8a1`, pushed `b380ae2..7eec8a1`.
