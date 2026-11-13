@@ -1033,3 +1033,21 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   itself errors (RUF100). Baseline for tests/test_engine.py is 4 errors.
 - Suite now **189 tests, 1 pre-existing failure** (`test_the_win_rate_line_names_
   its_source`). Commits `915605a`, `1195f77`. Render autoDeploy OFF.
+
+## MarketDesk — one report engine, two views (2026-11-07)
+
+- ⭐ **A report on two surfaces is ONE engine or it is two reports.** The owner
+  asked for the hand-written analysis to live on the live map AND the bot and
+  update with the market. `report_payload()` in bot.py builds it once; both
+  `map_payload()["report"]` (the page) and `card_report()` (Telegram) read it,
+  so they can never disagree — the rule the map already follows for zones.
+- ⭐ **Pass the tape, never re-read it.** `report_payload` takes an optional
+  `m/res/sup/frames_bars`; `map_payload` hands over the six frames it already
+  read. One read, one truth.
+- ⚠️ **`read_market` reads RAW `bars`, not `closed`.** A report frame's trend
+  MUST come from `m["trends"]`, not a fresh `frame_trend` on `closed` bars —
+  they differ on the live bar and the page would contradict the card.
+- New MENU button "🥇 التحليل التفصيلي" (`report`) + text تقرير/تفصيلي/تحليلي;
+  `map.html` `#rpt-*` section repainted every 5 min. Live-verified, `9a87ddb`.
+- ⚠️ **`test_every_menu_action_is_wired` keeps its OWN `known` set** — a new
+  menu action fails until added there by hand; it does not read `dispatch`.
