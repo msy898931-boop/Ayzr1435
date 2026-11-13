@@ -1184,3 +1184,15 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   `@Ayzr1324_bot` (id 9012677710). Send with
   `curl -X POST .../sendMessage --data-urlencode chat_id=... --data-urlencode text@file`.
   Never store the token value anywhere.
+- ⭐ **The daily read already existed; it was missing only the news.** The
+  owner wanted "صبح ومسا" (morning + evening) analysis. `maybe_daily_analysis`
+  (`bot.py` ~5714, called from `tick` ~6244) ALREADY fires the full
+  `daily_analysis()` at `DESK_DAILY_AM_HOUR` (09:00) and `DESK_DAILY_PM_HOUR`
+  (21:00) local, once per slot per day, keyed in `data/daily.json`. It carried
+  analysis + scenarios but NO news -- the only surface missing it. Added section
+  12 (news, same `_news_items_merged` the card uses + `_news_context` lean) and
+  the honesty note became section 13. Do not rebuild what is already there --
+  read `maybe_daily_analysis` first.
+- ⚠️ **`autoDeploy: true` in render.yaml did NOT redeploy on push** (uptime kept
+  climbing, `/health` stayed on the old commit). The owner must press Deploy in
+  the Render dashboard for every change. Verify with `/health` -> `commit`.
