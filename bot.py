@@ -814,10 +814,9 @@ FRAMES = ("1d", "4h", "1h", "30m", "15m", "5m")
 # Arabic labels for the frames, so a report reads in the owner's language.
 TF_AR = {"1d": "يومي", "4h": "4س", "1h": "1س", "30m": "30د",
          "15m": "15د", "5m": "5د"}
-# The reading may lean on the big frames; a TRADE still needs CONFIRM_FRAMES of
-# all six. Big frames weigh more because a daily/4h tilt outlives a 5m wiggle.
-BIG_FRAMES = ("1d", "4h", "1h")
-SMALL_FRAMES = ("30m", "15m", "5m")
+# A TRADE needs CONFIRM_FRAMES of all six; the reading's lean (which way, in
+# which word) is the single rule in _market_bias -- one producer, no per-surface
+# threshold, so the card and the map can never call one tape two things.
 
 
 def read_market() -> dict:
@@ -873,36 +872,30 @@ def _trend_dir(trends: dict) -> tuple[int | None, int]:
     return None, max(up, dn)
 
 
-def _bias(trends: dict) -> tuple[str, str]:
-    """The reading's lean when no trade is confirmed.
+def _market_bias(trends: dict) -> tuple[int | None, str, str]:
+    """The market's lean -- ONE producer of the direction, the WORD and the mark.
 
-    A trade still needs CONFIRM_FRAMES of all six frames -- that bar does not
-    move. But "the desk has no opinion" is unhelpful when the tape is merely
-    mixed, so the reading states a lean, and it takes that lean from the BIG
-    frames: a daily/4h/1h tilt outlives a 5m wiggle. Two of the three big
-    frames agreeing is a lean; all three is a direction. Only when the big
-    frames are split do the small ones get a vote, and a split with no small
-    agreement is simply range.
+    Every surface that states a lean (the read card's frame line, the daily
+    map's "الميل", the report page, the verdict) prints THIS, so no two of them
+    can call the same tape two different things. That is the whole point: the
+    owner caught the card saying "محتار" while the map said "هابط" on one tape,
+    because each had its own threshold. Now there is one rule.
 
-    This is a reading, not an order -- it never invents a plan.
+    >=5 of six is a direction; a majority is a lean; a tie is range. The count
+    already carries the tape -- a "big frames weigh more" rule is a second
+    opinion that only ever drifted from the count, so it is gone.
     """
-    big_up = sum(1 for tf in BIG_FRAMES if trends.get(tf) == 1)
-    big_dn = sum(1 for tf in BIG_FRAMES if trends.get(tf) == -1)
-    if big_up == len(BIG_FRAMES):
-        return "صاعد", "🟢"
-    if big_dn == len(BIG_FRAMES):
-        return "هابط", "🔴"
-    if big_up == 2:
-        return "مائل للصعود", "🟡"
-    if big_dn == 2:
-        return "مائل للهبوط", "🟡"
-    small_up = sum(1 for tf in SMALL_FRAMES if trends.get(tf) == 1)
-    small_dn = sum(1 for tf in SMALL_FRAMES if trends.get(tf) == -1)
-    if small_up >= 2 and small_up > small_dn:
-        return "مائل للصعود", "🟡"
-    if small_dn >= 2 and small_dn > small_up:
-        return "مائل للهبوط", "🟡"
-    return "عرضي", "⚪"
+    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
+    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
+    if dn >= 5:
+        return -1, "هابط", "🔴"
+    if up >= 5:
+        return 1, "صاعد", "🟢"
+    if dn > up:
+        return -1, "مائل للهبوط", "🟡"
+    if up > dn:
+        return 1, "مائل للصعود", "🟡"
+    return None, "عرضي", "⚪"
 
 
 def _structure_read(trend_dir: int | None = None,
@@ -1028,7 +1021,7 @@ def _verdict(m: dict) -> dict:
     trends = m["trends"]
     up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
     dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
-    lean, mark = _bias(trends)
+    lean, mark = _market_bias(trends)[1:]
     # plan() is now MY read with no quality gate. A confirmed trend is a trade,
     # so a "wait" here means one of two things: the price is retracing a real
     # leg and has not reached the wall yet, or the frames simply disagree.
@@ -1918,8 +1911,8 @@ def daily_analysis(now: datetime | None = None) -> str:
                  else f"  {TF_AR.get(tf, tf)}: {icon}")
         if a is not None:
             L[-1] += f" · ATR {a:.1f}"
-    L.append(f"  → إجماع: <b>{dn}/6 هابط</b>" if dn > up else
-             (f"  → إجماع: <b>{up}/6 صاعد</b>" if up > dn else "  → إجماع: عرضي"))
+    _bd, _bw, _bm = _market_bias(trends)
+    L.append(f"  → إجماع: <b>{_bw}</b> ({dn}هـ · {up}ص)")
     L.append("")
 
     # --- 4. structure ---
@@ -2050,8 +2043,6 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
     """
     trends = m["trends"]
     rsis = m.get("rsis") or {}
-    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
-    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
     r15 = rsis.get("15m")
 
     # The side comes from ONE producer (_trend_side), so the map's bias, the
@@ -2060,30 +2051,31 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
     # `side` is the canonical "short"/"long" the news/divergence helpers take.
     side = _trend_side(m)
     bside = "sell" if side == "short" else "buy" if side == "long" else None
-    if dn >= 5:
-        bias = "هابط"
-    elif up >= 5:
-        bias = "صاعد"
-    elif side == "short":
-        bias = "مائل للهبوط"
-    elif side == "long":
-        bias = "مائل للصعود"
-    else:
-        bias = "عرضي"
-    down = dn >= up
+    # The bias WORD comes from the SAME producer the read card and the report
+    # use, so "الميل" cannot read "مائل للهبوط" here while the card says "عرضي"
+    # on one tape -- the owner caught exactly that.
+    bias_dir, bias, _mark = _market_bias(trends)
+    down = bias_dir != 1
 
     # --- the three named scenarios: continuation, retrace, reversal ---
+    # "مع الاتجاه · الأرجح" is a CLAIM of preference; it is only true when the
+    # frames actually lean. On a tie both continuations are neutral, and calling
+    # one of them "the likely one" would be the map inventing an edge.
+    if bias_dir in (-1, 1):
+        cont_tag, cnt_tag = "مع الاتجاه · الأرجح", "مضاد · نصّ الحجم"
+    else:
+        cont_tag = cnt_tag = "متوازن — بلا أفضلية"
     scen: list[dict] = []
     if down:
         if sup:
             s = _sized(sup[0] - BREAK_EPS, "short", sup[0])
             scen.append({"side": "short", "name": "استمرار الهبوط",
-                         "tag": "مع الاتجاه · الأرجح",
+                         "tag": cont_tag,
                          "trigger": sup[0] - BREAK_EPS,
                          "targets": sup[1:4], **s})
             s = _sized(live, "long", sup[0])
             scen.append({"side": "long", "name": "ارتداد تصحيحي (قصير)",
-                         "tag": "مضاد · نصّ الحجم", "trigger": live,
+                         "tag": cnt_tag, "trigger": live,
                          "targets": ([res[0]] if res else []), **s})
         if res:
             s = _sized(res[0] + BREAK_EPS, "long", res[0])
@@ -2095,12 +2087,12 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
         if res:
             s = _sized(res[0] + BREAK_EPS, "long", res[0])
             scen.append({"side": "long", "name": "استمرار الصعود",
-                         "tag": "مع الاتجاه · الأرجح",
+                         "tag": cont_tag,
                          "trigger": res[0] + BREAK_EPS,
                          "targets": res[1:4], **s})
             s = _sized(live, "short", res[0])
             scen.append({"side": "short", "name": "ارتداد تصحيحي (قصير)",
-                         "tag": "مضاد · نصّ الحجم", "trigger": live,
+                         "tag": cnt_tag, "trigger": live,
                          "targets": ([sup[0]] if sup else []), **s})
         if sup:
             s = _sized(sup[0] - BREAK_EPS, "short", sup[0])
@@ -2145,16 +2137,24 @@ def map_analysis(m: dict, live: float, res: list[float], sup: list[float],
                                 "when": f"إغلاق فوق {num(res[0])}", **s}))
 
     # --- the plain-spoken verdict ---
+    # "بوضوح" is earned only when the frames actually agree (a direction, not a
+    # lean). On a 4/6 tilt the honest word is "مائل" -- the same word the card
+    # and the report print, so no surface claims more certainty than the tape.
+    clear = bias_dir in (-1, 1)
     if bside == "sell" and isinstance(r15, (int, float)) and r15 <= 30:
         verdict = ("الاتجاه معك للبيع، بس السعر واقف عند القاع ومتشبّع — "
                    "الأحلى بيع ارتداد، مو بيع فوري هون.")
     elif bside == "sell":
-        verdict = "الاتجاه هابط بوضوح — البيع مع الاتجاه هو الأفضل إحصائياً."
+        verdict = ("الاتجاه هابط بوضوح — البيع مع الاتجاه هو الأفضل إحصائياً."
+                   if clear else
+                   "الميل للهبوط — الأفضل بيع مع الميل من مستوى، مو مطاردة.")
     elif bside == "buy" and isinstance(r15, (int, float)) and r15 >= 70:
         verdict = ("الاتجاه صاعد، بس السعر متشبّع شراء — "
                    "الأحلى شراء عند ارتداد، مو مطاردة.")
     elif bside == "buy":
-        verdict = "الاتجاه صاعد بوضوح — الشراء مع الاتجاه هو الأفضل إحصائياً."
+        verdict = ("الاتجاه صاعد بوضوح — الشراء مع الاتجاه هو الأفضل إحصائياً."
+                   if clear else
+                   "الميل للصعود — الأفضل شراء مع الميل من مستوى، مو مطاردة.")
     else:
         verdict = "التايب مذبذب بلا اتجاه واضح — الأفضل الوقوف جانباً أو اللعب عالنطاق."
     if isinstance(adx_v, (int, float)) and adx_v < ADX_MIN:
@@ -2492,16 +2492,9 @@ def report_payload(m: dict | None = None,
 
     up = sum(1 for x in frames if x["trend"] == 1)
     dn = sum(1 for x in frames if x["trend"] == -1)
-    if dn >= 5:
-        bias = "هابط"
-    elif up >= 5:
-        bias = "صاعد"
-    elif dn > up:
-        bias = "مائل للهبوط"
-    elif up > dn:
-        bias = "مائل للصعود"
-    else:
-        bias = "عرضي"
+    # The bias WORD from the SAME producer the read card and the map use -- one
+    # rule for every surface, so the report can never lean differently.
+    _bias_dir, bias, _bias_mark = _market_bias(m.get("trends") or {})
 
     # The day's session ranges, so the report can say WHERE the move happened.
     today = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -3280,21 +3273,16 @@ def _news_items_merged() -> list[tuple]:
 
 
 def _trend_side(m: dict) -> str | None:
-    """The side the FRAME COUNT leans -- one producer for every "which way".
+    """The side the frame count leans -- a thin view of the ONE bias producer.
 
     The news line and the divergence tell are tied to the direction the desk
     leans, and that must be the trend, not the distance to the nearest level:
     the owner caught the scenario card reading the news "against you" (long)
-    while the map read it "with you" (short) on the SAME 6/6 down tape.
+    while the map read it "with you" (short) on the SAME 6/6 down tape. It
+    delegates to _market_bias so there is exactly one direction rule.
     """
-    trends = m.get("trends") or {}
-    up = sum(1 for tf in FRAMES if trends.get(tf) == 1)
-    dn = sum(1 for tf in FRAMES if trends.get(tf) == -1)
-    if dn > up:
-        return "short"
-    if up > dn:
-        return "long"
-    return None
+    d = _market_bias(m.get("trends") or {})[0]
+    return "short" if d == -1 else "long" if d == 1 else None
 
 
 def _news_context(side: str | None) -> str | None:
@@ -4603,12 +4591,8 @@ def card_full() -> str:
         r = rsis.get(tf)
         rt = f"RSI {r:.0f}" if isinstance(r, (int, float)) else "RSI —"
         L.append(f"  {names[tf]}: {icon[m['trends'].get(tf, 0)]} {rt}")
-    if down:
-        L.append(f"  → <b>هابط</b> ({dn}/6)")
-    elif up_trend:
-        L.append(f"  → <b>صاعد</b> ({up}/6)")
-    else:
-        L.append("  → <b>عرضي</b> (بلا اتجاه)")
+    _bd, _bw, _bm = _market_bias(m["trends"])
+    L.append(f"  → <b>{_bw}</b> {_bm} ({dn}هـ · {up}ص)")
     _frag = _fragility_note(m)
     if _frag:
         L.append(f"  {_frag}")

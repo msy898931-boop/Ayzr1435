@@ -2627,6 +2627,26 @@ class ReportTest(unittest.TestCase):
             self.assertIn(key, p)
         self.assertEqual(len(p["frames"]), len(bot.FRAMES))
 
+    def test_every_surface_prints_the_same_direction_word(self):
+        # The owner's rule, made structural: the card's frame line, the map's
+        # "الميل" and the report's bias are all the ONE word _market_bias
+        # returns. This is the MIXED tape (4 down / 2 up) where the bug lived --
+        # the card once read "محتار" while the map read "هابط". If any surface
+        # grows its own threshold again, this fails.
+        mixed = {tf: (self._fall() if i < 4 else self._rise())
+                 for i, tf in enumerate(bot.FRAMES)}
+        with FakeFeed(mid=3900.0, closes=mixed):
+            m = bot.read_market()
+            word = bot._market_bias(m["trends"])[1]
+            card = bot.card_full()
+            dmap = bot.daily_analysis()
+            rep = bot.report_payload()
+        self.assertEqual(word, "مائل للهبوط")
+        self.assertEqual(word, rep["bias"])
+        self.assertIn(f"→ <b>{word}</b>", card)
+        self.assertIn(f"الميل: <b>{word}</b>", dmap)
+        self.assertIn(f"إجماع: <b>{word}</b>", dmap)
+
     def test_the_bias_follows_the_tape(self):
         # Every frame falling -> the report must read down, not range.
         with FakeFeed(mid=3900.0, closes={tf: self._fall() for tf in bot.FRAMES}):
