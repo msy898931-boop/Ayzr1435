@@ -2191,5 +2191,130 @@ class ChatSplitTest(unittest.TestCase):
         self.assertEqual(bot._desk_chats(allow), ["100", "200"])
 
 
+class PullbackEntryTest(unittest.TestCase):
+    """The owner asked to enter the way he reads the tape: sell the BOUNCE, not
+    the middle of the range. Measured on 2026 (backtest/entry_timing.py) this
+    lifts R/trade from +0.118 to +0.243 and holds in both halves of the year.
+
+    The default is "immediate" -- the switch changes NOTHING until turned on --
+    and the pending order survives a restart via PENDING_PATH."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._saved = bot.PENDING_PATH
+        bot.PENDING_PATH = pathlib.Path(self.tmp) / "pending.json"
+
+    def tearDown(self):
+        bot.PENDING_PATH = self._saved
+
+    def test_default_mode_is_immediate_so_nothing_changes(self):
+        self.assertIn(bot.ENTRY_MODE, ("immediate", "pullback"))
+        # the shipped default must be the no-op, or a deploy silently changes
+        # how the desk enters without the owner asking.
+        self.assertEqual(bot.ENTRY_MODE, "immediate")
+
+    def test_a_short_limit_sits_above_the_signal_price(self):
+        # A short wants a HIGHER price: the limit must be above the signal, not
+        # below it, or the desk would sell into weakness.
+        p = {"direction": "short", "entry": 3895.0}
+        with unittest.mock.patch.object(bot, "atr", return_value=8.0), \
+             unittest.mock.patch.object(bot, "bars", return_value=[]):
+            lim = bot._pullback_limit(p)
+        self.assertIsNotNone(lim)
+        self.assertGreater(lim, 3895.0)
+        self.assertAlmostEqual(lim, 3895.0 + bot.PULLBACK_ATR * 8.0, places=2)
+
+    def test_a_long_limit_sits_below_the_signal_price(self):
+        p = {"direction": "long", "entry": 3895.0}
+        with unittest.mock.patch.object(bot, "atr", return_value=8.0), \
+             unittest.mock.patch.object(bot, "bars", return_value=[]):
+            lim = bot._pullback_limit(p)
+        self.assertLess(lim, 3895.0)
+
+    def test_the_limit_moves_the_whole_plan_not_just_the_entry(self):
+        # Re-sizing around the limit must keep entry/stop/target together and
+        # inside the owner's $8-12 risk window.
+        p = {"direction": "short", "entry": 3895.0, "up": 0, "dn": 6,
+             "strong": True}
+        q = bot._pending_plan(p, 3901.0)
+        self.assertEqual(q["entry"], 3901.0)
+        self.assertGreater(q["stop"], q["entry"])          # a short stops above
+        self.assertLess(q["target"], q["entry"])
+        self.assertGreaterEqual(q["risk_usd"], bot.STOP_MIN_USD - 0.01)
+        self.assertLessEqual(q["risk_usd"], bot.STOP_MAX_USD + 0.01)
+
+    def test_the_pending_order_survives_a_restart(self):
+        bot._pending_save({"side": "short", "limit": 3901.0, "at": "x",
+                           "plan": {"direction": "short", "entry": 3895.0}})
+        bot.PENDING_PATH = bot.PENDING_PATH            # a new process reads disk
+        d = bot._pending_load()
+        self.assertIsNotNone(d)
+        self.assertEqual(d["side"], "short")
+        self.assertEqual(d["limit"], 3901.0)
+
+    def test_a_broken_pending_file_reads_as_none(self):
+        bot.PENDING_PATH.write_text("not json", encoding="utf-8")
+        self.assertIsNone(bot._pending_load())
+        bot.PENDING_PATH.write_text('{"nothing": 1}', encoding="utf-8")
+        self.assertIsNone(bot._pending_load())
+
+    def test_clear_removes_the_order(self):
+        bot._pending_save({"side": "long", "limit": 1.0, "plan": {}})
+        bot._pending_clear()
+        self.assertIsNone(bot._pending_load())
+
+    def test_a_signal_parks_an_order_instead_of_entering(self):
+        # With pullback on, a fresh signal must NOT open a trade at market: it
+        # parks a limit and tells the owner it is waiting.
+        sent = []
+        tg = unittest.mock.Mock()
+        tg.send = lambda c, m: sent.append((c, m))
+        pc = {"plan": {"direction": "short", "entry": 3895.0, "up": 0, "dn": 6,
+                       "strong": True}, "reason": "ok", "detail": ""}
+        with unittest.mock.patch.object(bot, "read_market",
+                                        return_value={"live": 3895.0}), \
+             unittest.mock.patch.object(bot, "atr", return_value=8.0), \
+             unittest.mock.patch.object(bot, "bars", return_value=[]), \
+             unittest.mock.patch.object(bot, "open_trades", return_value=[]), \
+             unittest.mock.patch.object(bot, "_desk_chats", return_value=["O"]):
+            handled = bot._desk_pullback(tg, {"O"}, {}, pc)
+        self.assertTrue(handled)
+        d = bot._pending_load()
+        self.assertIsNotNone(d)
+        self.assertEqual(d["side"], "short")
+        self.assertGreater(d["limit"], 3895.0)      # a short waits HIGHER
+        self.assertTrue(any("ارتداد" in m for _, m in sent))
+
+    def test_a_reached_limit_fills_the_order(self):
+        # The parked short fills only when the live price climbs TO the limit.
+        bot._pending_save({"side": "short", "limit": 3901.0, "at": bot._utcnow(),
+                           "plan": {"direction": "short", "entry": 3895.0,
+                                    "up": 0, "dn": 6, "strong": True}})
+        sent = []
+        tg = unittest.mock.Mock()
+        tg.send = lambda c, m: sent.append((c, m))
+        with unittest.mock.patch.object(
+                bot, "read_market",
+                return_value={"live": 3902.0, "q": {"marketState": "open"}}), \
+             unittest.mock.patch.object(bot, "_write_plan", return_value=99), \
+             unittest.mock.patch.object(bot, "all_trades",
+                                        return_value=[{"id": 99}]), \
+             unittest.mock.patch.object(bot, "_desk_chats", return_value=["O"]):
+            handled = bot._desk_pullback(tg, {"O"}, {}, {"plan": None})
+        self.assertTrue(handled)
+        self.assertIsNone(bot._pending_load())      # the order is consumed
+
+    def test_an_unreached_limit_stays_parked(self):
+        bot._pending_save({"side": "short", "limit": 3901.0, "at": bot._utcnow(),
+                           "plan": {"direction": "short", "entry": 3895.0}})
+        tg = unittest.mock.Mock()
+        with unittest.mock.patch.object(
+                bot, "read_market",
+                return_value={"live": 3897.0, "q": {"marketState": "open"}}):
+            handled = bot._desk_pullback(tg, set(), {}, {"plan": None})
+        self.assertTrue(handled)
+        self.assertIsNotNone(bot._pending_load())   # still waiting
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -184,6 +184,21 @@ NOCHASE_SIDES = {s.strip().lower() for s in os.environ.get(
     "DESK_NOCHASE_SIDES", "both").split(",") if s.strip()}
 if "both" in NOCHASE_SIDES or not NOCHASE_SIDES:
     NOCHASE_SIDES = {"short", "long"}
+# ENTRY TIMING. "immediate" enters at market the moment the signal fires (the
+# desk's historical behaviour). "pullback" places a LIMIT PULLBACK_ATR * ATR(15m)
+# back from the signal price -- a short sells HIGHER, a long buys LOWER -- and
+# waits PULLBACK_WINDOW bars for the retrace, cancelling if it never comes.
+# The owner asked to enter the way he reads the tape (sell the bounce, not the
+# middle of the range). Measured on the same 2026 bars, same signal, same gates,
+# same stop distance (backtest/entry_timing.py): the pullback lifts R/trade from
+# +0.118 to +0.243 and cuts the max drawdown from -19R to -13R, and the gain
+# holds in BOTH halves of the year. Entering on a BREAK of the prior swing, the
+# other idea, is the worst of all (-0.14 R/trade) -- it buys after the move.
+# Default "immediate" so the switch changes NOTHING until it is turned on.
+ENTRY_MODE = os.environ.get("DESK_ENTRY_MODE", "immediate").strip().lower()
+PULLBACK_ATR = float(os.environ.get("DESK_PULLBACK_ATR", "0.5") or "0.5")
+PULLBACK_WINDOW = int(os.environ.get("DESK_PULLBACK_WINDOW", "12") or "12")
+PENDING_PATH = DATA / "pending.json"
 # The support watch: the desk's own nearest support (from _levels) gets a
 # dedicated heads-up -- approaching, bounced, or broken -- so the owner hears
 # about the level he cares about, not only when a whole plan appears.
@@ -4461,6 +4476,60 @@ def poll_forever(tg: Telegram, stop: threading.Event | None = None) -> None:
         time.sleep(0.5)
 
 
+def _pending_load() -> dict | None:
+    """The one pending pullback order, or None. Corrupt/absent reads as None."""
+    try:
+        d = json.loads(PENDING_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) and d.get("side") else None
+
+
+def _pending_save(d: dict) -> None:
+    try:
+        PENDING_PATH.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _pending_clear() -> None:
+    try:
+        PENDING_PATH.unlink()
+    except OSError:
+        pass
+
+
+def _pullback_limit(p: dict, m: dict | None = None) -> float | None:
+    """The limit price for a pullback entry, or None if ATR is unavailable.
+
+    A short sells PULLBACK_ATR * ATR(15m) ABOVE the signal price; a long buys
+    the same distance BELOW it. ATR is read on the CLOSED 15m bar, like every
+    other gate -- a limit set from a forming bar would chase a price that has
+    not happened.
+    """
+    m = m or read_market()
+    try:
+        b15 = closed(bars(TREND_FILTER_TF, 300), TREND_FILTER_TF)
+        a = atr(b15)
+    except Exception:  # noqa: BLE001
+        a = None
+    if not a:
+        return None
+    d = -1 if p["direction"] == "short" else 1
+    return p["entry"] - d * PULLBACK_ATR * a
+
+
+def _pending_plan(p: dict, limit: float) -> dict:
+    """Re-size a plan around the LIMIT price, so entry/stop/target all move
+    together and the risk window ($8-12) and R:R are preserved."""
+    q = _sized(limit, p["direction"], None)
+    for k in ("up", "dn", "strong", "r15", "nochase_rsi", "nochase_tf"):
+        if k in p:
+            q[k] = p[k]
+    q["signal_entry"] = p["entry"]
+    return q
+
+
 def _write_plan(p: dict) -> int:
     return add_trade(p["direction"], p["entry"], p["stop"], p["target"],
                      LOT, note="desk")
@@ -5179,6 +5248,72 @@ def trade_watch(seen: dict) -> str | None:
         return None
 
 
+def _desk_pullback(tg: Telegram, allow: set[str], seen: dict, pc: dict) -> bool:
+    """The pullback entry path (ENTRY_MODE == "pullback"). Returns True when it
+    has handled this cycle (a parked order, a fill, or a cancel) and the caller
+    must NOT also run the immediate-entry path.
+
+    The order is parked on disk so it survives a restart. It is filled when the
+    live price reaches the limit; it is cancelled when PULLBACK_WINDOW bars pass
+    with no retrace -- the move has left without us, and chasing it is exactly
+    what this mode exists to avoid.
+    """
+    pend = _pending_load()
+    if pend is not None:
+        try:
+            m = read_market()
+        except Exception:  # noqa: BLE001 - a broken feed must not drop the order
+            return True
+        live = m["live"]
+        side = pend.get("side")
+        limit = float(pend.get("limit") or 0)
+        if not market_open(m["q"]) or live <= 0:
+            return True
+        filled = (side == "short" and live >= limit) or \
+                 (side == "long" and live <= limit)
+        if filled:
+            p = _pending_plan(pend.get("plan") or {}, limit)
+            tid = _write_plan(p)
+            row = next(x for x in all_trades() if x["id"] == tid)
+            seen[tid] = "open"
+            _pending_clear()
+            for c in _desk_chats(allow):
+                tg.send(c, _open_card(p, row))
+            return True
+        at = _parse(pend.get("at"))
+        if at is not None and \
+                (datetime.now(UTC) - at).total_seconds() > \
+                PULLBACK_WINDOW * TF_SECONDS.get("5m", 300):
+            _pending_clear()
+            for c in _desk_chats(allow):
+                tg.send(c, f"⌛ <b>انلغى أمر الارتداد</b> — السعر ما رجع لـ"
+                           f"<b>{num(limit)}</b> خلال {PULLBACK_WINDOW} شمعة. "
+                           "ما بلحق ورا الحركة.")
+            return True
+        return True
+    # No parked order: a fresh signal may be parked.
+    p = pc["plan"]
+    if p is None or open_trades():
+        return False
+    limit = _pullback_limit(p)
+    if limit is None:
+        return False            # no ATR to size the retrace: fall back to market
+    _pending_save({"side": p["direction"], "limit": limit, "at": _utcnow(),
+                   "plan": p, "signal_entry": p["entry"]})
+    for c in _desk_chats(allow):
+        tg.send(c, _pending_note(p, limit))
+    return True
+
+
+def _pending_note(p: dict, limit: float) -> str:
+    d = "بيع 🔴" if p["direction"] == "short" else "شراء 🟢"
+    return (f"⏳ <b>بانتظار ارتداد لأخذ {d}</b>\n"
+            f"الإشارة ظهرت عند <b>{num(p['entry'])}</b>، بس ما بدخل بالسوق — "
+            f"بحط أمر عند <b>{num(limit)}</b> وباتنظّر يرجع السعر.\n"
+            f"<i>هي طريقة الدخول المقيسة: نبيع الارتداد، ما منتصف النطاق. "
+            f"إذا ما رجع خلال {PULLBACK_WINDOW} شمعة، بلغي الأمر.</i>")
+
+
 def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     """One cycle: settle, announce, and maybe open. Split from the loop so it
     can be tested without a network or a live clock."""
@@ -5245,6 +5380,12 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
                            "ما رح افتح غير بكرا.")
         return
     pc = plan_check()
+    # The pullback entry path: park a limit and wait for the retrace. It runs
+    # even when the plan is None, so a parked order still fills or expires on a
+    # cycle where no fresh signal fires. When it has handled the cycle, the
+    # immediate-entry path below must not also run.
+    if ENTRY_MODE == "pullback" and _desk_pullback(tg, allow, seen, pc):
+        return
     p = pc["plan"]
     if p is None:
         return

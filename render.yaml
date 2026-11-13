@@ -65,6 +65,20 @@ services:
       # first allowed chat, so it normally needs no value.
       # - key: DESK_BACKUP_CHAT
       #   value: "123456789"
+      # ENTRY TIMING. Default "immediate" = enter at market the moment the
+      # signal fires (the desk's historical behaviour; the switch changes
+      # nothing until you set it). "pullback" = park a LIMIT 0.5*ATR(15m) back
+      # from the signal price and wait up to 12 bars for the retrace, the way a
+      # human sells the BOUNCE rather than the middle of the range. Measured on
+      # the same 2026 bars (backtest/entry_timing.py): R/trade +0.118 -> +0.243,
+      # max drawdown -19R -> -13R, and the gain holds in BOTH halves of the
+      # year. Uncomment to turn it on.
+      # - key: DESK_ENTRY_MODE
+      #   value: "pullback"
+      # - key: DESK_PULLBACK_ATR
+      #   value: "0.5"
+      # - key: DESK_PULLBACK_WINDOW
+      #   value: "12"
 
 # Keep-alive as a Render Cron Job would also work, but a cron job is a PAID
 # service type and a second service of any kind is a second way to trip the
