@@ -1847,7 +1847,8 @@ def daily_analysis(now: datetime | None = None) -> str:
     it reads as a report, not a card. It carries: the snapshot, the big picture,
     the six frames, structure (higher/lower highs and lows), resistance and
     support with touch counts, supply/demand zones, liquidity, Fibonacci, momentum
-    divergence, three named scenarios, and a playbook -- then the honest note.
+    divergence, three named scenarios, and a playbook, the news that moves gold
+    vs the dollar, then the honest note.
 
     It is deliberately NOT a promise: every number is measured, the fibo and
     divergence are facts about the swings, and the honesty line says what could
@@ -2022,8 +2023,32 @@ def daily_analysis(now: datetime | None = None) -> str:
                         L.append(f"       🎯 سلّم الأهداف: {rungs}")
     L.append("")
 
-    # --- 12. the honest note (the owner's one non-negotiable) ---
-    L.append("<b>١٢) ملاحظة الصدق</b>")
+    # --- 12. the news that moves gold vs the dollar (same source as the card) ---
+    # The owner asked the daily read to carry news too. Same `_news_items_merged`
+    # the card uses, so the two surfaces can never quote different headlines; the
+    # lean line reuses `_news_context`, so the daily read, the card and the map
+    # all read the news against the SAME direction (`_trend_side`).
+    items = _news_items_merged()
+    if items:
+        L.append("<b>١٢) الأخبار (تأثر الذهب/الدولار)</b>")
+        seen_t: set[str] = set()
+        for it in items[:3]:
+            tag, title = it[0], it[1]
+            when = it[2] if len(it) > 2 else ""
+            key = str(title)[:40]
+            if key in seen_t:
+                continue
+            seen_t.add(key)
+            stamp = f" <i>({when})</i>" if when else ""
+            L.append(f"  {tag} {esc(str(title)[:100])}{stamp}")
+        nl = _news_context(_trend_side(m))
+        if nl:
+            L.append(f"  {nl}")
+        L.append("  <i>معلومة فقط — مو إشارة دخول.</i>")
+        L.append("")
+
+    # --- 13. the honest note (the owner's one non-negotiable) ---
+    L.append("<b>١٣) ملاحظة الصدق</b>")
     L.append(f"  {a['honesty'] if a else 'قراءة آلية — ما في ضمان. الوقف إلزامي.'}")
     L.append("")
     L.append("<i>قراءة آلية من بيانات السوق الحيّة — مو نصيحة مالية · الوقف إلزامي دايماً.</i>")

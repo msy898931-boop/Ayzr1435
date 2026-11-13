@@ -2031,6 +2031,16 @@ class DailyAnalysisTest(unittest.TestCase):
                       "المقاومة والدعم", "السيولة", "مناطق العرض والطلب"):
             self.assertIn(token, text)
 
+    def test_it_carries_the_news_the_owner_asked_for(self):
+        # The owner asked the daily read to include news, like the card does.
+        # The section must come from the SAME source the card uses, and sit
+        # before the honesty note -- the read is analysis + news + scenarios.
+        with self._feed():
+            text = bot.daily_analysis()
+        if bot._news_items_merged():
+            self.assertIn("الأخبار", text)
+            self.assertLess(text.index("الأخبار"), text.index("ملاحظة الصدق"))
+
     def test_it_never_exceeds_the_telegram_limit(self):
         with self._feed():
             self.assertLess(len(bot.daily_analysis()), 4096)
