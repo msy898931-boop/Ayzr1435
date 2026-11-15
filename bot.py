@@ -42,6 +42,9 @@ DB_PATH = DATA / "journal.db"
 STICKY_PATH = DATA / "levels_seen.json"
 ALLOW_PATH = DATA / "allow.json"
 OFFSET_PATH = DATA / "offset.json"
+# The owner's gate choice, made from the Telegram panel. Kept on disk AND
+# carried in the pinned backup, so it outlives a Render restart.
+SETTINGS_PATH = DATA / "settings.json"
 TOKEN_PATH = HOME / ".tg_token"
 
 API = "https://api.telegram.org"
@@ -276,6 +279,66 @@ ENTRY_BASIS_ON = os.environ.get("DESK_ENTRY_BASIS", "1").strip().lower() not in 
 ENTRY_BASIS_PTS = float(os.environ.get("DESK_ENTRY_BASIS_PTS", "6") or "6")
 
 
+# ---- the owner's gate switches (Telegram panel) -------------------------
+# Four entry gates, each with an env default the OWNER can flip from a panel
+# only he sees. The choice is saved to disk and carried in the pinned backup,
+# so it outlives a Render restart; `apply_settings` rewrites the module
+# globals, so a toggle takes effect on the next read with no redeploy.
+GATE_KEYS = ("entry_basis", "nochase", "filters", "trend_filter")
+_GATE_VAR = {"entry_basis": "ENTRY_BASIS_ON", "nochase": "NOCHASE_ON",
+             "filters": "FILTERS_ON", "trend_filter": "TREND_FILTER_ON"}
+GATE_LABELS = {"entry_basis": "أساس الدخول (عند مستوى)",
+               "nochase": "منع المطاردة",
+               "filters": "بوابة الجودة (ADX/ATR)",
+               "trend_filter": "فلتر شمعة 15د"}
+
+
+def load_settings() -> dict:
+    try:
+        d = json.loads(SETTINGS_PATH.read_text())
+        if isinstance(d, dict):
+            return {k: bool(d[k]) for k in GATE_KEYS if k in d}
+    except (ValueError, OSError):
+        pass
+    return {}
+
+
+def save_settings(d: dict) -> None:
+    try:
+        SETTINGS_PATH.write_text(json.dumps(d))
+    except OSError:
+        pass
+
+
+def gate_state() -> dict:
+    return {k: bool(globals()[_GATE_VAR[k]]) for k in GATE_KEYS}
+
+
+def apply_settings(d: dict) -> None:
+    for k, v in (d or {}).items():
+        if k in _GATE_VAR:
+            globals()[_GATE_VAR[k]] = bool(v)
+
+
+def toggle_gate(key: str) -> dict:
+    """Flip one gate, save it, and return the new state. Unknown key: no-op."""
+    if key not in _GATE_VAR:
+        return gate_state()
+    d = gate_state()
+    d[key] = not d[key]
+    apply_settings(d)
+    save_settings(d)
+    return d
+
+
+def is_owner(chat: str) -> bool:
+    """The owner's own chat. `who` and the control panel are his alone."""
+    return str(chat) in (SEED_CHATS[0], BACKUP_CHAT)
+
+
+apply_settings(load_settings())
+
+
 # ---- menus --------------------------------------------------------------
 # The news layer is INFORMATION ONLY -- see card_news(). The owner edits this
 # list by hand; nothing here can open, block or size a trade. The card also
@@ -336,18 +399,56 @@ NEWS_ITEMS: list[tuple[str, str]] = [
 
 MENU = [
     [("🧠 قراءتي للسوق", "full")],
-    [("🥇 التحليل التفصيلي", "report")],
-    [("🧭 شو تعمل هلّق", "action")],
-    [("📅 التحليل اليومي الشامل", "day_analysis")],
-    [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
-    [("🗺️ خريطة المناطق", "map"), ("📰 الأخبار", "news")],
-    [("🎬 السيناريوهات", "scenarios"), ("🔔 المستويات", "levels")],
-    [("📂 الصفقات المفتوحة", "open"), ("📒 السجل", "journal_menu")],
-    [("📊 سجل اليوم", "daily"), ("👥 المشتركين", "who")],
-    [("➕ سجّل صفقة", "howto"),
-     ("🔔 دليل التنبيهات", "alerts"), ("❓ مساعدة", "help")],
+    [("🥇 التحليل والتوصية", "menu_analysis")],
+    [("🗺️ الخرائط والأخبار", "menu_map")],
+    [("📂 الصفقات والسجل", "menu_journal")],
+    [("⚙️ إعدادات البوت", "settings")],
+    [("👥 المشتركين", "who")],
+    [("❓ مساعدة", "help")],
     [("✖ طي القائمة", "collapse")],
 ]
+
+# The dropdown: each group button opens its own short list, so the top grid is
+# a handful of rows instead of twelve. Every leaf is a real card the bot
+# serves; "↩️ رجوع" climbs back to the top grid.
+SUBMENUS = {
+    "menu_analysis": [
+        [("📊 تحليل الآن", "analysis"), ("🎯 التوصية", "recommend")],
+        [("🥇 التحليل التفصيلي", "report")],
+        [("📅 التحليل اليومي الشامل", "day_analysis")],
+        [("🧭 شو تعمل هلّق", "action")],
+        [("↩️ رجوع", "menu_back")],
+    ],
+    "menu_map": [
+        [("🗺️ خريطة المناطق", "map"), ("📰 الأخبار", "news")],
+        [("🎬 السيناريوهات", "scenarios"), ("🔔 المستويات", "levels")],
+        [("↩️ رجوع", "menu_back")],
+    ],
+    "menu_journal": [
+        [("📂 الصفقات المفتوحة", "open"), ("📒 السجل", "journal_menu")],
+        [("📊 سجل اليوم", "daily")],
+        [("➕ سجّل صفقة", "howto"), ("🔔 دليل التنبيهات", "alerts")],
+        [("↩️ رجوع", "menu_back")],
+    ],
+}
+
+# Buttons only the OWNER sees: the control panel and the book of who is on the
+# bot. `_menu_rows` drops them for a guest, so a subscriber never sees the
+# desk's switches or the subscriber roll.
+GUEST_HIDDEN_ACTIONS = {"settings", "who"}
+
+
+def _menu_rows(chat: str | None = None) -> list:
+    """The top grid a chat may see. Default (no chat) keeps every button, so
+    `--menu` and tests that build the grid without a chat are unchanged."""
+    owner = chat is None or is_owner(chat)
+    rows = []
+    for row in MENU:
+        kept = [pair for pair in row
+                if owner or pair[1] not in GUEST_HIDDEN_ACTIONS]
+        if kept:
+            rows.append(kept)
+    return rows
 
 # The collapsed menu: ONE button, bottom-left, shown under every card. The full
 # grid above is behind it -- the owner asked for the extra buttons to move into
@@ -496,6 +597,22 @@ class Telegram:
                 TimeoutError):
             return False
 
+    def edit_text(self, chat, message_id, text, markup=None) -> bool:
+        """Replace a message's text and keyboard in place.
+
+        The settings panel toggles live in the message that carries them: a tap
+        must flip the ✅/⬜ on that same message, not post a new one.
+        """
+        payload = {"chat_id": chat, "message_id": message_id, "text": text[:4000],
+                   "parse_mode": "HTML", "disable_web_page_preview": True}
+        if markup is not None:
+            payload["reply_markup"] = markup
+        try:
+            return bool(self.call("editMessageText", payload).get("ok"))
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError,
+                TimeoutError):
+            return False
+
     def updates(self, offset: int | None, timeout: int = 30) -> list[dict]:
         payload: dict = {"timeout": timeout,
                          "allowed_updates": ["callback_query", "message"]}
@@ -575,12 +692,17 @@ def nav(action: str) -> dict:
     return kb([COLLAPSE_BTN])
 
 
-def keyboard_for(action: str) -> dict:
+def keyboard_for(action: str, chat: str | None = None) -> dict:
     if action == "journal_menu":
         return kb(JOURNAL_MENU)
-    if action == "menu":
+    if action in ("menu", "menu_back"):
         # The expanded list carries every action, plus a row to fold it back.
-        return kb(MENU)
+        # `menu_back` climbs from a dropdown to the same top grid.
+        return kb(_menu_rows(chat))
+    if action in SUBMENUS:
+        return kb(SUBMENUS[action])
+    if action == "settings":
+        return settings_keyboard()
     if action == "open":
         ck = close_keyboard()
         if ck:
@@ -3937,6 +4059,35 @@ def card_who(tg: "Telegram") -> str:
     return "\n".join(L)
 
 
+def card_settings() -> str:
+    """The owner's control panel: one line per entry gate, on/off.
+
+    The four gates the desk checks before it opens a trade. Flipping one writes
+    `data/settings.json` (and the pinned backup), so it survives a restart --
+    the Render env vars are only the STARTING value. The panel is the owner's
+    alone; a guest never sees it.
+    """
+    st = gate_state()
+    lines = ["⚙️ <b>إعدادات البوت</b> — تحكّم المالك", ""]
+    for k in GATE_KEYS:
+        mark = "🟢" if st[k] else "🔴"
+        lines.append(f"{mark} {GATE_LABELS[k]}: "
+                     f"<b>{'مشغّل' if st[k] else 'مطفّي'}</b>")
+    lines.append("")
+    lines.append("<i>اضغط أي زر لقلبه فوراً — ما بيلزم إعادة نشر.</i>")
+    return "\n".join(lines)
+
+
+def settings_keyboard() -> dict:
+    st = gate_state()
+    rows = [[(f"{'🟢' if st[k] else '🔴'} {GATE_LABELS[k]}", f"cfg:{k}")]
+            for k in GATE_KEYS]
+    rows.append([("🔵 افتح كل الفلاتر", "cfg:open_all"),
+                 ("🔒 اقفل كل الفلاتر", "cfg:close_all")])
+    rows.append([("🏠 القائمة", "menu")])
+    return kb(rows)
+
+
 def card_monitor() -> str:
     """A follow-up for every open trade: progress, floating, break-even hint."""
     grade()
@@ -5127,6 +5278,11 @@ def dispatch(action: str) -> str:
         "help": help_text,
         "collapse": lambda: "📊 <b>مكتب تحليل السوق</b>\nالقائمة مطويّة — اضغط «☰ القائمة» لعرض الأزرار.",
         "menu": lambda: "📊 <b>مكتب تحليل السوق</b>\nاختر من الأزرار 👇",
+        "menu_back": lambda: "📊 <b>مكتب تحليل السوق</b>\nاختر من الأزرار 👇",
+        "menu_analysis": lambda: "🥇 <b>التحليل والتوصية</b>\nاختر 👇",
+        "menu_map": lambda: "🗺️ <b>الخرائط والأخبار</b>\nاختر 👇",
+        "menu_journal": lambda: "📂 <b>الصفقات والسجل</b>\nاختر 👇",
+        "settings": card_settings,
     }.get(action, lambda: f"⚠️ زر غير معروف: {esc(action)}")()
 
 
@@ -5201,6 +5357,7 @@ def _dump_journal() -> dict:
             "trades": [dict(t) for t in all_trades()],
             "allow": sorted(load_allow()),
             "daily": _load_daily(),
+            "settings": gate_state(),
             "sticky": _sticky_load()}
 
 
@@ -5285,6 +5442,13 @@ def restore_journal(tg: Telegram) -> int:
     daily = blob.get("daily") or {}
     if daily and not DAILY_PATH.exists():
         _save_daily(daily)
+    # The owner's gate choice outlives the container too: a free Render plan
+    # wipes the disk, so the pinned copy is where the choice survives. Only
+    # applied when no local file exists, so a fresh local choice always wins.
+    settings = blob.get("settings")
+    if isinstance(settings, dict) and not SETTINGS_PATH.exists():
+        apply_settings(settings)
+        save_settings(gate_state())
     # The sticky pool outlives the container too: a restart must not forget the
     # levels the owner was watching, so restore it when the file is absent.
     sticky = blob.get("sticky")
@@ -5300,11 +5464,13 @@ def backup_loop(tg: Telegram, poll_s: int = 60,
     last = None
     while not (stop and stop.is_set()):
         try:
-            # Watch the allow list too: a new subscriber must reach the durable
-            # copy even if no trade has happened since -- otherwise the pinned
-            # snapshot quietly lags behind who actually gets the messages.
+            # Watch the allow list and the settings too: a new subscriber or a
+            # gate the owner flipped must reach the durable copy even if no
+            # trade has happened since -- otherwise the pinned snapshot quietly
+            # lags behind who gets the messages and how the desk is set.
             stamp = (DB_PATH.stat().st_mtime if DB_PATH.exists() else 0.0,
-                     ALLOW_PATH.stat().st_mtime if ALLOW_PATH.exists() else 0.0)
+                     ALLOW_PATH.stat().st_mtime if ALLOW_PATH.exists() else 0.0,
+                     SETTINGS_PATH.stat().st_mtime if SETTINGS_PATH.exists() else 0.0)
             if stamp != last:
                 if backup_journal(tg):
                     last = stamp
@@ -5367,6 +5533,33 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
         if mid:
             tg.edit_markup(chat, mid, kb(COLLAPSE_BTN))
         return "collapse"
+    # The settings panel: a tap flips one gate and rewrites the SAME message, so
+    # the panel stays a single live card. Owner-only -- a guest's tap is refused
+    # without touching a switch.
+    if str(action).startswith("cfg:") and cq is not None:
+        mid = (cq.get("message") or {}).get("message_id")
+        if not is_owner(chat):
+            tg.answer(cid, "⛔ هالزر للمالك بس")
+            return "settings"
+        key = str(action)[4:]
+        if key == "open_all":
+            apply_settings({k: True for k in GATE_KEYS})
+            save_settings(gate_state())
+        elif key == "close_all":
+            apply_settings({k: False for k in GATE_KEYS})
+            save_settings(gate_state())
+        else:
+            toggle_gate(key)
+        if mid:
+            tg.edit_text(chat, mid, card_settings(), settings_keyboard())
+            return "settings"
+        action = "settings"
+    if action == "who" and not is_owner(chat):
+        # The subscriber list is the owner's book: a guest asking for it gets
+        # the plain menu instead of the roll of everyone on the bot.
+        out = "⛔ قائمة المشتركين للمالك بس."
+        tg.send(chat, out, keyboard_for("menu", chat))
+        return "who"
     try:
         if action == "trade":
             out = record_trade(text)
@@ -5375,11 +5568,13 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
             out = sel if isinstance(sel, str) else close_trade(sel)
         elif action == "who":
             out = card_who(tg)
+        elif action == "settings" and not is_owner(chat):
+            out = "⛔ إعدادات البوت للمالك بس."
         else:
             out = dispatch(action)
     except Exception as exc:  # noqa: BLE001 - one bad action must not kill the loop
         out = f"⚠️ تعذّر التنفيذ ({esc(exc.__class__.__name__)})."
-    tg.send(chat, out, keyboard_for(action))
+    tg.send(chat, out, keyboard_for(action, chat))
     return action
 
 
@@ -6503,13 +6698,14 @@ def main() -> int:
         print(f"restored {n}, backed up: {ok}, trades: {len(all_trades())}")
         return 0 if ok else 1
     if "--menu" in args:
-        ok = tg.send(SEED_CHATS[0], dispatch("menu"), kb(MENU))
+        ok = tg.send(SEED_CHATS[0], dispatch("menu"),
+                     keyboard_for("menu", SEED_CHATS[0]))
         print("menu published:", ok)
         return 0 if ok else 1
     if "--send" in args:
         allow = load_allow()
         for c in allow:
-            print(c, tg.send(c, dispatch("menu"), kb(MENU)))
+            print(c, tg.send(c, dispatch("menu"), keyboard_for("menu", c)))
         return 0
     print("polling @Ayzr1324_bot …")
     restored = restore_journal(tg)

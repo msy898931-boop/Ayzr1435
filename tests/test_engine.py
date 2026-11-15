@@ -10,6 +10,7 @@ they are worth pinning: a change that breaks one of them must fail here first.
 """
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import shutil
@@ -2503,18 +2504,36 @@ class CollapsibleMenuTest(unittest.TestCase):
         self.assertIn("menu", flat)
 
     def test_every_menu_action_is_wired(self):
-        # A button whose action is unknown is a dead tap. The MENU grid must
-        # only carry actions the bot actually handles -- this list is the
-        # dispatch table plus the two handled in handle() (`who` needs the live
-        # Telegram client; `trade`/`close` are parsed from text). Add a button
+        # A button whose action is unknown is a dead tap. Every button the grid
+        # and the dropdowns carry must be an action the bot actually handles --
+        # the dispatch table plus the ones handled in handle() (`who`, the
+        # `cfg:` toggles; `trade`/`close` are parsed from text). Add a button
         # with a typo and this fails.
         known = {
             "full", "report", "action", "day_analysis", "analysis", "recommend",
             "map", "news", "scenarios", "levels", "open", "journal_menu", "daily",
-            "who", "howto", "alerts", "help", "collapse", "menu",
+            "who", "howto", "alerts", "help", "collapse", "menu", "settings",
+            "menu_back", "menu_analysis", "menu_map", "menu_journal",
         }
-        for _t, action in [p for row in bot.MENU for p in row]:
+        pairs = [p for row in bot.MENU for p in row]
+        for rows in bot.SUBMENUS.values():
+            pairs += [p for row in rows for p in row]
+        for _t, action in pairs:
             self.assertIn(action, known, f"action {action} is not wired")
+
+    def test_the_dropdowns_reach_every_leaf(self):
+        # The whole point of the dropdown: every card is still one or two taps
+        # away, and every submenu can climb back to the top.
+        leaves = {a for rows in bot.SUBMENUS.values() for _t, a in
+                  [p for row in rows for p in row]}
+        for needed in ("analysis", "recommend", "report", "day_analysis",
+                       "action", "map", "news", "scenarios", "levels", "open",
+                       "journal_menu", "daily", "howto", "alerts"):
+            self.assertIn(needed, leaves, f"{needed} is unreachable")
+        for name, rows in bot.SUBMENUS.items():
+            self.assertTrue(any(a == "menu_back" for _t, a in
+                                [p for row in rows for p in row]),
+                            f"{name} has no way back")
 
 
 class StudySyncTest(unittest.TestCase):
@@ -2956,6 +2975,96 @@ class PullbackEntryTest(unittest.TestCase):
             handled = bot._desk_pullback(tg, set(), {}, {"plan": None})
         self.assertTrue(handled)
         self.assertIsNotNone(bot._pending_load())   # still waiting
+
+
+class OwnerPanelTest(unittest.TestCase):
+    """The gate switches are the OWNER's alone, live from a Telegram panel.
+
+    The owner asked for a button only he sees -- a guest must not read the
+    desk's settings or the subscriber list, and a guest's tap on a switch must
+    change nothing.
+    """
+
+    OWNER = bot.SEED_CHATS[0]
+    GUEST = "8545528489"
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self._saved_path = bot.SETTINGS_PATH
+        bot.SETTINGS_PATH = pathlib.Path(self._dir) / "settings.json"
+        self._saved_state = bot.gate_state()
+
+    def tearDown(self):
+        bot.SETTINGS_PATH = self._saved_path
+        bot.apply_settings(self._saved_state)
+
+    def _cb(self, chat, data, mid=99):
+        return {"callback_query": {"id": "c1", "data": data,
+                                   "message": {"message_id": mid,
+                                               "chat": {"id": chat}}}}
+
+    def test_the_owner_sees_the_panel_and_a_guest_does_not(self):
+        owner = [a for r in bot._menu_rows(self.OWNER) for _, a in r]
+        guest = [a for r in bot._menu_rows(self.GUEST) for _, a in r]
+        self.assertIn("settings", owner)
+        self.assertIn("who", owner)
+        self.assertNotIn("settings", guest)
+        self.assertNotIn("who", guest)
+        # The guest keeps the shared half of the bot.
+        self.assertIn("full", guest)
+        self.assertIn("menu_analysis", guest)
+
+    def test_is_owner_knows_the_owner(self):
+        self.assertTrue(bot.is_owner(self.OWNER))
+        self.assertFalse(bot.is_owner(self.GUEST))
+
+    def test_a_toggle_flips_the_live_gate_and_persists(self):
+        bot.apply_settings({k: True for k in bot.GATE_KEYS})
+        tg = unittest.mock.Mock()
+        bot.handle(tg, self._cb(self.OWNER, "cfg:entry_basis"), {self.OWNER})
+        self.assertFalse(bot.ENTRY_BASIS_ON)          # the module global flipped
+        saved = json.loads(bot.SETTINGS_PATH.read_text())
+        self.assertFalse(saved["entry_basis"])        # and it was written
+        # The panel is rewritten in place, not re-posted.
+        tg.edit_text.assert_called_once()
+
+    def test_a_guests_tap_changes_nothing(self):
+        bot.apply_settings({k: True for k in bot.GATE_KEYS})
+        tg = unittest.mock.Mock()
+        bot.handle(tg, self._cb(self.GUEST, "cfg:nochase"), {self.OWNER, self.GUEST})
+        self.assertTrue(bot.NOCHASE_ON)               # untouched
+        self.assertFalse(tg.edit_text.called)         # no panel rewritten
+        self.assertFalse(bot.SETTINGS_PATH.exists())  # nothing saved
+
+    def test_open_all_and_close_all(self):
+        tg = unittest.mock.Mock()
+        bot.apply_settings({k: False for k in bot.GATE_KEYS})
+        bot.handle(tg, self._cb(self.OWNER, "cfg:open_all"), {self.OWNER})
+        self.assertEqual(bot.gate_state(), {k: True for k in bot.GATE_KEYS})
+        bot.handle(tg, self._cb(self.OWNER, "cfg:close_all"), {self.OWNER})
+        self.assertEqual(bot.gate_state(), {k: False for k in bot.GATE_KEYS})
+
+    def test_a_saved_choice_overrides_the_env_default(self):
+        # The whole point: the panel writes settings.json and the next start
+        # reads it back, so the choice survives a redeploy.
+        bot.SETTINGS_PATH.write_text(json.dumps(
+            {"entry_basis": False, "nochase": False,
+             "filters": False, "trend_filter": False}))
+        self.assertEqual(bot.load_settings(),
+                         {"entry_basis": False, "nochase": False,
+                          "filters": False, "trend_filter": False})
+
+    def test_the_guest_who_card_is_refused(self):
+        tg = unittest.mock.Mock()
+        bot.handle(tg, self._cb(self.GUEST, "who"), {self.OWNER, self.GUEST})
+        sent = " ".join(str(c.args[1]) for c in tg.send.call_args_list)
+        self.assertIn("للمالك", sent)
+        tg2 = unittest.mock.Mock()
+        with unittest.mock.patch.object(bot, "load_allow",
+                                        return_value={self.OWNER}):
+            bot.handle(tg2, self._cb(self.OWNER, "who"), {self.OWNER})
+        sent2 = " ".join(str(c.args[1]) for c in tg2.send.call_args_list)
+        self.assertIn("مين موجود بالبوت", sent2)
 
 
 if __name__ == "__main__":
