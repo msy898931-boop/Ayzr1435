@@ -849,6 +849,79 @@ class NewsContextTest(unittest.TestCase):
             self.assertIn("الخبر", rec)
 
 
+class NewsAlertTest(unittest.TestCase):
+    """The unprompted news alert: fires on a NEW important headline, stays
+    silent on commentary/previews, seeds silently on the first look, and damps
+    a burst with a cooldown. INFORMATION ONLY -- it never opens a trade."""
+
+    def _fetch(self, items):
+        return unittest.mock.patch.object(bot, "_news_fetch", return_value=items)
+
+    def test_only_a_real_event_fires_not_commentary(self):
+        # A Fed official's view, a "what to expect" preview and an outlook are
+        # not events -- they name the topic but predict rather than report.
+        self.assertFalse(bot._news_is_event(
+            "مسؤول بالفيدرالي الأميركي: لا يزال أمامنا عمل لاحتواء التضخم"))
+        self.assertFalse(bot._news_is_event(
+            "توقعات مؤشر الدولار DXY قبيل بيانات التضخم الأمريكي"))
+        self.assertFalse(bot._news_is_event(
+            "رئيس «فيدرالي نيويورك» يرجّح الحاجة لمزيد من رفع الفائدة"))
+        self.assertFalse(bot._news_is_event(
+            "مؤشرات الأسهم في روسيا هبطت عند نهاية جلسة اليوم"))
+        # A real print does fire.
+        self.assertTrue(bot._news_is_event(
+            "التضخم الأميركي يفاجئ الأسواق... والفائدة تعود إلى دائرة التشديد"))
+        self.assertTrue(bot._news_is_event(
+            "أبرز الاستنتاجات من تقرير التضخم الأميركي لشهر أكتوبر"))
+
+    def test_first_look_seeds_silently_then_a_new_event_fires(self):
+        seen: dict = {}
+        old = [("🔥", "الذهب الفوري يتراجع", "15/11 10:00")]
+        with self._fetch(old):
+            self.assertIsNone(bot.news_watch(seen))     # seed, no message
+        new = [("🔥", "التضخم الأميركي يفاجئ الأسواق", "15/11 23:00")] + old
+        with self._fetch(new):
+            out = bot.news_watch(seen)
+        self.assertIsNotNone(out)
+        self.assertIn("التضخم الأميركي يفاجئ الأسواق", out)
+        # The headline's OWN clock, in the owner's timezone, is on the alert.
+        self.assertIn("15/11 23:00", out)
+        self.assertIn(bot.TZ_LABEL, out)
+        # And it is labelled information-only, never a signal.
+        self.assertIn("معلومة فقط", out)
+
+    def test_a_burst_is_damped_by_the_cooldown(self):
+        seen: dict = {}
+        with self._fetch([("🔥", "خبر قديم", "15/11 10:00")]):
+            bot.news_watch(seen)                         # seed
+        with self._fetch([("🔥", "التضخم الأميركي يفاجئ الأسواق", "15/11 23:00"),
+                          ("🔥", "خبر قديم", "15/11 10:00")]):
+            self.assertIsNotNone(bot.news_watch(seen))   # fires once
+        with self._fetch([("🔥", "قرار الفائدة: تثبيت", "15/11 23:30"),
+                          ("🔥", "التضخم الأميركي يفاجئ الأسواق", "15/11 23:00"),
+                          ("🔥", "خبر قديم", "15/11 10:00")]):
+            self.assertIsNone(bot.news_watch(seen))      # damped
+
+    def test_the_switch_off_silences_the_alert(self):
+        saved = bot.NEWS_ALERTS_ON
+        bot.NEWS_ALERTS_ON = False
+        try:
+            with self._fetch([("🔥", "التضخم الأميركي يفاجئ الأسواق", "15/11 23:00")]):
+                self.assertIsNone(bot.news_watch({}))
+        finally:
+            bot.NEWS_ALERTS_ON = saved
+
+    def test_the_panel_shows_and_persists_the_news_switch(self):
+        # The switch rides with the entry gates in the panel and the saved file,
+        # but `open_all`/`close_all` must NOT touch it (it is not an entry gate).
+        self.assertIn("news_alerts", bot.panel_state())
+        self.assertIn("news_alerts", bot.GATE_LABELS)
+        keys = [b["callback_data"]
+                for r in bot.settings_keyboard()["inline_keyboard"] for b in r]
+        self.assertIn("cfg:news_alerts", keys)
+        self.assertIn("تنبيه الأخبار", bot.card_settings())
+
+
 class WatchLevelsTest(unittest.TestCase):
     """The owner's levels (4138 / 4108) must be watchable, and a crossing of
     one must speak -- via the env extension and the existing watch."""

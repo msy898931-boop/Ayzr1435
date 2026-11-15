@@ -285,19 +285,31 @@ ENTRY_BASIS_PTS = float(os.environ.get("DESK_ENTRY_BASIS_PTS", "6") or "6")
 # so it outlives a Render restart; `apply_settings` rewrites the module
 # globals, so a toggle takes effect on the next read with no redeploy.
 GATE_KEYS = ("entry_basis", "nochase", "filters", "trend_filter")
+# The news alert is not an entry gate, so `open_all`/`close_all` must not touch
+# it -- but it IS a switch the owner controls from the same panel. It must be
+# defined BEFORE `apply_settings(load_settings())` below, or a saved choice
+# would be clobbered by this default at import.
+NEWS_ALERTS_ON = os.environ.get("DESK_NEWS_ALERTS", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
 _GATE_VAR = {"entry_basis": "ENTRY_BASIS_ON", "nochase": "NOCHASE_ON",
-             "filters": "FILTERS_ON", "trend_filter": "TREND_FILTER_ON"}
+             "filters": "FILTERS_ON", "trend_filter": "TREND_FILTER_ON",
+             "news_alerts": "NEWS_ALERTS_ON"}
 GATE_LABELS = {"entry_basis": "أساس الدخول (عند مستوى)",
                "nochase": "منع المطاردة",
                "filters": "بوابة الجودة (ADX/ATR)",
-               "trend_filter": "فلتر شمعة 15د"}
+               "trend_filter": "فلتر شمعة 15د",
+               "news_alerts": "تنبيه الأخبار المهمة"}
+# Everything the panel shows and persists. `gate_state` stays GATE_KEYS only so
+# `open_all`/`close_all` keep meaning "the entry filters"; the news switch is
+# carried alongside but flipped on its own.
+PANEL_KEYS = GATE_KEYS + ("news_alerts",)
 
 
 def load_settings() -> dict:
     try:
         d = json.loads(SETTINGS_PATH.read_text())
         if isinstance(d, dict):
-            return {k: bool(d[k]) for k in GATE_KEYS if k in d}
+            return {k: bool(d[k]) for k in PANEL_KEYS if k in d}
     except (ValueError, OSError):
         pass
     return {}
@@ -311,7 +323,13 @@ def save_settings(d: dict) -> None:
 
 
 def gate_state() -> dict:
+    """The ENTRY gates only -- what `open_all`/`close_all` mean."""
     return {k: bool(globals()[_GATE_VAR[k]]) for k in GATE_KEYS}
+
+
+def panel_state() -> dict:
+    """Everything the panel shows: the entry gates AND the news switch."""
+    return {k: bool(globals()[_GATE_VAR[k]]) for k in PANEL_KEYS}
 
 
 def apply_settings(d: dict) -> None:
@@ -321,10 +339,10 @@ def apply_settings(d: dict) -> None:
 
 
 def toggle_gate(key: str) -> dict:
-    """Flip one gate, save it, and return the new state. Unknown key: no-op."""
+    """Flip one switch (gate or the news alert), save it, return the panel."""
     if key not in _GATE_VAR:
-        return gate_state()
-    d = gate_state()
+        return panel_state()
+    d = panel_state()
     d[key] = not d[key]
     apply_settings(d)
     save_settings(d)
@@ -393,6 +411,33 @@ NEWS_KEEP: tuple[str, ...] = tuple(
         "فائدة|عائد|yield").split("|")
     if w.strip())
 NEWS_CACHE_S = 300               # reuse a fetch for 5 minutes (feeds are slow)
+# The news ALERT: speak, unprompted, when an important headline appears. The
+# desk normally speaks only on a change, so "important" must be a real EVENT,
+# not commentary -- a Fed official's view, a preview or an outlook is not a
+# tradeable event and would turn the alert into a feed. Words that mark a
+# preview/opinion veto a headline even when it also names an event.
+# Override with DESK_NEWS_EVENT, pipe-separated.
+NEWS_EVENT: tuple[str, ...] = tuple(
+    w.strip() for w in os.environ.get(
+        "DESK_NEWS_EVENT",
+        "قرار الفائدة|بيانات التضخم|مؤشر أسعار المستهلك|أسعار المستهلك|"
+        "التضخم الأميركي|التضخم الأمريكي|تقرير التضخم|"
+        "الوظائف الأميركية|التوظيف الأميركي|البطالة الأميركية|الناتج المحلي|"
+        "cpi|fomc|nonfarm|payroll|rate decision")
+    .split("|") if w.strip())
+NEWS_PREVIEW: tuple[str, ...] = tuple(
+    w.strip() for w in os.environ.get(
+        "DESK_NEWS_PREVIEW",
+        "توقعات|يتوقع|هل |قبيل|ترقب|تحت المجهر|استطلاع|مصير|"
+        "يرجّح|يرجح|أفضل|محتمل").split("|")
+    if w.strip())
+# At most one news alert per this many minutes, so a burst of wire copies of the
+# SAME event (a dozen outlets, one CPI print) cannot spam the chat.
+NEWS_ALERT_COOLDOWN_S = int(
+    os.environ.get("DESK_NEWS_ALERT_COOLDOWN", "3600") or "3600")
+# How many recent titles the alert remembers, to tell a new headline from one it
+# already saw. The feed caps at ~40, so this covers it whole.
+NEWS_SEEN_MAX = int(os.environ.get("DESK_NEWS_SEEN_MAX", "80") or "80")
 # The automatic direction alert: tell the owner when the desk's net direction
 # flips (up / down / range) without a tap. A cooldown damps a chop at the edge.
 TREND_ALERTS = os.environ.get("DESK_TREND_ALERTS", "1").strip().lower() in (
@@ -2869,6 +2914,66 @@ def card_news() -> str:
     return "\n".join(lines)
 
 
+def _news_is_event(title: str) -> bool:
+    """True if a headline is a real, tradeable EVENT -- not commentary.
+
+    The alert speaks unprompted, so it must not fire on every Fed official's
+    view or every "what to expect" preview. A headline counts only when it names
+    an event AND carries none of the preview/opinion words, so "توقعات التضخم"
+    is dropped while "التضخم الأميركي يفاجئ الأسواق" fires.
+    """
+    low = title.lower()
+    if any(w in low for w in NEWS_PREVIEW):
+        return False
+    return any(w in low for w in NEWS_EVENT)
+
+
+def news_watch(seen: dict) -> str | None:
+    """The unprompted alert: one message when an important headline appears.
+
+    Only the LIVE feed is watched -- the owner's hand-edited NEWS_ITEMS list is
+    static, so alerting on it would fire the same four lines at every boot. New
+    headlines are tracked by TITLE (the feed is newest-first), never by the
+    formatted clock: today's stamp is "HH:MM" and an older one "DD/MM HH:MM", so
+    comparing those strings would mis-order them. The first look after boot
+    seeds every current title and stays silent, so a restart never dumps the
+    day's backlog into the chat. A new event fires, and NEWS_ALERT_COOLDOWN_S
+    damps a burst of wire copies of the SAME print. The message carries the
+    headline's own clock in the owner's time -- the point of the alert.
+    """
+    if not NEWS_ALERTS_ON or not NEWS_LIVE:
+        return None
+    try:
+        items = _news_fetch()
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return None
+    titles = [it[1] for it in items]
+    prev = seen.get("news_seen")
+    if prev is None:
+        # Seed silently: the first look records what is already on the wire, so
+        # a reboot does not replay it.
+        seen["news_seen"] = titles[:NEWS_SEEN_MAX]
+        return None
+    known = set(prev)
+    fresh = [it for it in items if it[1] not in known]
+    seen["news_seen"] = (titles + [t for t in prev if t not in set(titles)]
+                         )[:NEWS_SEEN_MAX]
+    if not fresh:
+        return None
+    now = time.time()
+    if now - seen.get("news_at", 0) < NEWS_ALERT_COOLDOWN_S:
+        return None
+    hit = next((it for it in fresh if _news_is_event(it[1])), None)
+    if hit is None:
+        return None
+    seen["news_at"] = now
+    tag, title, when = hit[0], hit[1], hit[2]
+    return (f"🔔 <b>خبر مهم — {SYMBOL}</b>\n\n"
+            f"{tag} {esc(title)}\n"
+            f"🕒 <b>{when}</b> {TZ_LABEL}\n\n"
+            f"<i>⚠️ معلومة فقط — مو إشارة دخول. القرار إلك.</i>")
+
+
 def _clock(dt: datetime) -> str:
     """A timestamp in the owner's clock, short: HH:MM today, else DD/MM HH:MM."""
     if dt.tzinfo is None:          # a feed that omits the zone is GMT-stamped
@@ -4080,30 +4185,36 @@ def card_who(tg: "Telegram") -> str:
 
 
 def card_settings() -> str:
-    """The owner's control panel: one line per entry gate, on/off.
+    """The owner's control panel: one line per switch, on/off.
 
-    The four gates the desk checks before it opens a trade. Flipping one writes
-    `data/settings.json` (and the pinned backup), so it survives a restart --
-    the Render env vars are only the STARTING value. The panel is the owner's
-    alone; a guest never sees it.
+    The four entry gates the desk checks before it opens a trade, plus the news
+    alert. Flipping one writes `data/settings.json` (and the pinned backup), so
+    it survives a restart -- the Render env vars are only the STARTING value.
+    The panel is the owner's alone; a guest never sees it.
     """
-    st = gate_state()
+    st = panel_state()
     lines = ["⚙️ <b>إعدادات البوت</b> — تحكّم المالك", ""]
     for k in GATE_KEYS:
         mark = "🟢" if st[k] else "🔴"
         lines.append(f"{mark} {GATE_LABELS[k]}: "
                      f"<b>{'مشغّل' if st[k] else 'مطفّي'}</b>")
     lines.append("")
+    mark = "🟢" if st["news_alerts"] else "🔴"
+    lines.append(f"{mark} {GATE_LABELS['news_alerts']}: "
+                 f"<b>{'مشغّل' if st['news_alerts'] else 'مطفّي'}</b>")
+    lines.append("")
     lines.append("<i>اضغط أي زر لقلبه فوراً — ما بيلزم إعادة نشر.</i>")
     return "\n".join(lines)
 
 
 def settings_keyboard() -> dict:
-    st = gate_state()
+    st = panel_state()
     rows = [[(f"{'🟢' if st[k] else '🔴'} {GATE_LABELS[k]}", f"cfg:{k}")]
             for k in GATE_KEYS]
     rows.append([("🔵 افتح كل الفلاتر", "cfg:open_all"),
                  ("🔒 اقفل كل الفلاتر", "cfg:close_all")])
+    nlabel = f"{'🟢' if st['news_alerts'] else '🔴'} {GATE_LABELS['news_alerts']}"
+    rows.append([(nlabel, "cfg:news_alerts")])
     rows.append([("🏠 القائمة", "menu")])
     return kb(rows)
 
@@ -5377,7 +5488,7 @@ def _dump_journal() -> dict:
             "trades": [dict(t) for t in all_trades()],
             "allow": sorted(load_allow()),
             "daily": _load_daily(),
-            "settings": gate_state(),
+            "settings": panel_state(),
             "sticky": _sticky_load()}
 
 
@@ -5468,7 +5579,7 @@ def restore_journal(tg: Telegram) -> int:
     settings = blob.get("settings")
     if isinstance(settings, dict) and not SETTINGS_PATH.exists():
         apply_settings(settings)
-        save_settings(gate_state())
+        save_settings(panel_state())
     # The sticky pool outlives the container too: a restart must not forget the
     # levels the owner was watching, so restore it when the file is absent.
     sticky = blob.get("sticky")
@@ -5564,10 +5675,10 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
         key = str(action)[4:]
         if key == "open_all":
             apply_settings({k: True for k in GATE_KEYS})
-            save_settings(gate_state())
+            save_settings(panel_state())
         elif key == "close_all":
             apply_settings({k: False for k in GATE_KEYS})
-            save_settings(gate_state())
+            save_settings(panel_state())
         else:
             toggle_gate(key)
         if mid:
@@ -6502,6 +6613,13 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
         for c in _alert_chats(allow):
             tg.send(c, note)
     note = entry_watch(seen)
+    if note:
+        for c in _alert_chats(allow):
+            tg.send(c, note)
+    # The news alert runs before the silence switch too: an important headline
+    # is a fact about the market, not a trade decision, so the owner still
+    # hears it when auto-trading is off.
+    note = news_watch(seen)
     if note:
         for c in _alert_chats(allow):
             tg.send(c, note)
