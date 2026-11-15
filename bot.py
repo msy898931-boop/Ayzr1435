@@ -6441,7 +6441,7 @@ def maybe_daily_report(tg: Telegram, allow: set[str]) -> None:
     if st.get("was_open") and st.get("last_sent") != today:
         text = daily_report()
         for c in _desk_chats(allow):
-            tg.send(c, text)
+            tg.send(c, text, MENU_REPLY_KB)
         st["was_open"] = False
         st["last_sent"] = today
         _save_daily(st)
@@ -6474,7 +6474,7 @@ def maybe_daily_analysis(tg: Telegram, allow: set[str]) -> None:
         ok = False
         for c in _alert_chats(allow):
             try:
-                tg.send(c, text)
+                tg.send(c, text, MENU_REPLY_KB)
                 ok = True
             except Exception:  # noqa: BLE001
                 continue
