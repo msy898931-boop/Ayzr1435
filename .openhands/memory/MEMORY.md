@@ -1201,3 +1201,19 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   news section IS live. First read to carry news: the 09:00 morning slot
   (today's 21:00 PM slot had already passed before this deploy). Verify a deploy
   with `/health` -> `commit`.
+- ⭐ **Replaying the desk's own trades needs a price ALIGNMENT, not a bar set.**
+  The live feed is biquote SPOT; the only long history is Yahoo `GC=F` FUTURES
+  (~60d of 5m/15m/1h). They differ by a 6-16 pt basis that DRIFTS day to day, so
+  a raw replay reads every level 8 pts off and flips the gate. Fix: for each
+  trade, subtract `yahoo_close@minute - recorded_entry` from every bar of the
+  walk (the desk's own print is ground truth). After that, the replay's frame
+  tilts and pivot levels match the live `/map.json` -- verified. Harness lives at
+  `/tmp/replay_gate.py` (monkeypatches `bot.bars/closed/datetime/market_open`).
+- ⭐ **The basis gate (`bcd8949`, 11-13 17:32) is what changed the record.** The
+  44 recorded trades were ALL taken before it, by the immediate-entry bot. Replayed
+  against the current engine, **0/44 survive**: 18 no_setup (41%), 14 chase (32%),
+  6 gate (14%), 4 no_signal (9%), 2 trend (5%). A forward sim over the SAME week
+  (Nov 9-13, real `plan_check`) has the new engine taking **5 trades, +2.4R, 2 wins**
+  -- all `retrace` basis, not the 44 chase/breakout entries. So the owner's own
+  journal is the OLD bot's, and the new gate is far more selective. The `retrace`
+  basis needs price AT the level; most recorded entries were mid-range.
