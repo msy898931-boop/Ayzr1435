@@ -3156,5 +3156,70 @@ class OwnerPanelTest(unittest.TestCase):
         self.assertIn("مين موجود بالبوت", sent2)
 
 
+class DeskTickRestartTest(_DbCase):
+    """A restart must not replay the book as fresh closures.
+
+    The desk's per-run `seen` map starts empty, and the close-announcement loop
+    used to treat "not in seen" as "was open" -- so after every Render restart
+    the owner got a close card for EVERY trade already in the journal. The first
+    look at a trade we have never seen must be an observation (record its
+    status, say nothing), exactly like the other watches seed silently.
+    """
+
+    def _tg(self):
+        tg = unittest.mock.Mock()
+        return tg
+
+    def _tick(self, tg, seen):
+        # Only the close-announcement half matters here: silence the rest of the
+        # cycle (no market, no news, no alerts) so the assertion is unambiguous.
+        with unittest.mock.patch.object(bot, "grade", return_value=0), \
+             unittest.mock.patch.object(bot, "maybe_daily_report"), \
+             unittest.mock.patch.object(bot, "maybe_daily_analysis"), \
+             unittest.mock.patch.object(bot, "support_watch", return_value=None), \
+             unittest.mock.patch.object(bot, "levels_watch", return_value=None), \
+             unittest.mock.patch.object(bot, "gate_watch", return_value=None), \
+             unittest.mock.patch.object(bot, "trend_watch", return_value=None), \
+             unittest.mock.patch.object(bot, "entry_watch", return_value=None), \
+             unittest.mock.patch.object(bot, "news_watch", return_value=None), \
+             unittest.mock.patch.object(bot, "trade_watch", return_value=None), \
+             unittest.mock.patch.object(bot, "desk_is_silenced",
+                                       return_value=True):
+            bot.desk_tick(tg, {bot.SEED_CHATS[0]}, seen)
+
+    def test_a_restart_does_not_replay_closed_trades(self):
+        tid = bot.add_trade("long", 4000, 3991, 4020, bot.LOT, note="t")
+        bot._settle(tid, "target", 4020.0, 2.2)
+        # Fresh process: `seen` is empty, the journal already holds a closure.
+        tg = self._tg()
+        seen: dict = {}
+        self._tick(tg, seen)
+        self.assertFalse(tg.send.called, "a restart replayed a closed trade")
+        self.assertEqual(seen.get(tid), "closed")   # recorded, so it won't fire
+
+    def test_a_trade_open_at_boot_closes_after_boot_and_is_announced(self):
+        tid = bot.add_trade("long", 4000, 3991, 4020, bot.LOT, note="t")
+        tg = self._tg()
+        seen: dict = {}
+        self._tick(tg, seen)                        # boot: open, silent
+        self.assertFalse(tg.send.called)
+        self.assertEqual(seen.get(tid), "open")
+        # It closes AFTER boot -> the owner must hear it.
+        bot._settle(tid, "stop", 3991.0, -1.0)
+        tg2 = self._tg()
+        self._tick(tg2, seen)
+        sent = " ".join(str(c.args[1]) for c in tg2.send.call_args_list)
+        self.assertIn(f"#{tid}", sent)
+
+    def test_a_manual_close_is_not_re_announced_by_the_loop(self):
+        tid = bot.add_trade("long", 4000, 3991, 4020, bot.LOT, note="t")
+        seen: dict = {}
+        self._tick(self._tg(), seen)                # boot: records "open"
+        bot._settle(tid, "manual", 4005.0, None)    # button handler already sent
+        tg = self._tg()
+        self._tick(tg, seen)
+        self.assertFalse(tg.send.called, "the loop re-sent a manual close")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

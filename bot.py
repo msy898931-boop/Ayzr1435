@@ -6625,7 +6625,19 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
             tg.send(c, note)
     for t in all_trades():
         st = t["status"]
-        if st != seen.get(t["id"], "open"):
+        was = seen.get(t["id"])
+        if was is None:
+            # A trade we have never seen: it predates this run (restored from
+            # the pinned journal) or was opened outside this loop. Record its
+            # status and stay SILENT -- a restart must not replay the whole book
+            # as fresh closures. A trade still OPEN at boot is recorded "open",
+            # so the close that happens AFTER boot is still announced. This is
+            # the same "first look is an observation, not an event" rule the
+            # other watches use; the old default of "open" made every restored
+            # closed trade look like it had just closed.
+            seen[t["id"]] = st
+            continue
+        if st != was:
             seen[t["id"]] = st
             # A manual close already sent its card from the button handler;
             # announcing it here too would deliver the same closure twice.
