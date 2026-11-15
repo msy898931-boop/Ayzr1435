@@ -291,18 +291,24 @@ GATE_KEYS = ("entry_basis", "nochase", "filters", "trend_filter")
 # would be clobbered by this default at import.
 NEWS_ALERTS_ON = os.environ.get("DESK_NEWS_ALERTS", "1").strip().lower() not in \
     ("0", "off", "no", "false")
+# The pre-event alert is its own switch on the owner's panel. It must be defined
+# HERE (before `apply_settings(load_settings())`), or a saved choice would be
+# clobbered by this default at import.
+NEWS_PREP_ON = os.environ.get("DESK_NEWS_PREP", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
 _GATE_VAR = {"entry_basis": "ENTRY_BASIS_ON", "nochase": "NOCHASE_ON",
              "filters": "FILTERS_ON", "trend_filter": "TREND_FILTER_ON",
-             "news_alerts": "NEWS_ALERTS_ON"}
+             "news_alerts": "NEWS_ALERTS_ON", "news_prep": "NEWS_PREP_ON"}
 GATE_LABELS = {"entry_basis": "أساس الدخول (عند مستوى)",
                "nochase": "منع المطاردة",
                "filters": "بوابة الجودة (ADX/ATR)",
                "trend_filter": "فلتر شمعة 15د",
-               "news_alerts": "تنبيه الأخبار المهمة"}
+               "news_alerts": "تنبيه الأخبار المهمة",
+               "news_prep": "تنبيه التحضير قبل الخبر"}
 # Everything the panel shows and persists. `gate_state` stays GATE_KEYS only so
-# `open_all`/`close_all` keep meaning "the entry filters"; the news switch is
-# carried alongside but flipped on its own.
-PANEL_KEYS = GATE_KEYS + ("news_alerts",)
+# `open_all`/`close_all` keep meaning "the entry filters"; the news switches are
+# carried alongside but flipped on their own.
+PANEL_KEYS = GATE_KEYS + ("news_alerts", "news_prep")
 
 
 def load_settings() -> dict:
@@ -438,6 +444,44 @@ NEWS_ALERT_COOLDOWN_S = int(
 # How many recent titles the alert remembers, to tell a new headline from one it
 # already saw. The feed caps at ~40, so this covers it whole.
 NEWS_SEEN_MAX = int(os.environ.get("DESK_NEWS_SEEN_MAX", "80") or "80")
+# ---- the economic calendar (the pre-event prep card) ---------------------
+# A calendar is a FACT the owner can prepare around: the time of a print and
+# what the market expects. It is NOT a forecast -- nobody knows the number
+# before it lands, so the card prepares BOTH directions and says so.
+#
+# Two keyless sources are understood, because the popular one is unreliable:
+#   * TradingView's economic calendar JSON (the default). It answers from a
+#     datacenter IP where Forex Factory returns HTTP 429 "Too Many Requests";
+#     its `importance` runs 1=high, 0=medium, -1=low.
+#   * Forex Factory's weekly JSON, kept as a fallback (`DESK_CAL_SOURCE=ff`).
+#     Its `impact` is the word High/Medium/Low.
+# `_cal_parse` detects the shape, so either URL works.
+CAL_SOURCE = os.environ.get("DESK_CAL_SOURCE", "tv").strip().lower()
+CAL_URL = os.environ.get("DESK_CAL_URL", "").strip()
+CAL_CACHE_S = int(os.environ.get("DESK_CAL_CACHE", "1800") or "1800")
+# Which currencies matter for gold: the dollar above all, then the euro and the
+# pound (a big EU/UK print moves the dollar index too). Everything else -- the
+# NZD services index, a CNY loan print -- is noise for XAUUSD.
+CAL_CURRENCIES = tuple(
+    c.strip().upper() for c in os.environ.get(
+        "DESK_CAL_CURRENCIES", "USD|EUR|GBP").split("|") if c.strip())
+# Impact levels kept, as our own words. "High" alone misses too much (retail
+# sales, PPI); "Medium" is where most gold-movers live, and "Low" is dropped.
+CAL_IMPACTS = tuple(
+    i.strip().title() for i in os.environ.get(
+        "DESK_CAL_IMPACTS", "High|Medium").split("|") if i.strip())
+# Mechanical releases that are not "news" the owner prepares for: auctions of
+# bills/notes/bonds and reserve/asset tallies. They carry a Medium tag on some
+# feeds and would otherwise become "the next event" and mute a real one.
+CAL_NOISE = tuple(
+    w.strip().lower() for w in os.environ.get(
+        "DESK_CAL_NOISE",
+        "auction|bill|note|bond|reserve assets|settlement").split("|")
+    if w.strip())
+# The pre-event alert fires ONCE per event per lead window; the card looks this
+# far ahead for "the next event". Both in minutes.
+CAL_LEAD_MIN = int(os.environ.get("DESK_CAL_LEAD_MIN", "60") or "60")
+CAL_LEAD_MIN2 = int(os.environ.get("DESK_CAL_LEAD_MIN2", "15") or "15")
 # The automatic direction alert: tell the owner when the desk's net direction
 # flips (up / down / range) without a tap. A cooldown damps a chop at the edge.
 TREND_ALERTS = os.environ.get("DESK_TREND_ALERTS", "1").strip().lower() in (
@@ -483,6 +527,7 @@ SUBMENUS = {
     ],
     "menu_map": [
         [("🗺️ خريطة المناطق", "map"), ("📰 الأخبار", "news")],
+        [("⏰ قبل الخبر", "news_prep")],
         [("🎬 السيناريوهات", "scenarios"), ("🔔 المستويات", "levels")],
         [("↩️ رجوع", "menu_back")],
     ],
@@ -512,10 +557,17 @@ def _menu_rows(chat: str | None = None) -> list:
             rows.append(kept)
     return rows
 
-# The collapsed menu: ONE button, bottom-left, shown under every card. The full
-# grid above is behind it -- the owner asked for the extra buttons to move into
-# a list that is only shown when tapped.
-COLLAPSE_BTN = [("☰ القائمة", "menu")]
+# The standing menu button: ONE button pinned at the BOTTOM-LEFT of the screen,
+# not inside a card. It is a persistent reply keyboard, so it stays under every
+# message; tapping it sends its text, which action_for() routes to the grid.
+# The invisible spacer on its right keeps the real button on the LEFT -- a lone
+# reply button is centred by some clients, and the owner asked for the left.
+MENU_BUTTON_TEXT = "☰ القائمة"
+MENU_REPLY_KB = {
+    "keyboard": [[{"text": MENU_BUTTON_TEXT}, {"text": "\u2063"}]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
 JOURNAL_MENU = [
     [("📅 السجل اليومي", "j_day"), ("🗓️ السجل الأسبوعي", "j_week")],
     [("📆 السجل الشهري", "j_month"), ("📋 كل الصفقات", "journal")],
@@ -536,8 +588,9 @@ TEXT_ACTIONS = {
     "/daily": "day_analysis", "تحليل يومي": "day_analysis",
     "التحليل اليومي": "day_analysis", "قراءة اليوم": "day_analysis",
     "اعمل": "action", "تنبيهات": "alerts", "التنبيهات": "alerts", "دليل": "alerts",
-    "مساعدة": "help", "قائمة": "menu",
+    "مساعدة": "help", "قائمة": "menu", "القائمة": "menu", "☰ القائمة": "menu",
     "مين": "who", "المشتركين": "who", "المشتركين؟": "who",
+    "قبل الخبر": "news_prep", "تحضير الخبر": "news_prep", "الخبر": "news_prep",
 }
 TRADE_VERBS = {"سجل", "سجّل", "صفقة", "/trade", "trade"}
 CLOSE_VERBS = {"سكر", "سكّر", "أغلق", "اغلق", "اقفل", "أقفل", "/close", "close"}
@@ -557,8 +610,11 @@ def num(v, dp: int = 2) -> str:
         return "—"
 
 
-def _get(url: str, timeout: int = 25):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+def _get(url: str, timeout: int = 25, headers: dict | None = None):
+    hdr = {"User-Agent": UA}
+    if headers:
+        hdr.update(headers)
+    req = urllib.request.Request(url, headers=hdr)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
@@ -631,10 +687,22 @@ class Telegram:
         if markup is not None:
             payload["reply_markup"] = markup
         try:
-            return bool(self.call("sendMessage", payload).get("ok"))
+            if bool(self.call("sendMessage", payload).get("ok")):
+                return True
         except (urllib.error.URLError, urllib.error.HTTPError, ValueError,
                 TimeoutError):
-            return False
+            pass
+        # A card must never be LOST to a keyboard the client rejects: if the
+        # send failed and a reply keyboard rode along, retry without it. The
+        # standing menu button is a convenience, not the message.
+        if markup is not None and "keyboard" in markup:
+            payload.pop("reply_markup", None)
+            try:
+                return bool(self.call("sendMessage", payload).get("ok"))
+            except (urllib.error.URLError, urllib.error.HTTPError, ValueError,
+                    TimeoutError):
+                return False
+        return False
 
     def answer(self, cid: str, text: str = "") -> None:
         try:
@@ -743,37 +811,46 @@ def kb(rows) -> dict:
                                 for row in rows]}
 
 
-def nav(action: str) -> dict:
-    """The keyboard under a normal card: ONE button, at the bottom.
+def nav(action: str) -> dict | None:
+    """The keyboard under a normal card: NONE.
 
-    The owner asked for the extra buttons to move into a collapsible list shown
-    only when tapped -- so a card carries just the ☰ toggle, and the whole menu
-    lives one tap away. A card that is itself a list (the journal) keeps its own
-    buttons plus the toggle, and an open-trade card keeps its close buttons.
+    The menu toggle is no longer an inline button inside the card -- it is the
+    standing reply keyboard (MENU_REPLY_KB) pinned at the bottom-left of the
+    screen, so it is always reachable and a card carries no buttons of its own.
+    A card that IS a list (the journal) or an open trade keeps its own inline
+    buttons; those are handled in keyboard_for() before this default.
     """
-    return kb([COLLAPSE_BTN])
+    return None
 
 
-def keyboard_for(action: str, chat: str | None = None) -> dict:
+def keyboard_for(action: str, chat: str | None = None) -> dict | None:
     if action == "journal_menu":
         return kb(JOURNAL_MENU)
-    if action in ("menu", "menu_back"):
+    if action in ("menu", "menu_grid", "menu_back"):
         # The expanded list carries every action, plus a row to fold it back.
-        # `menu_back` climbs from a dropdown to the same top grid.
         return kb(_menu_rows(chat))
     if action in SUBMENUS:
         return kb(SUBMENUS[action])
     if action == "settings":
         return settings_keyboard()
     if action == "open":
-        ck = close_keyboard()
-        if ck:
-            ck["inline_keyboard"] += COLLAPSE_BTN_ROWS
-            return ck
+        return close_keyboard()      # one close button per open trade
     return nav(action)
 
 
-COLLAPSE_BTN_ROWS = [[{"text": t, "callback_data": d} for t, d in COLLAPSE_BTN]]
+def card_markup(action: str, chat: str | None = None) -> dict:
+    """The markup for an outgoing card: the card's own inline keyboard when it
+    has one, otherwise the standing menu button.
+
+    Attaching the reply keyboard to every button-less card is also what INSTALLS
+    it: Telegram shows a reply keyboard the first time a message carries it, and
+    it then persists, so the owner gets the bottom-left «القائمة» without a
+    separate setup message. An inline grid (menu / journal / close) cannot also
+    carry a reply keyboard -- one reply_markup per message -- so those keep their
+    inline buttons and the reply keyboard stays from the previous card.
+    """
+    inline = keyboard_for(action, chat)
+    return inline if inline is not None else MENU_REPLY_KB
 
 
 # ========================================================================
@@ -3073,6 +3150,298 @@ def _news_fetch() -> list[tuple[str, str, str]]:
 
 
 
+# ========================================================================
+# the economic calendar — the pre-event prep card
+# ========================================================================
+_CAL_CACHE: dict = {"at": 0.0, "events": []}
+_FF_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+_TV_URL = "https://economic-calendar.tradingview.com/events"
+# TradingView's importance scale -> our words. 1 is a top-tier print (CPI, NFP,
+# a rate decision), 0 is a normal release, -1 is minor.
+_TV_IMPACT = {1: "High", 0: "Medium", -1: "Low", 2: "High", 3: "High"}
+
+
+def _cal_url() -> str:
+    """The URL to fetch. An explicit DESK_CAL_URL wins; else the source default."""
+    if CAL_URL:
+        return CAL_URL
+    if CAL_SOURCE == "ff":
+        return _FF_URL
+    now = datetime.now(UTC)
+    frm = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    to = (now + timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    countries = ",".join(c for c in CAL_CURRENCIES if c in ("US", "EU", "GB"))
+    q = urllib.parse.urlencode({"from": frm, "to": to,
+                                "countries": countries or "US,EU,GB"})
+    return f"{_TV_URL}?{q}"
+
+
+def _cal_headers() -> dict:
+    h = {"User-Agent": UA}
+    if CAL_SOURCE != "ff" and not CAL_URL:
+        # TradingView serves the JSON to its own page origin; a bare UA is
+        # answered but the origin makes it reliable.
+        h["Origin"] = "https://www.tradingview.com"
+        h["Referer"] = "https://www.tradingview.com/"
+    return h
+
+
+def _cal_parse(raw) -> list[dict]:
+    """The raw feed -> the events that matter for gold, both source shapes.
+
+    Understands Forex Factory (`country`/`impact` word/`date`) and TradingView
+    (`currency`/`importance` int/`date`). Keeps only High/Medium impact in
+    CAL_CURRENCIES with a parseable time, normalising both to ONE dict shape so
+    every caller is source-agnostic. A malformed entry is skipped, never raised
+    -- a broken feed must degrade to [].
+    """
+    out: list[dict] = []
+    for e in (raw or []):
+        try:
+            # Prefer the CURRENCY (USD) over the country (US): the filter is by
+            # currency, and TradingView carries both while Forex Factory carries
+            # only `country`. Forex Factory's country IS the currency code there.
+            cur = str(e.get("currency") or e.get("country") or "").upper()
+            if "impact" in e:
+                impact = str(e["impact"]).title()
+            else:
+                impact = _TV_IMPACT.get(int(e.get("importance")), "Low")
+            if cur not in CAL_CURRENCIES or impact not in CAL_IMPACTS:
+                continue
+            title = str(e.get("title") or "").strip()
+            if any(w in title.lower() for w in CAL_NOISE):
+                continue
+            when = datetime.fromisoformat(str(e.get("date")))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=UTC)
+        except (ValueError, TypeError, AttributeError):
+            continue
+        out.append({"title": title,
+                    "currency": cur, "impact": impact, "when": when,
+                    "forecast": str(e.get("forecast") if e.get("forecast")
+                                    is not None else "").strip(),
+                    "previous": str(e.get("previous") if e.get("previous")
+                                    is not None else "").strip()})
+    out.sort(key=lambda x: x["when"])
+    return out
+
+
+def _cal_fetch() -> list[dict]:
+    """The week's calendar, cached. A failed fetch returns the last good list.
+
+    The feed rate-limits, so this is fetched at most once per CAL_CACHE_S and
+    the cache is what every caller reads. On a failed fetch the STALE list is
+    returned rather than [], so a hiccup does not blank the card the owner is
+    looking at.
+    """
+    now = time.monotonic()
+    if _CAL_CACHE["events"] and now - _CAL_CACHE["at"] < CAL_CACHE_S:
+        return list(_CAL_CACHE["events"])
+    try:
+        raw = _get(_cal_url(), timeout=20, headers=_cal_headers())
+    except Exception:  # noqa: BLE001 - a feed hiccup must not kill the card
+        return list(_CAL_CACHE["events"])
+    # TradingView wraps the list in {"status": "ok", "result": [...]}; Forex
+    # Factory returns the bare list. Unwrap so `_cal_parse` sees a list either way.
+    if isinstance(raw, dict):
+        raw = raw.get("result") or raw.get("events") or []
+    events = _cal_parse(raw)
+    if events or not _CAL_CACHE["events"]:
+        _CAL_CACHE["at"], _CAL_CACHE["events"] = now, events
+    return list(events)
+
+
+def _cal_next(events: list[dict] | None = None,
+              now: datetime | None = None,
+              impacts: tuple[str, ...] | None = None) -> dict | None:
+    """The next event still ahead of `now`, or None.
+
+    "Ahead" is the EVENT's time in UTC. An event that already fired is skipped,
+    so the card never tells the owner to prepare for something in the past. An
+    optional `impacts` filter keeps only those levels -- the card uses it to
+    show the next BIG print when one is coming, not a minor release first.
+    """
+    events = _cal_fetch() if events is None else events
+    now = now or datetime.now(UTC)
+    for e in events:
+        if e["when"] > now and (impacts is None or e["impact"] in impacts):
+            return e
+    return None
+
+
+def _within(events: list[dict], now: datetime, impact: str,
+            hours: int) -> bool:
+    """True if an event of `impact` lands within `hours` from now."""
+    ev = _cal_next(events, now, (impact,))
+    return ev is not None and (ev["when"] - now) <= timedelta(hours=hours)
+
+
+def _cal_when_txt(when: datetime,
+                  now: datetime | None = None) -> tuple[str, str]:
+    """The event clock in the owner's time, plus how long is left."""
+    now = now or datetime.now(UTC)
+    loc = when.astimezone(timezone(timedelta(hours=TZ_OFFSET_H)))
+    mins = int((when - now).total_seconds() // 60)
+    if mins < 60:
+        left = f"بعد {max(mins, 0)} دقيقة"
+    elif mins < 60 * 24:
+        left = f"بعد {mins // 60} ساعة"
+    else:
+        left = f"بعد {mins // (60 * 24)} يوم"
+    today = now.astimezone(
+        timezone(timedelta(hours=TZ_OFFSET_H))).date()
+    day = "اليوم" if loc.date() == today else loc.strftime("%d/%m")
+    return f"{day} {loc.strftime('%H:%M')}", left
+
+
+def _cal_impact_ar(impact: str) -> str:
+    return {"High": "🔴 عالي", "Medium": "🟠 متوسط"}.get(impact, impact)
+
+
+def card_news_prep() -> str:
+    """The pre-event prep card: WHEN the next print lands and BOTH plans.
+
+    This is the honest alternative to "predict the direction". Nobody knows the
+    number before it lands, so a forecast would be a lie; instead the card gives
+    the one thing that is knowable -- the TIME and the CONSENSUS -- and the two
+    trades the desk would take either way, sized by its own _sized(). It also
+    states the mechanical lean (a hot print usually lifts the dollar and presses
+    gold), clearly labelled as a RULE, not a prediction.
+    """
+    events = _cal_fetch()
+    now = datetime.now(UTC)
+    head = f"⏰ <b>التحضير قبل الخبر</b> — {SYMBOL}"
+    # Prefer the next HIGH-impact print if it is within ~2 days; otherwise the
+    # nearest event of any kept impact. The owner prepares for CPI, not for a
+    # house-price index two days out.
+    ev = (_cal_next(events, now, ("High",))
+          if _within(events, now, "High", hours=48) else None)
+    if ev is None:
+        ev = _cal_next(events, now)
+    if ev is None:
+        return (head + "\n\nما في حدث اقتصادي مهم قريب (عالي/متوسط).\n"
+                "<i>المصدر: التقويم الاقتصادي. الأحداث القوية عادةً "
+                "التضخم، الوظائف، وقرار الفائدة.</i>")
+    when_txt, left = _cal_when_txt(ev["when"], now)
+    L = [head, ""]
+    L.append(f"🗓️ <b>{esc(ev['title'])}</b> ({ev['currency']})")
+    L.append(f"🕒 <b>{when_txt}</b> {TZ_LABEL} <i>({left})</i>")
+    L.append(f"⚡ الأثر: {_cal_impact_ar(ev['impact'])}")
+    if ev["forecast"] or ev["previous"]:
+        L.append(f"📊 المتوقّع: <b>{esc(ev['forecast'] or '—')}</b> · "
+                 f"السابق: <b>{esc(ev['previous'] or '—')}</b>")
+    L.append("")
+    # The two plans, from the desk's own levels and _sized -- identical rules to
+    # the scenario card, so the prep never quotes a trade the desk would refuse.
+    try:
+        m = read_market()
+        live = m["live"]
+        res, sup = _levels(live)
+        dn_trig, up_trig = _break_levels(res, sup)
+    except Exception:  # noqa: BLE001 - the card must render without a feed
+        live, res, sup, dn_trig, up_trig = 0.0, [], [], None, None
+    L.append("<b>جهّز السيناريوهين (ما حد بيعرف الاتجاه قبل الرقم):</b>")
+    if up_trig is not None:
+        p = _sized(up_trig, "long", res[0])
+        L.append(f"🟢 لو كسر فوق <b>{num(up_trig)}</b>")
+        L.append(f"   دخول {num(p['entry'])} · وقف {num(p['stop'])} · "
+                 f"هدف {num(p['target'])} · R:R {p['rr']:.1f}")
+    if dn_trig is not None:
+        p = _sized(dn_trig, "short", sup[0])
+        L.append(f"🔴 لو كسر تحت <b>{num(dn_trig)}</b>")
+        L.append(f"   دخول {num(p['entry'])} · وقف {num(p['stop'])} · "
+                 f"هدف {num(p['target'])} · R:R {p['rr']:.1f}")
+    if up_trig is None and dn_trig is None:
+        L.append("— ما قدرت أقرأ المستويات الآن؛ جهّز من عندك.")
+    L.append("")
+    lean = _cal_lean(ev)
+    if lean:
+        L.append(f"⚙️ {lean}")
+    L.append("")
+    L.append("<i>⚠️ الاتجاه بيتحدد عند الرقم نفسه — أنا ما بتنبّأ فيه. "
+             "استنّى الشمعة تنسكّر فوق/تحت المشغّل قبل الدخول.</i>")
+    return "\n".join(L)
+
+
+def _cal_lean(ev: dict) -> str | None:
+    """The mechanical rule, stated as a RULE and not a prediction.
+
+    A hot US inflation/jobs print usually lifts the dollar and yields, which
+    presses gold; a soft print does the opposite. This is the well-known
+    mechanical lean, tied to the SURPRISE (actual vs forecast), which nobody
+    knows in advance -- so it is a rule the owner applies to the number, never a
+    call. Non-USD events return None (their gold effect is second-order).
+    """
+    if ev.get("currency") != "USD":
+        return None
+    t = ev.get("title", "").lower()
+    hot = any(k in t for k in ("cpi", "inflation", "ppi", "payroll",
+                               "nonfarm", "unemployment", "gdp", "retail"))
+    if not hot:
+        return None
+    return ("لو طلع الرقم <b>أعلى</b> من المتوقّع → عادةً الدولار يقوى → "
+            "الذهب يضعف. لو طلع <b>أقل</b> → العكس. <i>(قاعدة، مو تنبؤ.)</i>")
+
+
+def news_prep_watch(seen: dict) -> str | None:
+    """The unprompted prep alert: speak once before an important event.
+
+    Fires when the next event is within CAL_LEAD_MIN (the hour heads-up) and
+    again within CAL_LEAD_MIN2 (the final call), ONCE per event per window --
+    keyed in `seen` by the event's title+time so a restart does not replay an
+    alert already sent. A window already OPEN on the first tick after boot is
+    SEEDED silently (the desk may have sent it before the restart); a window the
+    desk crosses while running speaks. Reuses the prep card body so the alert and
+    the card can never disagree.
+    """
+    if not NEWS_PREP_ON:
+        return None
+    # The boot flag is set on the FIRST tick whatever it finds, so a restart
+    # with no event in the window does not swallow the next event's alert: only
+    # a window already OPEN at boot is seeded silently.
+    booting = seen.get("prep_booted") is None
+    seen["prep_booted"] = True
+    try:
+        events = _cal_fetch()
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return None
+    now = datetime.now(UTC)
+    ev = _cal_next(events, now)
+    if ev is None or ev["impact"] != "High":
+        # Only a HIGH-impact print earns an unprompted alert; the card still
+        # shows the next event of any kept impact when the owner asks for it.
+        return None
+    mins = (ev["when"] - now).total_seconds() / 60.0
+    lead = None
+    if 0 < mins <= CAL_LEAD_MIN2:
+        lead = CAL_LEAD_MIN2
+    elif 0 < mins <= CAL_LEAD_MIN:
+        lead = CAL_LEAD_MIN
+    if lead is None:
+        return None
+    key = f"prep:{ev['title']}:{ev['when'].isoformat()}:{lead}"
+    fired = seen.setdefault("prep_fired", {})
+    if key in fired:
+        return None
+    fired[key] = True
+    if booting:
+        # A restart inside the window must not fire the heads-up it already
+        # sent: record this window and stay silent. A LATER window (the 15-min
+        # call after a boot in the 60-min window) is a new key and still fires.
+        return None
+    # Keep the map small: forget keys for events that have already passed.
+    for k in list(fired):
+        with suppress(Exception):
+            stamp = datetime.fromisoformat(k.split(":", 2)[2].rsplit(":", 1)[0])
+            if stamp < now - timedelta(hours=6):
+                del fired[k]
+    when_txt, _ = _cal_when_txt(ev["when"], now)
+    body = card_news_prep()
+    label = "قبل ربع ساعة" if lead == CAL_LEAD_MIN2 else "بعد ساعة"
+    return (f"⏰ <b>تنبيه خبر — {label}</b>\n"
+            f"{_cal_impact_ar(ev['impact'])} <b>{esc(ev['title'])}</b> "
+            f"({ev['currency']}) · <b>{when_txt}</b>\n\n" + body)
+
 
 def _sized(entry: float, direction: str, stop_level: float | None) -> dict:
     """Size one trade from `entry`, the desk's single set of rules.
@@ -4202,6 +4571,9 @@ def card_settings() -> str:
     mark = "🟢" if st["news_alerts"] else "🔴"
     lines.append(f"{mark} {GATE_LABELS['news_alerts']}: "
                  f"<b>{'مشغّل' if st['news_alerts'] else 'مطفّي'}</b>")
+    mark = "🟢" if st["news_prep"] else "🔴"
+    lines.append(f"{mark} {GATE_LABELS['news_prep']}: "
+                 f"<b>{'مشغّل' if st['news_prep'] else 'مطفّي'}</b>")
     lines.append("")
     lines.append("<i>اضغط أي زر لقلبه فوراً — ما بيلزم إعادة نشر.</i>")
     return "\n".join(lines)
@@ -4215,6 +4587,8 @@ def settings_keyboard() -> dict:
                  ("🔒 اقفل كل الفلاتر", "cfg:close_all")])
     nlabel = f"{'🟢' if st['news_alerts'] else '🔴'} {GATE_LABELS['news_alerts']}"
     rows.append([(nlabel, "cfg:news_alerts")])
+    plabel = f"{'🟢' if st['news_prep'] else '🔴'} {GATE_LABELS['news_prep']}"
+    rows.append([(plabel, "cfg:news_prep")])
     rows.append([("🏠 القائمة", "menu")])
     return kb(rows)
 
@@ -5379,6 +5753,10 @@ def alerts_guide() -> str:
             "  يعني: السعر وصل قرب منطقة بيع أو شراء من مناطق قراءتي.\n"
             "  👉 <i>جهّز أمرك: الرسالة فيها الدخول والوقف والهدف. استنى "
             "تأكيد الشمعة — الوقف إلزامي.</i>\n\n"
+            "<b>1️⃣2️⃣ تنبيه خبر قادم</b> ⏰\n"
+            "  يعني: خبر مهم (تضخم/وظائف/فائدة) قرّب — بعد ساعة، وبعدها ربع.\n"
+            "  👉 <i>جهّز السيناريوهين (فوق/تحت). الاتجاه بيتحدد عند الرقم نفسه، "
+            "ما حد بيعرف قبل — استنّى الشمعة تنسكّر قبل الدخول.</i>\n\n"
             "📌 <b>القاعدة الذهبية:</b> كل تنبيه بيقوللك «شو تعمل» بسطر — "
             "اقرأ آخر سطر دايماً.\n\n"
             "<i>قراءة تحليلية، مو وعد ربح.</i>")
@@ -5396,6 +5774,7 @@ def dispatch(action: str) -> str:
         "map": card_map,
         "report": card_report,
         "news": card_news,
+        "news_prep": card_news_prep,
         "open": card_open,
         "monitor": card_monitor,
         "journal": full_journal,
@@ -5611,7 +5990,12 @@ def backup_loop(tg: Telegram, poll_s: int = 60,
 
 
 def action_for(text: str | None) -> str:
-    first = (text or "").strip().split()[0] if (text or "").strip() else ""
+    t = (text or "").strip()
+    # The standing reply button sends its whole label ("☰ القائمة"), so match the
+    # full text before falling back to the first word a typed command uses.
+    if t in TEXT_ACTIONS:
+        return TEXT_ACTIONS[t]
+    first = t.split()[0] if t else ""
     if first in TRADE_VERBS:
         return "trade"
     if first in CLOSE_VERBS:
@@ -5651,18 +6035,19 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
         # see anything at all.
         try:
             if open_trades():
-                tg.send(chat, card_open(), keyboard_for("open"))
+                tg.send(chat, card_open(), card_markup("open", chat))
         except Exception:  # noqa: BLE001
             pass
         action = "menu"
     if cid:
         tg.answer(cid, "جارٍ التنفيذ…")
     # Folding the list edits the message that carries it: no new message, so the
-    # owner's chat is not filled with menu copies. The card itself stays.
+    # owner's chat is not filled with menu copies. The card itself stays, and the
+    # standing reply button at the bottom of the screen is untouched.
     if action == "collapse" and cq is not None:
         mid = ((cq.get("message") or {}).get("message_id"))
         if mid:
-            tg.edit_markup(chat, mid, kb(COLLAPSE_BTN))
+            tg.edit_markup(chat, mid, {"inline_keyboard": []})
         return "collapse"
     # The settings panel: a tap flips one gate and rewrites the SAME message, so
     # the panel stays a single live card. Owner-only -- a guest's tap is refused
@@ -5689,7 +6074,7 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
         # The subscriber list is the owner's book: a guest asking for it gets
         # the plain menu instead of the roll of everyone on the bot.
         out = "⛔ قائمة المشتركين للمالك بس."
-        tg.send(chat, out, keyboard_for("menu", chat))
+        tg.send(chat, out, card_markup("menu", chat))
         return "who"
     try:
         if action == "trade":
@@ -5705,7 +6090,7 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
             out = dispatch(action)
     except Exception as exc:  # noqa: BLE001 - one bad action must not kill the loop
         out = f"⚠️ تعذّر التنفيذ ({esc(exc.__class__.__name__)})."
-    tg.send(chat, out, keyboard_for(action, chat))
+    tg.send(chat, out, card_markup(action, chat))
     return action
 
 
@@ -6599,30 +6984,36 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     note = support_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note)
+            tg.send(c, note, MENU_REPLY_KB)
     note = levels_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note)
+            tg.send(c, note, MENU_REPLY_KB)
     note = gate_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note)
+            tg.send(c, note, MENU_REPLY_KB)
     note = trend_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note)
+            tg.send(c, note, MENU_REPLY_KB)
     note = entry_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note)
+            tg.send(c, note, MENU_REPLY_KB)
     # The news alert runs before the silence switch too: an important headline
     # is a fact about the market, not a trade decision, so the owner still
     # hears it when auto-trading is off.
     note = news_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note)
+            tg.send(c, note, MENU_REPLY_KB)
+    # The pre-event prep alert: a fact about the calendar, not a trade decision,
+    # so it also runs before the silence switch.
+    note = news_prep_watch(seen)
+    if note:
+        for c in _alert_chats(allow):
+            tg.send(c, note, MENU_REPLY_KB)
     for t in all_trades():
         st = t["status"]
         was = seen.get(t["id"])
@@ -6649,7 +7040,7 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     note = trade_watch(seen)
     if note:
         for c in _desk_chats(allow):
-            tg.send(c, note)
+            tg.send(c, note, MENU_REPLY_KB)
     if desk_is_silenced():
         return
     # The daily cap first: if the session already opened MAX_TRADES_DAY trades,

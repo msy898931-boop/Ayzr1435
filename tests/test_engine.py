@@ -16,8 +16,10 @@ import pathlib
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
+from datetime import UTC, datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -920,6 +922,155 @@ class NewsAlertTest(unittest.TestCase):
                 for r in bot.settings_keyboard()["inline_keyboard"] for b in r]
         self.assertIn("cfg:news_alerts", keys)
         self.assertIn("تنبيه الأخبار", bot.card_settings())
+
+
+class EconomicCalendarTest(unittest.TestCase):
+    """The pre-event prep card and its alert: a FACT about the calendar (time,
+    consensus) and BOTH plans -- never a prediction of the direction."""
+
+    def setUp(self):
+        self._saved = (bot._CAL_CACHE["at"], list(bot._CAL_CACHE["events"]))
+
+    def tearDown(self):
+        bot._CAL_CACHE["at"], bot._CAL_CACHE["events"] = self._saved
+
+    def _ev(self, title, mins_from_now, cur="USD", impact="High",
+            forecast="3.1%", previous="3.0%"):
+        when = datetime.now(UTC) + timedelta(minutes=mins_from_now)
+        return {"title": title, "currency": cur, "impact": impact,
+                "when": when, "forecast": forecast, "previous": previous}
+
+    def test_parse_keeps_only_gold_currencies_and_impact(self):
+        raw = [
+            {"title": "CPI m/m", "country": "USD", "impact": "High",
+             "date": "2026-11-07T13:30:00-05:00", "forecast": "0.3%",
+             "previous": "0.2%"},
+            {"title": "NZD Services", "country": "NZD", "impact": "Medium",
+             "date": "2026-11-07T17:45:00-05:00"},
+            {"title": "Some low thing", "country": "USD", "impact": "Low",
+             "date": "2026-11-07T10:00:00-05:00"},
+            {"title": "Broken", "country": "USD", "impact": "High",
+             "date": "not-a-date"},
+        ]
+        out = bot._cal_parse(raw)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["title"], "CPI m/m")
+        self.assertEqual(out[0]["currency"], "USD")
+        self.assertIsNotNone(out[0]["when"].tzinfo)
+
+    def test_parse_understands_the_tradingview_shape_too(self):
+        # The default source. `importance` is an int (1 high, 0 medium, -1 low)
+        # and the time ends in Z; both must normalise to the same dict shape.
+        raw = [
+            {"title": "Nonfarm Payrolls", "currency": "USD", "importance": 1,
+             "date": "2026-11-07T13:30:00.000Z", "forecast": 150, "previous": 120},
+            {"title": "Minor print", "currency": "USD", "importance": -1,
+             "date": "2026-11-07T15:00:00.000Z"},
+            {"title": "AUD thing", "currency": "AUD", "importance": 1,
+             "date": "2026-11-07T01:00:00.000Z"},
+        ]
+        out = bot._cal_parse(raw)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["title"], "Nonfarm Payrolls")
+        self.assertEqual(out[0]["impact"], "High")
+        self.assertEqual(out[0]["forecast"], "150")
+        self.assertIsNotNone(out[0]["when"].tzinfo)
+
+    def test_next_event_skips_one_already_fired(self):
+        past = self._ev("Past", -30)
+        soon = self._ev("Soon", 45)
+        later = self._ev("Later", 180)
+        ev = bot._cal_next([past, soon, later])
+        self.assertEqual(ev["title"], "Soon")
+
+    def test_the_card_names_the_time_and_both_plans_never_a_prediction(self):
+        bot._CAL_CACHE["at"] = time.monotonic()
+        bot._CAL_CACHE["events"] = [self._ev("CPI m/m", 40)]
+        with unittest.mock.patch.object(bot, "_cal_fetch",
+                                        return_value=bot._CAL_CACHE["events"]), \
+             unittest.mock.patch.object(bot, "read_market",
+                                        return_value={"live": 4100.0}), \
+             unittest.mock.patch.object(bot, "_levels",
+                                        return_value=([4120.0], [4080.0])):
+            out = bot.card_news_prep()
+        self.assertIn("CPI m/m", out)
+        self.assertIn(bot.TZ_LABEL, out)
+        self.assertIn("جهّز السيناريوهين", out)
+        # BOTH directions are prepared -- the card never picks one.
+        self.assertIn("لو كسر فوق", out)
+        self.assertIn("لو كسر تحت", out)
+        # And it says plainly that the direction is not a prediction.
+        self.assertIn("ما بتنبّأ", out)
+        # The consensus is shown as a fact.
+        self.assertIn("3.1%", out)
+
+    def test_no_event_returns_a_plain_honest_line(self):
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=[]):
+            out = bot.card_news_prep()
+        self.assertIn("ما في حدث اقتصادي مهم قريب", out)
+
+    def test_the_lean_is_a_rule_only_for_usd_hot_prints(self):
+        self.assertIsNotNone(bot._cal_lean(self._ev("CPI m/m", 30)))
+        # A non-USD event has no first-order gold rule.
+        self.assertIsNone(bot._cal_lean(self._ev("German CPI", 30, cur="EUR")))
+        # A USD event with no hot print (e.g. a Fed speech) has no rule.
+        self.assertIsNone(bot._cal_lean(self._ev("Fed Speech", 30)))
+
+    def test_the_alert_fires_once_per_window_and_seeds_on_boot(self):
+        seen: dict = {}
+        events = [self._ev("CPI m/m", 50)]      # inside the 60m window
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=events), \
+             unittest.mock.patch.object(bot, "read_market",
+                                        return_value={"live": 4100.0}), \
+             unittest.mock.patch.object(bot, "_levels",
+                                        return_value=([4120.0], [4080.0])):
+            # First look after boot: SEED silently, no alert.
+            self.assertIsNone(bot.news_prep_watch(seen))
+            # The same window must not fire again on the next tick.
+            self.assertIsNone(bot.news_prep_watch(seen))
+
+    def test_the_alert_fires_when_a_window_is_crossed_while_running(self):
+        seen: dict = {}
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=[]):
+            self.assertIsNone(bot.news_prep_watch(seen))   # boot, no event
+        events = [self._ev("CPI m/m", 50)]
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=events), \
+             unittest.mock.patch.object(bot, "read_market",
+                                        return_value={"live": 4100.0}), \
+             unittest.mock.patch.object(bot, "_levels",
+                                        return_value=([4120.0], [4080.0])):
+            out = bot.news_prep_watch(seen)
+        self.assertIsNotNone(out)
+        self.assertIn("تنبيه خبر", out)
+        self.assertIn("CPI m/m", out)
+        # Once only: the same event/window must not speak twice.
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=events), \
+             unittest.mock.patch.object(bot, "read_market",
+                                        return_value={"live": 4100.0}), \
+             unittest.mock.patch.object(bot, "_levels",
+                                        return_value=([4120.0], [4080.0])):
+            self.assertIsNone(bot.news_prep_watch(seen))
+
+    def test_the_switch_off_silences_the_prep_alert(self):
+        saved = bot.NEWS_PREP_ON
+        bot.NEWS_PREP_ON = False
+        try:
+            seen = {"prep_booted": True}
+            events = [self._ev("CPI m/m", 50)]
+            with unittest.mock.patch.object(bot, "_cal_fetch",
+                                            return_value=events):
+                self.assertIsNone(bot.news_prep_watch(seen))
+        finally:
+            bot.NEWS_PREP_ON = saved
+
+    def test_the_panel_shows_the_prep_switch(self):
+        self.assertIn("news_prep", bot.panel_state())
+        self.assertIn("news_prep", bot.GATE_LABELS)
+        keys = [b["callback_data"]
+                for r in bot.settings_keyboard()["inline_keyboard"] for b in r]
+        self.assertIn("cfg:news_prep", keys)
+        # It is NOT an entry gate: open_all/close_all must leave it alone.
+        self.assertNotIn("news_prep", bot.GATE_KEYS)
 
 
 class WatchLevelsTest(unittest.TestCase):
@@ -2554,16 +2705,19 @@ class DailyCapTest(unittest.TestCase):
 
 
 class CollapsibleMenuTest(unittest.TestCase):
-    """The owner asked for the extra buttons to move into a collapsible list
-    shown only when tapped -- one button under a card, the full grid one tap
-    away."""
+    """The menu button is a STANDING reply keyboard at the bottom-left of the
+    screen, not an inline button inside a card. Tapping it sends its label,
+    which action_for() routes to the grid. An inline grid (menu / journal /
+    close) keeps its own buttons; a plain card carries no inline buttons."""
 
-    def test_a_normal_card_carries_one_button(self):
-        k = bot.keyboard_for("analysis")
-        rows = k["inline_keyboard"]
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0][0]["callback_data"], "menu")
-        self.assertIn("القائمة", rows[0][0]["text"])
+    def test_a_plain_card_carries_the_standing_menu_button(self):
+        # A button-less card gets the reply keyboard, which is also what
+        # installs it under the message.
+        k = bot.card_markup("analysis")
+        self.assertIn("keyboard", k)                 # a reply keyboard, not inline
+        self.assertNotIn("inline_keyboard", k)
+        texts = [b["text"] for row in k["keyboard"] for b in row]
+        self.assertIn(bot.MENU_BUTTON_TEXT, texts)
 
     def test_the_menu_action_opens_the_full_grid(self):
         k = bot.keyboard_for("menu")
@@ -2575,6 +2729,10 @@ class CollapsibleMenuTest(unittest.TestCase):
         k = bot.keyboard_for("menu")
         last = k["inline_keyboard"][-1]
         self.assertEqual(last[0]["callback_data"], "collapse")
+
+    def test_the_menu_button_text_routes_to_the_grid(self):
+        # The reply button sends "☰ القائمة"; the whole label must map to menu.
+        self.assertEqual(bot.action_for(bot.MENU_BUTTON_TEXT), "menu")
 
     def test_collapse_is_a_known_action(self):
         # Tapping the fold row must not fall through to "زر غير معروف".
@@ -2590,7 +2748,6 @@ class CollapsibleMenuTest(unittest.TestCase):
             k = bot.keyboard_for("open")
         flat = [b["callback_data"] for r in k["inline_keyboard"] for b in r]
         self.assertIn("close:7", flat)
-        self.assertIn("menu", flat)
 
     def test_every_menu_action_is_wired(self):
         # A button whose action is unknown is a dead tap. Every button the grid
@@ -2600,7 +2757,8 @@ class CollapsibleMenuTest(unittest.TestCase):
         # with a typo and this fails.
         known = {
             "full", "report", "action", "day_analysis", "analysis", "recommend",
-            "map", "news", "scenarios", "levels", "open", "journal_menu", "daily",
+            "map", "news", "news_prep", "scenarios", "levels", "open",
+            "journal_menu", "daily",
             "who", "howto", "alerts", "help", "collapse", "menu", "settings",
             "menu_back", "menu_analysis", "menu_map", "menu_journal",
         }
