@@ -373,7 +373,24 @@ NEWS_REGION = os.environ.get("DESK_NEWS_REGION", "SA").strip()
 NEWS_NOISE: tuple[str, ...] = tuple(
     w.strip() for w in os.environ.get(
         "DESK_NEWS_NOISE",
-        "عيار|الكندي|الأسترالي|الاسترالي|النيوزلندي|الجنيه|محلات").split("|")
+        "عيار|الكندي|الأسترالي|الاسترالي|النيوزلندي|الجنيه|محلات|"
+        "أسعار الذهب اليوم|"
+        "في مصر|في السعودية|في الإمارات|في الكويت|في قطر|في الأردن|"
+        "في سوريا|في لبنان|في العراق|في تركيا|في المغرب").split("|")
+    if w.strip())
+# What actually moves XAUUSD: gold itself, the dollar, and the Fed/rate/inflation
+# path that drives both. A headline must mention ONE of these to be shown --
+# Google News' fuzzy search happily returns a Russian stock index or a riyal
+# rate card, and a blacklist alone can never enumerate every off-topic topic.
+# Override with DESK_NEWS_KEEP, pipe-separated.
+NEWS_KEEP: tuple[str, ...] = tuple(
+    w.strip() for w in os.environ.get(
+        "DESK_NEWS_KEEP",
+        "ذهب|gold|xau|أونصة|اونصة|أوقية|اوقية|نفيسة|"
+        "دولار|dollar|dxy|"
+        "فيدرالي|فدرالي|الاحتياطي|المركزي|fomc|باول|"
+        "تضخم|inflation|cpi|"
+        "فائدة|عائد|yield").split("|")
     if w.strip())
 NEWS_CACHE_S = 300               # reuse a fetch for 5 minutes (feeds are slow)
 # The automatic direction alert: tell the owner when the desk's net direction
@@ -2911,7 +2928,10 @@ def _news_one(query: str) -> list[tuple[datetime, str, str, str]]:
 def _news_keep(title: str) -> bool:
     """True if a headline is worth showing: it mentions gold/dollar AND is not
     a retail price or a different currency (see NEWS_NOISE)."""
-    return not any(w in title for w in NEWS_NOISE)
+    low = title.lower()
+    if any(w in low for w in NEWS_NOISE):
+        return False
+    return any(w in low for w in NEWS_KEEP)
 
 
 def _news_fetch() -> list[tuple[str, str, str]]:

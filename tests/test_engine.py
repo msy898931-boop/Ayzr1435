@@ -740,6 +740,22 @@ class NewsTest(unittest.TestCase):
         self.assertTrue(bot._news_keep("الذهب الفوري يتراجع مع ارتفاع الدولار"))
         self.assertTrue(bot._news_keep("الفيدرالي يرفع الفائدة في ديسمبر"))
 
+    def test_an_off_topic_headline_is_dropped(self):
+        # Google News' fuzzy search returns a Russian stock index and a riyal
+        # rate card. A blacklist cannot enumerate every off-topic topic, so a
+        # headline must mention gold, the dollar or the Fed/rate/inflation path
+        # to be shown -- these mention none of them and must go.
+        self.assertFalse(bot._news_keep(
+            "مؤشرات الأسهم في روسيا هبطت عند نهاية جلسة اليوم"))
+        self.assertFalse(bot._news_keep(
+            "أسعار العملات الأجنبية مقابل الريال السعودي اليوم"))
+        # A retail price card that names a country (not the metal's market).
+        self.assertFalse(bot._news_keep("أسعار الذهب اليوم السبت في مصر"))
+        # The drivers still pass.
+        self.assertTrue(bot._news_keep("التضخم الأميركي يفاجئ الأسواق"))
+        self.assertTrue(bot._news_keep("مؤشر الدولار يرتفع عند أعلى مستوى"))
+        self.assertTrue(bot._news_keep("توقعات سعر XAUUSD: ضغط على الدعم"))
+
     def test_fetch_drops_noise_titles(self):
         saved_q, saved_one = bot.NEWS_QUERIES, bot._news_one
         from datetime import UTC, datetime
