@@ -4604,6 +4604,11 @@ def card_settings() -> str:
     lines.append(f"{mark} {GATE_LABELS['news_prep']}: "
                  f"<b>{'مشغّل' if st['news_prep'] else 'مطفّي'}</b>")
     lines.append("")
+    cap = "بلا حد" if MAX_TRADES_DAY == 0 else f"{MAX_TRADES_DAY} باليوم"
+    rest = "بلا راحة" if REST_MINUTES == 0 else f"{REST_MINUTES} دقيقة بعد كل صفقة"
+    lines.append(f"📊 <b>حد الصفقات:</b> {cap}")
+    lines.append(f"😌 <b>الراحة بعد الصفقة:</b> {rest}")
+    lines.append("")
     lines.append("<i>اضغط أي زر لقلبه فوراً — ما بيلزم إعادة نشر.</i>")
     return "\n".join(lines)
 
