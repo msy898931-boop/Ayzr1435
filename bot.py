@@ -443,6 +443,18 @@ NEWS_PREVIEW: tuple[str, ...] = tuple(
         "توقعات|يتوقع|هل |قبيل|ترقب|تحت المجهر|استطلاع|مصير|"
         "يرجّح|يرجح|أفضل|محتمل").split("|")
     if w.strip())
+# ATTRIBUTION: a headline that reports what someone SAID (an official's view, a
+# speech, an interview) is commentary, not the data itself -- even when it names
+# an event. A real print reads "التضخم الأميركي يفاجئ الأسواق"; an opinion reads
+# "مسؤول بالفيدرالي: التضخم الأمريكي لا يزال مرتفعًا". The owner asked to hear
+# only the event, not every official's view of it. Override with
+# DESK_NEWS_ATTRIB, pipe-separated.
+NEWS_ATTRIB: tuple[str, ...] = tuple(
+    w.strip() for w in os.environ.get(
+        "DESK_NEWS_ATTRIB",
+        "مسؤول|مسئول|مسؤولين|عضو|أعضاء|تصريح|تصريحات|صرّح|صرح|"
+        "أكد|يؤكد|أشار|يشير|حذّر|حذر|شدّد|شدد|يرى|رأى|قال|مقال").split("|")
+    if w.strip())
 # At most one news alert per this many minutes, so a burst of wire copies of the
 # SAME event (a dozen outlets, one CPI print) cannot spam the chat.
 NEWS_ALERT_COOLDOWN_S = int(
@@ -2997,18 +3009,37 @@ def card_news() -> str:
     return "\n".join(lines)
 
 
+def _news_hit(low: str, words: tuple[str, ...]) -> bool:
+    """True if any keyword appears in the (lowercased) title.
+
+    A SHORT keyword (4 chars or fewer) must stand as its own word. Without
+    that, "هل " matches inside "المستهلك" -- so a real "أسعار المستهلك" print
+    was silently dropped as a question -- and "قال" matches inside "مقال".
+    """
+    for w in words:
+        if len(w) <= 4:
+            if re.search(rf"\b{re.escape(w)}\b", low):
+                return True
+        elif w in low:
+            return True
+    return False
+
+
 def _news_is_event(title: str) -> bool:
     """True if a headline is a real, tradeable EVENT -- not commentary.
 
     The alert speaks unprompted, so it must not fire on every Fed official's
     view or every "what to expect" preview. A headline counts only when it names
-    an event AND carries none of the preview/opinion words, so "توقعات التضخم"
-    is dropped while "التضخم الأميركي يفاجئ الأسواق" fires.
+    an event AND carries none of the preview/opinion/attribution words, so
+    "توقعات التضخم" is dropped, "مسؤول بالفيدرالي: التضخم مرتفع" is dropped
+    (someone's view), while "التضخم الأميركي يفاجئ الأسواق" fires (the print).
     """
     low = title.lower()
-    if any(w in low for w in NEWS_PREVIEW):
+    if _news_hit(low, NEWS_PREVIEW):
         return False
-    return any(w in low for w in NEWS_EVENT)
+    if _news_hit(low, NEWS_ATTRIB):
+        return False
+    return _news_hit(low, NEWS_EVENT)
 
 
 def news_watch(seen: dict) -> str | None:

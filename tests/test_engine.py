@@ -876,6 +876,28 @@ class NewsAlertTest(unittest.TestCase):
         self.assertTrue(bot._news_is_event(
             "أبرز الاستنتاجات من تقرير التضخم الأميركي لشهر أكتوبر"))
 
+    def test_an_officials_view_is_dropped_even_when_it_names_the_event(self):
+        # The owner asked to hear the EVENT, not every official's view of it.
+        # This headline names the event but reports what someone SAID.
+        self.assertFalse(bot._news_is_event(
+            "مسؤول بالفيدرالي: التضخم الأمريكي لا يزال مرتفعًا.. وأمامنا عمل "
+            "لاحتوائه بواسطة المتداول العربي - Investing.com"))
+        self.assertFalse(bot._news_is_event(
+            "عضو بالفيدرالي: التضخم الأميركي ما زال بعيدًا عن الهدف"))
+        self.assertFalse(bot._news_is_event(
+            "تصريحات باول حول التضخم الأمريكي تشعل الأسواق"))
+
+    def test_a_short_keyword_must_be_a_whole_word(self):
+        # "هل " must not match inside "المستهلك" -- that bug silently dropped
+        # every real "أسعار المستهلك" print as if it were a question.
+        self.assertTrue(bot._news_is_event(
+            "أسعار المستهلك الأمريكي ترتفع 0.4% في أكتوبر"))
+        self.assertTrue(bot._news_is_event(
+            "مؤشر أسعار المستهلك يسجل أعلى من المتوقع"))
+        # "قال" must not match inside "مقال".
+        self.assertFalse(bot._news_is_event(
+            "مقال عن تقرير التضخم الأميركي"))
+
     def test_first_look_seeds_silently_then_a_new_event_fires(self):
         seen: dict = {}
         old = [("🔥", "الذهب الفوري يتراجع", "15/11 10:00")]
