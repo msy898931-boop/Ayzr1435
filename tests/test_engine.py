@@ -2679,11 +2679,12 @@ class PreTradeNoteTest(unittest.TestCase):
 
 
 class DailyCapTest(unittest.TestCase):
-    """The owner asked for at most TEN trades a day. trades_opened_today is the
-    counter the cap reads; it must count the session, not the calendar day."""
+    """The owner asked for at most TWENTY trades a day (raised from ten on
+    2026-11-16). trades_opened_today is the counter the cap reads; it must
+    count the session, not the calendar day."""
 
-    def test_the_cap_defaults_to_ten(self):
-        self.assertEqual(bot.MAX_TRADES_DAY, 10)
+    def test_the_cap_defaults_to_twenty(self):
+        self.assertEqual(bot.MAX_TRADES_DAY, 20)
 
     def test_it_counts_only_this_sessions_opens(self):
         from datetime import timedelta
@@ -2702,6 +2703,46 @@ class DailyCapTest(unittest.TestCase):
         # DESK_MAX_TRADES_DAY=0 must remove the cap (the env is read at import,
         # so this pins the DEFAULT and the shape of the guard).
         self.assertGreater(bot.MAX_TRADES_DAY, 0)
+
+
+class RestGapTest(_DbCase):
+    """After a trade closes, the desk waits REST_MINUTES before the next entry.
+
+    A fresh signal one second after a stop is usually the same move taken
+    again; the owner would rather the next trade be right than immediate.
+    """
+
+    def test_no_closed_trade_means_no_wait(self):
+        self.assertIsNone(bot._rest_until())
+
+    def test_a_recent_close_blocks_the_next_entry(self):
+        tid = bot.add_trade("short", 3900, 3910, 3880, bot.LOT, note="t")
+        bot._settle(tid, "stop", 3910.0, -1.0)   # closed_at = now
+        ready = bot._rest_until()
+        self.assertIsNotNone(ready)
+        left = (ready - bot.datetime.now(bot.UTC)).total_seconds() / 60
+        self.assertGreater(left, bot.REST_MINUTES - 2)
+        self.assertLessEqual(left, bot.REST_MINUTES)
+
+    def test_an_old_close_does_not_block(self):
+        tid = bot.add_trade("short", 3900, 3910, 3880, bot.LOT, note="t")
+        bot._settle(tid, "stop", 3910.0, -1.0)
+        stale = (bot.datetime.now(bot.UTC)
+                 - bot.timedelta(minutes=bot.REST_MINUTES + 5)
+                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with unittest.mock.patch.object(bot, "_utcnow", return_value=stale):
+            bot._settle(tid, "stop", 3910.0, -1.0)
+        self.assertIsNone(bot._rest_until())
+
+    def test_zero_minutes_disables_the_gap(self):
+        tid = bot.add_trade("short", 3900, 3910, 3880, bot.LOT, note="t")
+        bot._settle(tid, "stop", 3910.0, -1.0)
+        saved = bot.REST_MINUTES
+        bot.REST_MINUTES = 0
+        try:
+            self.assertIsNone(bot._rest_until())
+        finally:
+            bot.REST_MINUTES = saved
 
 
 class CollapsibleMenuTest(unittest.TestCase):

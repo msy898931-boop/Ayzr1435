@@ -53,6 +53,15 @@ services:
       # fixed offset is exact; set 0 to show GMT.
       - key: DESK_TZ_OFFSET
         value: "3"
+      # At most this many trades a day (raised to 20 on 2026-11-16; set 0 for no
+      # cap). Counted on trades OPENED in the trading session.
+      - key: DESK_MAX_TRADES_DAY
+        value: "20"
+      # The rest gap: after a trade CLOSES (win or loss), wait this many minutes
+      # before the next entry. A fresh signal one second after a stop is usually
+      # the same move taken again. Set 0 to disable.
+      - key: DESK_REST_MINUTES
+        value: "30"
       # The combo quality gate is ON by default: ADX 0-50 + ATR 0.08-1.00% on
       # the 15m frame. Set DESK_FILTERS=0 to fall back to the raw frame tilt
       # (much noisier), or DESK_FILTER_GATES=adx,atr,macd,rsi to add the two

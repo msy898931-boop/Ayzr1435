@@ -178,10 +178,16 @@ DEFAULT_GATES = {"adx", "atr"}
 # that APPLIES TREND_FILTER_TF in plan(); see that constant for the evidence.
 TREND_FILTER_ON = os.environ.get("DESK_TREND_FILTER", "1").strip().lower() not in \
     ("0", "off", "no", "false")
-# The daily cap: the owner asked for at most TEN trades a day. Counted on
-# trades OPENED today (local session), so a fast day cannot turn into a churn
-# of a hundred entries. Set DESK_MAX_TRADES_DAY=0 to remove the cap.
-MAX_TRADES_DAY = int(os.environ.get("DESK_MAX_TRADES_DAY", "10") or "10")
+# The daily cap: the owner asked for at most TWENTY trades a day (raised from
+# ten on 2026-11-16). Counted on trades OPENED today (local session), so a fast
+# day cannot turn into a churn of a hundred entries. Set DESK_MAX_TRADES_DAY=0
+# to remove the cap.
+MAX_TRADES_DAY = int(os.environ.get("DESK_MAX_TRADES_DAY", "20") or "20")
+# The rest gap: after a trade CLOSES (a win or a loss), the desk waits this many
+# minutes before it may open the next one. The owner asked for it -- a fresh
+# signal one second after a stop is usually the SAME move taken again, and he
+# would rather the next trade be right than immediate. 0 disables the gap.
+REST_MINUTES = int(os.environ.get("DESK_REST_MINUTES", "30") or "30")
 # The no-chase filter: do not SELL into deep oversold (or BUY into deep
 # overbought) on the filter frame -- that is entering after the move, at the
 # edge of the range, where the retrace is most likely. Measured on 2026 with the
@@ -4299,6 +4305,29 @@ def trades_opened_today() -> int:
     return n
 
 
+def _rest_until() -> datetime | None:
+    """When the rest gap ends, or None if the desk may open now.
+
+    After a trade closes, wait REST_MINUTES before the next entry: a signal that
+    fires one second after a stop is usually the same move taken again. The
+    clock is the most recent close time, so a long quiet spell never blocks.
+    """
+    if REST_MINUTES <= 0:
+        return None
+    last = None
+    for t in all_trades():
+        try:
+            d = _parse(t["closed_at"])
+        except (KeyError, IndexError):
+            d = None
+        if d is not None and (last is None or d > last):
+            last = d
+    if last is None:
+        return None
+    ready = last + timedelta(minutes=REST_MINUTES)
+    return ready if datetime.now(UTC) < ready else None
+
+
 def grade() -> int:
     """Walk every open trade forward on 5m bars. First touch wins; a bar that
     spans both the stop and the target takes the stop. Returns how many settled.
@@ -7052,6 +7081,20 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
                 tg.send(c, f"🛑 <b>وصلنا حد اليوم</b> — {MAX_TRADES_DAY} صفقات. "
                            "ما رح افتح غير بكرا.")
         return
+    # The rest gap: after a close, wait before the next entry. A close is an
+    # event, so the wait is announced ONCE (keyed on the ready minute), not
+    # every cycle -- the desk speaks only when something changes.
+    ready = _rest_until()
+    if ready is not None:
+        mins = max(1, int((ready - datetime.now(UTC)).total_seconds() // 60) + 1)
+        key = f"rest:{ready.isoformat()}"
+        if seen.get("rest_key") != key:
+            seen["rest_key"] = key
+            for c in _desk_chats(allow):
+                tg.send(c, f"😌 <b>راحة بعد الصفقة</b> — بستنّى ~{mins} دقيقة "
+                           "قبل ما آخذ التالية. بدي صفقة صحيحة، مو مستعجل.")
+        return
+    seen.pop("rest_key", None)
     pc = plan_check()
     # The pullback entry path: park a limit and wait for the retrace. It runs
     # even when the plan is None, so a parked order still fills or expires on a
