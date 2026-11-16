@@ -2547,6 +2547,63 @@ class EntryBasisTest(unittest.TestCase):
         self.assertEqual(s["kind"], "retrace")
         self.assertEqual(s["level"], 3887.79)
 
+    def test_the_fast_basis_reads_the_15m_frame(self):
+        # The 1h basis is LATE: at 3,881 on 16-11 the last CLOSED 1h bar was
+        # still the 13:00 break, so the desk refused (trend) even with an
+        # unlimited band. The fast switch reads the 15m frame, where the 14:30
+        # bar poked 3,889.2 and closed 3,878.7 back under the wall -- a retrace.
+        saved = bot.FAST_BASIS
+        try:
+            bot.FAST_BASIS = False
+            self.assertEqual(bot._basis_tf(), "1h")
+            self.assertEqual(bot._basis_ar(), "ساعة")
+            bot.FAST_BASIS = True
+            self.assertEqual(bot._basis_tf(), "15m")
+            self.assertEqual(bot._basis_ar(), "15د")
+        finally:
+            bot.FAST_BASIS = saved
+
+    def test_the_fast_basis_turns_the_3881_tape_into_a_sell(self):
+        # The whole point, on the owner's own 16-11 tape: the 15m bar that
+        # rejected 3,887.79 (high 3,889.2, close 3,878.7) is a retrace setup
+        # when the basis reads 15m -- the desk sells the bounce at 3,881. On the
+        # 1h frame the same moment only sees the older 13:00 break bar, so the
+        # bounce is invisible and the desk waits for 3,860.
+        res, sup = [3887.79, 3901.43], [3872.06, 3860.36]
+        reject_15m = [{"openTime": _iso(i), "open": 3866, "high": 3868,
+                       "low": 3861, "close": 3865, "isOpen": False}
+                      for i in range(30)]
+        reject_15m.append({"openTime": "2026-11-16T14:30:00Z", "open": 3877.9,
+                           "high": 3889.2, "low": 3876.4, "close": 3878.7,
+                           "isOpen": False})
+        saved = bot.FAST_BASIS
+        try:
+            bot.FAST_BASIS = True
+            s = bot._entry_setup("short", 3881.0, res, sup, b1=reject_15m)
+            self.assertIsNotNone(s)
+            assert s is not None
+            self.assertEqual(s["kind"], "retrace")
+            self.assertEqual(s["level"], 3887.79)
+        finally:
+            bot.FAST_BASIS = saved
+
+    def test_the_panel_has_a_fast_basis_button(self):
+        saved = bot.FAST_BASIS
+        try:
+            bot.apply_settings({"fast_basis": False})
+            keys = [b["callback_data"]
+                    for r in bot.settings_keyboard()["inline_keyboard"]
+                    for b in r]
+            self.assertIn("cfg:fast_basis", keys)
+            self.assertIn("باسيس سريع", bot.card_settings())
+            bot.toggle_gate("fast_basis")
+            self.assertTrue(bot.FAST_BASIS)
+            self.assertTrue(json.loads(
+                bot.SETTINGS_PATH.read_text())["fast_basis"])
+            self.assertNotIn("fast_basis", bot.gate_state())
+        finally:
+            bot.FAST_BASIS = saved
+
     def test_the_switch_off_restores_the_immediate_entry(self):
         # DESK_ENTRY_BASIS=0 must take the frame-agreed trade at market again --
         # the gate is a switch, not a hard wall.

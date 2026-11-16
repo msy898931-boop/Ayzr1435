@@ -296,6 +296,30 @@ ENTRY_BASIS_PTS = float(os.environ.get("DESK_ENTRY_BASIS_PTS", "12") or "12")
 # restore the old veto.
 BOUNCE_ENTRY = os.environ.get("DESK_BOUNCE_ENTRY", "1").strip().lower() not in \
     ("0", "off", "no", "false")
+# THE BASIS FRAME. Which candle the entry basis reads. The 1h default is stable
+# but LATE: the bar only closes an hour after the rejection, by which time the
+# price has often run away and the frames have flipped. On 16-11 the owner
+# wanted the desk to sell the 3,887.79 wall at 3,881; on 1h the basis was still
+# the OLD bar (a break) at that moment, so it stayed a "trend" refusal -- even
+# with an unlimited band.
+ENTRY_BASIS_TF = os.environ.get("DESK_ENTRY_BASIS_TF", "1h").strip() or "1h"
+# THE FAST BASIS, a panel switch. When on, the basis is read on the 15m frame
+# instead: a wall rejection is recognised ~45 minutes earlier, so the desk sells
+# the bounce (3,881) rather than only the breakdown (3,860). Verified on the
+# 16-11 tape -- the 14:30 and 14:45 15m bars both rejected 3,887.79. Off by
+# default; the owner turns it on from the panel when he wants the bounce.
+FAST_BASIS = os.environ.get("DESK_FAST_BASIS", "0").strip().lower() not in \
+    ("0", "off", "no", "false")
+
+
+def _basis_tf() -> str:
+    """The frame the entry basis reads RIGHT NOW (the fast switch picks it)."""
+    return "15m" if FAST_BASIS else ENTRY_BASIS_TF
+
+
+def _basis_ar() -> str:
+    """The basis frame in the owner's words, for every card that names it."""
+    return "15د" if _basis_tf() == "15m" else "ساعة"
 
 
 # ---- the owner's gate switches (Telegram panel) -------------------------
@@ -318,18 +342,21 @@ NEWS_PREP_ON = os.environ.get("DESK_NEWS_PREP", "1").strip().lower() not in \
 _GATE_VAR = {"entry_basis": "ENTRY_BASIS_ON", "nochase": "NOCHASE_ON",
              "filters": "FILTERS_ON", "trend_filter": "TREND_FILTER_ON",
              "bounce_entry": "BOUNCE_ENTRY",
+             "fast_basis": "FAST_BASIS",
              "news_alerts": "NEWS_ALERTS_ON", "news_prep": "NEWS_PREP_ON"}
 GATE_LABELS = {"entry_basis": "أساس الدخول (عند مستوى)",
                "nochase": "منع المطاردة",
                "filters": "بوابة الجودة (ADX/ATR)",
                "trend_filter": "فلتر شمعة 15د",
                "bounce_entry": "بيع الارتداد (من المستوى)",
+               "fast_basis": "باسيس سريع (فريم 15د)",
                "news_alerts": "تنبيه الأخبار المهمة",
                "news_prep": "تنبيه التحضير قبل الخبر"}
 # Everything the panel shows and persists. `gate_state` stays GATE_KEYS only so
 # `open_all`/`close_all` keep meaning "the entry filters"; the news switches and
 # the bounce-entry behaviour are carried alongside but flipped on their own.
-PANEL_KEYS = GATE_KEYS + ("news_alerts", "news_prep", "bounce_entry")
+PANEL_KEYS = GATE_KEYS + ("news_alerts", "news_prep",
+                           "bounce_entry", "fast_basis")
 
 
 def load_settings() -> dict:
@@ -3708,7 +3735,7 @@ def _no_setup_detail(direction: str, res: list[float],
         if retrace is not None:
             bits.append(f"ارتداد لـ {num(retrace)} ورفض")
         if brk is not None:
-            bits.append(f"كسر {num(brk)} بإغلاق ساعة")
+            bits.append(f"كسر {num(brk)} بإغلاق {_basis_ar()}")
         what = " أو ".join(bits) if bits else "مستوى واضح"
         return f"الاتجاه هابط بس ما في أساس — بدي {what}، مو دخول بنص النطاق."
     retrace = max(sup) if sup else None
@@ -3717,7 +3744,7 @@ def _no_setup_detail(direction: str, res: list[float],
     if retrace is not None:
         bits.append(f"ارتداد لـ {num(retrace)} ورفض")
     if brk is not None:
-        bits.append(f"إغلاق ساعة فوق {num(brk)}")
+        bits.append(f"إغلاق {_basis_ar()} فوق {num(brk)}")
     what = " أو ".join(bits) if bits else "مستوى واضح"
     return f"الاتجاه صاعد بس ما في أساس — بدي {what}، مو مطاردة."
 
@@ -3730,11 +3757,12 @@ def _entry_setup(direction: str, live: float,
     The owner's rule, stated three times: no entry in the middle of the range.
     Two bases, and only two:
       * "retrace" -- price is AT the level it bets against and the last CLOSED
-        1h bar rejected it: a short whose bar poked resistance and closed back
-        BELOW it; a long whose bar dipped to support and closed back ABOVE it;
-      * "break" -- the last CLOSED 1h bar closed a hair PAST the level it bets
-        with: a short below support (sup[0] - BREAK_EPS), a long above
+        basis bar rejected it: a short whose bar poked resistance and closed
+        back BELOW it; a long whose bar dipped to support and closed back ABOVE;
+      * "break" -- the last CLOSED basis bar closed a hair PAST the level it
+        bets with: a short below support (sup[0] - BREAK_EPS), a long above
         resistance (res[0] + BREAK_EPS).
+    The bar is the basis frame (1h, or 15m when the fast-basis switch is on).
     Returns {"kind", "level", "entry"} or None. `entry` is the market price the
     trade would take now -- the basis was met on THIS closed bar, so it is the
     desk's own setup, not a chase.
@@ -3745,8 +3773,9 @@ def _entry_setup(direction: str, live: float,
         level = max(sup) if sup else None
     if level is None:
         return None
+    tf = _basis_tf()
     try:
-        b1 = closed(b1 if b1 is not None else bars("1h", 300), "1h")
+        b1 = closed(b1 if b1 is not None else bars(tf, 300), tf)
     except Exception:  # noqa: BLE001 - a broken feed must not open a trade
         return None
     if not b1:
@@ -4661,6 +4690,11 @@ def card_settings() -> str:
     bmark = "🟢" if st["bounce_entry"] else "🔴"
     lines.append(f"{bmark} {GATE_LABELS['bounce_entry']}: "
                  f"<b>{'مشغّل' if st['bounce_entry'] else 'مطفّي'}</b>")
+    fmark = "🟢" if st["fast_basis"] else "🔴"
+    ftf = "15د (سريع)" if st["fast_basis"] else "1س (هادي)"
+    lines.append(f"{fmark} {GATE_LABELS['fast_basis']}: "
+                 f"<b>{'مشغّل' if st['fast_basis'] else 'مطفّي'}</b> "
+                 f"— أساس الدخول يُقرأ على <b>{ftf}</b>")
     lines.append("")
     cap = "بلا حد" if MAX_TRADES_DAY == 0 else f"{MAX_TRADES_DAY} باليوم"
     rest = "بلا راحة" if REST_MINUTES == 0 else f"{REST_MINUTES} دقيقة بعد كل صفقة"
@@ -4683,6 +4717,8 @@ def settings_keyboard() -> dict:
     rows.append([(plabel, "cfg:news_prep")])
     blabel = f"{'🟢' if st['bounce_entry'] else '🔴'} {GATE_LABELS['bounce_entry']}"
     rows.append([(blabel, "cfg:bounce_entry")])
+    flabel = f"{'🟢' if st['fast_basis'] else '🔴'} {GATE_LABELS['fast_basis']}"
+    rows.append([(flabel, "cfg:fast_basis")])
     rows.append([("🏠 القائمة", "menu")])
     return kb(rows)
 
@@ -4871,7 +4907,8 @@ def card_action() -> str:
                 "وبعدها ادخل.")
     elif v.get("reason") == "no_setup":
         why = v.get("detail") or "الاتجاه واضح، بس ما في أساس للدخول."
-        todo = "⏸️ <b>استنى</b> يرتد لمستوى ويرفضه، أو يكسره بإغلاق ساعة."
+        todo = (f"⏸️ <b>استنى</b> يرتد لمستوى ويرفضه، أو يكسره بإغلاق "
+                f"{_basis_ar()}.")
     elif v["up"] >= CONFIRM_FRAMES:
         why = "الاتجاه صاعد، بس لسا ما في دخول مؤكد."
         todo = "⏸️ <b>استنى</b> إغلاق 1س يثبّت الاتجاه."
@@ -6320,7 +6357,7 @@ def _why_taken(p: dict, m: dict | None = None) -> list[str]:
     if p.get("basis"):
         lvl = num(p.get("basis_level")) if p.get("basis_level") else "—"
         if p["basis"] == "break":
-            out.append(f"✅ أساس الدخول: كسر {lvl} بإغلاق ساعة")
+            out.append(f"✅ أساس الدخول: كسر {lvl} بإغلاق {_basis_ar()}")
         else:
             out.append(f"✅ أساس الدخول: ارتداد لـ {lvl} ورفض")
     # 1. The trend: how many frames agree.

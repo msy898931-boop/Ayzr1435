@@ -73,6 +73,15 @@ services:
       # Set DESK_BOUNCE_ENTRY=0 to restore the old veto (only breakdowns taken).
       - key: DESK_BOUNCE_ENTRY
         value: "1"
+      # WHICH FRAME the entry basis reads. "1h" is stable but LATE -- the bar
+      # closes an hour after the rejection, by which time the price has run and
+      # the frames have flipped. This is the panel switch "باسيس سريع (فريم
+      # 15د)": when the owner turns it on the basis is read on 15m instead, so
+      # a wall rejection is caught ~45 min earlier and the desk sells the bounce
+      # (3,881) not only the breakdown (3,860). Off by default; env here is only
+      # the STARTING value the panel overrides and persists.
+      - key: DESK_FAST_BASIS
+        value: "0"
       # The combo quality gate is ON by default: ADX 0-50 + ATR 0.08-1.00% on
       # the 15m frame. Set DESK_FILTERS=0 to fall back to the raw frame tilt
       # (much noisier), or DESK_FILTER_GATES=adx,atr,macd,rsi to add the two
