@@ -280,9 +280,22 @@ BREAK_EPS = 0.5
 # Anything else -- price parked mid-range -- is a chase, and the desk waits.
 # This is the switch that turns the rule on; set DESK_ENTRY_BASIS=0 to fall back
 # to the old immediate entry. The band is how close counts as "at the level".
+# Widened 6 -> 12 pts (owner's call, 2026-11-16): at 6 the desk missed the
+# 3,887.79 wall by 0.79 pts when price bounced to 3,881, so it never sold the
+# bounce -- it only ever chased the breakdown, at a worse price and a worse R:R.
 ENTRY_BASIS_ON = os.environ.get("DESK_ENTRY_BASIS", "1").strip().lower() not in \
     ("0", "off", "no", "false")
-ENTRY_BASIS_PTS = float(os.environ.get("DESK_ENTRY_BASIS_PTS", "6") or "6")
+ENTRY_BASIS_PTS = float(os.environ.get("DESK_ENTRY_BASIS_PTS", "12") or "12")
+# THE BOUNCE ENTRY. A RETRACE (price came back to a level and the last CLOSED
+# 1h bar rejected it) is exempt from the 15m candle filter. A sell-the-bounce
+# entry sits ABOVE the 15m EMA20 by construction -- the candle filter was built
+# to refuse exactly that -- so without this exemption the desk could only ever
+# chase the breakdown, never sell the bounce. The rejected level IS the
+# confirmation, the same exemption the wall trade already gets. The owner asked
+# to sell the bounce at the resistance (2026-11-16). Set DESK_BOUNCE_ENTRY=0 to
+# restore the old veto.
+BOUNCE_ENTRY = os.environ.get("DESK_BOUNCE_ENTRY", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
 
 
 # ---- the owner's gate switches (Telegram panel) -------------------------
@@ -3855,8 +3868,16 @@ def plan_check(m: dict | None = None) -> dict:
         except Exception:  # noqa: BLE001 - a broken feed must not silence the desk
             b15 = None
 
-    # 2. The trend filter: the entry must agree with the 15m candle.
-    if TREND_FILTER_ON and from_trend and not frame_agrees(side, live, b15):
+    # 2. The trend filter: the entry must agree with the 15m candle. A RETRACE
+    #    (sell-the-bounce / buy-the-dip) is EXEMPT when BOUNCE_ENTRY is on: such
+    #    an entry sits on the wrong side of the 15m EMA20 by construction -- the
+    #    filter was built to refuse exactly it -- so without the exemption the
+    #    desk can only chase the breakdown, never sell the bounce. The rejected
+    #    level IS the confirmation, the same exemption the wall trade gets.
+    bounce = (BOUNCE_ENTRY and setup is not None
+              and setup.get("kind") == "retrace")
+    if (TREND_FILTER_ON and from_trend and not bounce
+            and not frame_agrees(side, live, b15)):
         return {"plan": None, "reason": "trend",
                 "detail": ("السعر على فريم 15د ضد اتجاه الصفقة "
                            "(الشمعة ما تأكدت) — ما بدخل ضد الشمعة.")}
@@ -4639,6 +4660,10 @@ def card_settings() -> str:
     rest = "بلا راحة" if REST_MINUTES == 0 else f"{REST_MINUTES} دقيقة بعد كل صفقة"
     lines.append(f"📊 <b>حد الصفقات:</b> {cap}")
     lines.append(f"😌 <b>الراحة بعد الصفقة:</b> {rest}")
+    basis = "مطفّي" if not ENTRY_BASIS_ON else \
+        f"مشغّل — نافذة {ENTRY_BASIS_PTS:.0f} نقطة" + \
+        (" · يبيع الارتداد" if BOUNCE_ENTRY else "")
+    lines.append(f"🎯 <b>أساس الدخول (عند المستوى):</b> {basis}")
     lines.append("")
     lines.append("<i>اضغط أي زر لقلبه فوراً — ما بيلزم إعادة نشر.</i>")
     return "\n".join(lines)

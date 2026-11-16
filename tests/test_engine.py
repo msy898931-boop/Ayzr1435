@@ -2507,6 +2507,24 @@ class EntryBasisTest(unittest.TestCase):
         assert p is not None
         self.assertEqual(p["direction"], "short")
 
+    def test_a_bounce_within_the_wider_band_is_a_setup(self):
+        # The owner asked to sell the bounce at 3,887.79; price bounced to
+        # 3,881, 6.79 pts away. At the old 6-pt band the desk missed it and
+        # only ever chased the breakdown. The band is 12 now, so it is a setup.
+        b1 = [{"openTime": _iso(i), "open": 3869, "high": 3875.5,
+               "low": 3862.2, "close": 3865.6, "isOpen": False}
+              for i in range(30)]
+        b1.append({"openTime": "2026-11-16T14:00:00Z", "open": 3865.2,
+                   "high": 3889.2, "low": 3861.4, "close": 3878.7,
+                   "isOpen": False})
+        self.assertGreaterEqual(bot.ENTRY_BASIS_PTS, 7.0)
+        s = bot._entry_setup("short", 3881.0, [3887.79, 3901.43],
+                             [3860.36, 3852.47], b1=b1)
+        self.assertIsNotNone(s)
+        assert s is not None
+        self.assertEqual(s["kind"], "retrace")
+        self.assertEqual(s["level"], 3887.79)
+
     def test_the_switch_off_restores_the_immediate_entry(self):
         # DESK_ENTRY_BASIS=0 must take the frame-agreed trade at market again --
         # the gate is a switch, not a hard wall.

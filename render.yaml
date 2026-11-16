@@ -62,6 +62,17 @@ services:
       # the same move taken again. Set 0 to disable.
       - key: DESK_REST_MINUTES
         value: "30"
+      # The entry basis: how close to a level counts as "at the level" for a
+      # sell-the-bounce / buy-the-dip entry. Widened 6 -> 12 (2026-11-16): at 6
+      # the desk missed the 3,887.79 wall by 0.79 pts and could only chase the
+      # breakdown. Set DESK_ENTRY_BASIS=0 to disable the rule entirely.
+      - key: DESK_ENTRY_BASIS_PTS
+        value: "12"
+      # A RETRACE (the bounce) is exempt from the 15m candle filter, which by
+      # construction refuses an entry above the 15m EMA20 -- i.e. every bounce.
+      # Set DESK_BOUNCE_ENTRY=0 to restore the old veto (only breakdowns taken).
+      - key: DESK_BOUNCE_ENTRY
+        value: "1"
       # The combo quality gate is ON by default: ADX 0-50 + ATR 0.08-1.00% on
       # the 15m frame. Set DESK_FILTERS=0 to fall back to the raw frame tilt
       # (much noisier), or DESK_FILTER_GATES=adx,atr,macd,rsi to add the two
