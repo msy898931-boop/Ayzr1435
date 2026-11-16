@@ -945,6 +945,28 @@ class NewsAlertTest(unittest.TestCase):
         self.assertIn("cfg:news_alerts", keys)
         self.assertIn("تنبيه الأخبار", bot.card_settings())
 
+    def test_the_panel_has_a_bounce_entry_button(self):
+        # The owner asked to flip sell-the-bounce from the panel, on and off
+        # whenever he wants -- not to edit a Render env var. It must be a real
+        # button that flips the LIVE global and persists, and `open_all` must
+        # leave it alone (it is a behaviour, not one of the four entry gates).
+        saved = bot.BOUNCE_ENTRY
+        try:
+            bot.apply_settings({"bounce_entry": True})
+            keys = [b["callback_data"]
+                    for r in bot.settings_keyboard()["inline_keyboard"]
+                    for b in r]
+            self.assertIn("cfg:bounce_entry", keys)
+            self.assertIn("بيع الارتداد", bot.card_settings())
+            bot.toggle_gate("bounce_entry")
+            self.assertFalse(bot.BOUNCE_ENTRY)
+            self.assertFalse(json.loads(
+                bot.SETTINGS_PATH.read_text())["bounce_entry"])
+            self.assertTrue(bot.BOUNCE_ENTRY is False
+                            and "bounce_entry" not in bot.gate_state())
+        finally:
+            bot.BOUNCE_ENTRY = saved
+
 
 class EconomicCalendarTest(unittest.TestCase):
     """The pre-event prep card and its alert: a FACT about the calendar (time,

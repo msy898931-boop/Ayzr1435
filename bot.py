@@ -317,17 +317,19 @@ NEWS_PREP_ON = os.environ.get("DESK_NEWS_PREP", "1").strip().lower() not in \
     ("0", "off", "no", "false")
 _GATE_VAR = {"entry_basis": "ENTRY_BASIS_ON", "nochase": "NOCHASE_ON",
              "filters": "FILTERS_ON", "trend_filter": "TREND_FILTER_ON",
+             "bounce_entry": "BOUNCE_ENTRY",
              "news_alerts": "NEWS_ALERTS_ON", "news_prep": "NEWS_PREP_ON"}
 GATE_LABELS = {"entry_basis": "أساس الدخول (عند مستوى)",
                "nochase": "منع المطاردة",
                "filters": "بوابة الجودة (ADX/ATR)",
                "trend_filter": "فلتر شمعة 15د",
+               "bounce_entry": "بيع الارتداد (من المستوى)",
                "news_alerts": "تنبيه الأخبار المهمة",
                "news_prep": "تنبيه التحضير قبل الخبر"}
 # Everything the panel shows and persists. `gate_state` stays GATE_KEYS only so
-# `open_all`/`close_all` keep meaning "the entry filters"; the news switches are
-# carried alongside but flipped on their own.
-PANEL_KEYS = GATE_KEYS + ("news_alerts", "news_prep")
+# `open_all`/`close_all` keep meaning "the entry filters"; the news switches and
+# the bounce-entry behaviour are carried alongside but flipped on their own.
+PANEL_KEYS = GATE_KEYS + ("news_alerts", "news_prep", "bounce_entry")
 
 
 def load_settings() -> dict:
@@ -4656,14 +4658,14 @@ def card_settings() -> str:
     lines.append(f"{mark} {GATE_LABELS['news_prep']}: "
                  f"<b>{'مشغّل' if st['news_prep'] else 'مطفّي'}</b>")
     lines.append("")
+    bmark = "🟢" if st["bounce_entry"] else "🔴"
+    lines.append(f"{bmark} {GATE_LABELS['bounce_entry']}: "
+                 f"<b>{'مشغّل' if st['bounce_entry'] else 'مطفّي'}</b>")
+    lines.append("")
     cap = "بلا حد" if MAX_TRADES_DAY == 0 else f"{MAX_TRADES_DAY} باليوم"
     rest = "بلا راحة" if REST_MINUTES == 0 else f"{REST_MINUTES} دقيقة بعد كل صفقة"
     lines.append(f"📊 <b>حد الصفقات:</b> {cap}")
     lines.append(f"😌 <b>الراحة بعد الصفقة:</b> {rest}")
-    basis = "مطفّي" if not ENTRY_BASIS_ON else \
-        f"مشغّل — نافذة {ENTRY_BASIS_PTS:.0f} نقطة" + \
-        (" · يبيع الارتداد" if BOUNCE_ENTRY else "")
-    lines.append(f"🎯 <b>أساس الدخول (عند المستوى):</b> {basis}")
     lines.append("")
     lines.append("<i>اضغط أي زر لقلبه فوراً — ما بيلزم إعادة نشر.</i>")
     return "\n".join(lines)
@@ -4679,6 +4681,8 @@ def settings_keyboard() -> dict:
     rows.append([(nlabel, "cfg:news_alerts")])
     plabel = f"{'🟢' if st['news_prep'] else '🔴'} {GATE_LABELS['news_prep']}"
     rows.append([(plabel, "cfg:news_prep")])
+    blabel = f"{'🟢' if st['bounce_entry'] else '🔴'} {GATE_LABELS['bounce_entry']}"
+    rows.append([(blabel, "cfg:bounce_entry")])
     rows.append([("🏠 القائمة", "menu")])
     return kb(rows)
 
