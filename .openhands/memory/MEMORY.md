@@ -302,7 +302,7 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
 ## MarketDesk — Telegram recipients (2026-11-07, later still)
 
 - **Two subscribers on the delivery bot `@Ayzr1324_bot`:**
-  - **رمضان عوينات / @Almalek121 → chat `933571066`** (the owner)
+  - **<owner-name> / @Almalek121 → chat `933571066`** (the owner)
   - **"00" / @E_1_code → chat `8545528489`** (a friend the owner added)
 - ⭐ **A bot cannot message anyone who has not pressed /start.** The friend
   appeared in `getUpdates` only after he sent `/start`; that call is what unlocks
@@ -648,7 +648,7 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
 - The journal backup was landing in the **guest's** chat, not the owner's:
   `sorted(load_allow())[0]` with ids as strings put `'8545528489'` before
   `'933571066'`. Pick the owner by name (`SEED_CHATS[0]`), never by sort order.
-  Owner = `933571066` (@Almalek121 / رمضان عوينات); guest = `8545528489`
+  Owner = `933571066` (@Almalek121 / <owner-name>); guest = `8545528489`
   (@E_1_code / "00").
 - The backup lives as a **pinned document** in the owner's chat with the bot —
   that is where the owner can see it. Remember the pin in `data/pin.json` and
@@ -990,12 +990,22 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   `bot.py` engine · `app.py` Render wrapper · `tests/test_engine.py` (137) ·
   `backtest/` (duka_2026 year study, 34 MB of it) · `data/journal.db` (empty) ·
   `.openhands/memory/` (the sanitized mirror) · `flybot/` · `render.yaml`.
-- ⚠ **A real leak, and the memory was wrong about it.** The mirror claims "two
-  personal emails were replaced with `<owner-email>`", but
-  `.openhands/memory/2026-11-07.md` (lines 71/73/783) still carries
-  `msy898931@gmail.com` and `kshsjshxudnndh@gmail.com` **raw**, and the repo is
-  **public** (`private: false`). A note that says a redaction happened is not the
-  redaction. Worth fixing (these are account identifiers, not secrets).
+- ⚠ **A real leak — FIXED 2026-11-17.** The mirror claimed "two personal emails
+  were replaced with `<owner-email>`", but `2026-11-07.md`/`2026-11-13.md`/
+  `MEMORY.md` still carried the two raw emails and the owner's full name, and the
+  repo is **public** (`private: false`). A note that says a redaction happened is
+  not the redaction. Now redacted to `<owner-email>` / `<render-account-email>` /
+  `<owner-name>`. Note the repo OWNER (`msy898931-boop`) is the URL itself, so
+  that string stays — redacting it in prose is theatre. Chat ids stay too: they
+  are already in the public `bot.py` `SEED_CHATS`. The remaining `@Almalek121`
+  handle is a Telegram public handle, kept for identification.
+- ⚠ **A committed mirror can be TRUNCATED by the sandbox.** On session start
+  `.openhands/memory/MEMORY.md` had lost its last 153 lines (uncommitted deletion,
+  `git status` showed it modified) — the workspace copy the sandbox normally
+  injects was missing. Restore with `git checkout -- .openhands/memory/MEMORY.md`
+  before editing, or a commit would silently drop that content. The workspace
+  source (`/workspace/project/.openhands/memory/`) does not exist on a fresh
+  checkout; the repo mirror is all there is.
 
 ## MarketDesk — the map link the owner asked for (2026-11-12)
 
