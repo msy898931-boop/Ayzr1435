@@ -1257,18 +1257,29 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
 
 ## MarketDesk — owner-only card = TWO locks (2026-11-17)
 
+- ⭐ **A button that belongs to a MESSAGE rides UNDER that message — never in
+  the shared `MENU` grid.** The owner rejected the first cut of «🔒 تحليلي الخاص»
+  precisely because it sat in the bot's menu: it is the agent's own read, not a
+  desk feature. Ship it as an INLINE keyboard attached by `keyboard_for()` for
+  the owner only, on the analysis cards (`OWNER_ANALYSIS_ACTIONS`).
 - ⭐ **"Only the owner sees it" is TWO mechanisms, and hiding is not refusing.**
-  A new owner-only button needs (1) `GUEST_HIDDEN_ACTIONS` so `_menu_rows` drops
-  it from a guest's grid AND (2) a refusal in `handle()` for the action — because
-  a guest can still TAP a stale callback or TYPE the trigger word. `myread`
-  follows `who` exactly. A test must pin both paths.
+  An owner-only action needs (1) the button kept off every guest's surface AND
+  (2) a refusal in `handle()` for the action — because a guest can still TAP a
+  stale callback or TYPE the trigger word. `myread` follows `who` exactly. A test
+  must pin both paths.
+- ⚠ **One `reply_markup` per message.** An inline button and the standing reply
+  keyboard CANNOT ride the same message, so a card carrying the owner button
+  shows it INSTEAD of «☰ القائمة» for that message; the reply keyboard returns on
+  the next button-less card (same trade-off the journal/close cards make).
 - ⭐ **A private card is a VIEW of the one engine, never a second engine.**
   `card_myread()` reads `report_payload()` for numbers and `_verdict()` for the
-  call — so it cannot lean against the desk on the same tape. Any new "owner
-  view" card must do the same.
+  call — so it cannot lean against the desk on the same tape.
 - ⚠ **`ADX_MIN` (0.0) is a GATE floor, not a trend threshold.** `x < ADX_MIN`
   is a DEAD branch. Use `ADX_TREND_MIN = 20.0` for "no trend". The dead branch
   still exists in `card_scenarios` (~bot.py:1680).
-- ⚠ **`test_every_menu_action_is_wired` keeps its OWN `known` set** — every new
-  menu action must be added there by hand (bit again on `myread`).
+- ⚠ **`test_every_menu_action_is_wired` keeps its OWN `known` set** — a new
+  MENU action must be added there by hand (an action reached only by an inline
+  button, like `myread`, must NOT be — it is not a grid entry).
+- ⚠ **`Telegram.send()` returns a bool, not the API dict** — `res.get("ok")`
+  raises `AttributeError`. Use the bool.
 - `--selftest` must build EVERY card (AGENTS.md); add the new card to it.
