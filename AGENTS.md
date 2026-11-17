@@ -39,10 +39,10 @@ curl -s https://marketdesk-1o4g.onrender.com/health
 The checks that exist, and that must stay green:
 
 ```bash
-python3 -m unittest discover -s tests    # 42 tests, offline, no network
+python3 -m unittest discover -s tests    # 288 tests, offline, no network
 python3 -m py_compile bot.py             # syntax
 python3 bot.py --selftest                # token, quote, every frame, every card (needs network)
-python3 -m ruff check bot.py             # baseline: 16 findings, no new ones
+python3 -m ruff check bot.py             # baseline: 41 findings, no new ones
 python3 -m mypy bot.py                   # baseline: 3 findings, no new ones
 ```
 

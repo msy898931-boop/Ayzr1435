@@ -692,7 +692,8 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   docstring says "not the engine; change `bot.py` first".
 - **Tests now exist:** `tests/test_engine.py`, 21 stdlib `unittest`, offline
   (stubs `quote`/`bars`). Run `python3 -m unittest discover -s tests`. Baselines:
-  ruff `bot.py` 16, mypy 2. Gotcha: `grade()` reads bars at/after `opened_at`,
+  ruff `bot.py` 41, mypy 3 (2026-11-17; earlier notes said 16/2 — stale).
+  Gotcha: `grade()` reads bars at/after `opened_at`,
   so tests backdate `opened_at` before grading.
 
 ## Ayzr1435 — the gold "professional combo", validated on all of 2026 (2026-11-07)
@@ -1227,3 +1228,29 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   -- all `retrace` basis, not the 44 chase/breakout entries. So the owner's own
   journal is the OLD bot's, and the new gate is far more selective. The `retrace`
   basis needs price AT the level; most recorded entries were mid-range.
+
+## MarketDesk — leak redacted + test isolation (2026-11-17)
+
+- ⭐ **Redact only what is NOT already public.** The mirror's note claimed the
+  two emails were replaced — they were not (raw in 3 files, repo public). Now
+  `<owner-email>` / `<render-account-email>` / `<owner-name>`. The repo-owner
+  string `msy898931-boop` (the URL) and the chat ids (in public `bot.py`
+  `SEED_CHATS`) are NOT redacted — redacting those is theatre. Commit `54defca`.
+- ⚠ **A redaction commit hides the value from HEAD, not from HISTORY.** The old
+  commit still holds the raw emails and the repo is public; a real purge needs
+  `git filter-repo` + force-push (needs the owner's OK). Said so to the owner.
+- ⭐ **A gitignored path a test READS needs the same isolation as one it
+  WRITES.** `data/journal.db` is gitignored → a clean checkout has no `trades`
+  table → `open_trades()` died with "no such table" in 2 tests. `setUpModule()`
+  now redirects `bot.DB_PATH` (temp) + `_init_db()`, like it already did for
+  `STICKY_PATH`. The one study test now tolerates a missing
+  `backtest/duka_2026.json` (asserts the "no study data" branch). Suite **288
+  green** on a clean AND a working checkout. Commit `ded953b`.
+- ⚠ **The committed memory index can be truncated by the sandbox** (lost 153
+  lines, uncommitted, this session). `git checkout -- .openhands/memory/MEMORY.md`
+  first. The workspace source dir does NOT exist on a fresh checkout.
+- ⚠ **Lint baselines in the notes were STALE.** Re-measured: ruff `bot.py` **41**
+  (was noted 16), ruff `tests/test_engine.py` **5** (was noted 4), mypy **3**.
+  `AGENTS.md` corrected to 288 tests / ruff 41. `ruff`/`mypy` need
+  `pip install` in this image. Always re-run, never trust the note.
+
