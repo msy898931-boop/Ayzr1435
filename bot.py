@@ -146,6 +146,11 @@ TREND_FILTER_TF = "15m"          # the frame whose EMA20 the entry must respect
 FILTERS_ON = os.environ.get("DESK_FILTERS", "1").strip().lower() not in \
     ("0", "off", "no", "false")
 ADX_MIN, ADX_MAX = 0.0, 50.0     # ride a trend, but not an exhausted one
+# The textbook "no trend" line: below 20 the tape is chopping, so a read that
+# says "trend strength acceptable" at ADX 13 is wrong. ADX_MIN is a GATE floor
+# (0 = always pass), not a trend threshold -- they are different questions, so
+# they get different names.
+ADX_TREND_MIN = 20.0
 # Re-measured 2026-11-13 on the CORRECTED replay (backtest/bot2026.py, the LIVE
 # bands + the no-chase gate). Band by band on the short side: ADX 0-15 is the
 # one band that loses (-0.03R over 122 trades); every band from 15 up pays, and
@@ -565,6 +570,7 @@ NEWS_ITEMS: list[tuple[str, str]] = [
 
 MENU = [
     [("🧠 قراءتي للسوق", "full")],
+    [("🔒 تحليلي الخاص", "myread")],
     [("🥇 التحليل والتوصية", "menu_analysis")],
     [("🗺️ الخرائط والأخبار", "menu_map")],
     [("📂 الصفقات والسجل", "menu_journal")],
@@ -599,10 +605,10 @@ SUBMENUS = {
     ],
 }
 
-# Buttons only the OWNER sees: the control panel and the book of who is on the
-# bot. `_menu_rows` drops them for a guest, so a subscriber never sees the
-# desk's switches or the subscriber roll.
-GUEST_HIDDEN_ACTIONS = {"settings", "who"}
+# Buttons only the OWNER sees: the control panel, the book of who is on the bot,
+# and his private read. `_menu_rows` drops them for a guest, so a subscriber
+# never sees the desk's switches, the subscriber roll, or the owner's own read.
+GUEST_HIDDEN_ACTIONS = {"settings", "who", "myread"}
 
 
 def _menu_rows(chat: str | None = None) -> list:
@@ -640,6 +646,8 @@ TEXT_ACTIONS = {
     "كامل": "full", "شامل": "full", "كل شي": "full", "التحليل الكامل": "full",
     "تفصيلي": "report", "التحليل التفصيلي": "report", "تقرير": "report",
     "التقرير": "report", "تقرير كامل": "report", "تحليلي": "report",
+    "تحليلي الخاص": "myread", "الخاص": "myread", "/myread": "myread",
+    "myread": "myread",
     "سيناريوهات": "scenarios", "مستويات": "levels", "مفتوحة": "open",
     "الصفقات": "open", "سجل": "journal_menu", "السجل": "journal_menu",
     "يومي": "j_day", "اليوم": "j_day", "أسبوعي": "j_week", "اسبوعي": "j_week",
@@ -1951,6 +1959,139 @@ def card_report() -> str:
     """
     p = report_payload()
     return "\n".join(p["lines"])
+
+
+def card_myread() -> str:
+    """🔒 The owner's PRIVATE executive read -- his eyes only.
+
+    A VIEW, not a second engine: every number comes from the ONE report engine
+    (report_payload) and the ONE verdict engine (_verdict), so this card can
+    never lean against the desk. It is the five-section read the owner asked for
+    in his own words -- big picture, small picture, the day's structure,
+    momentum, levels, then the call -- condensed to be scanned in one glance.
+
+    The owner asked for a button only HE sees. `handle()` refuses it for anyone
+    else and `_menu_rows` hides it from a guest's grid; both must hold.
+    """
+    m = read_market()
+    live = m["live"]
+    if live <= 0:
+        return "🔒 <b>تحليلي الخاص</b>\n⚠️ ما في قراءة سوق هلّق — جرّب بعد شوي."
+    p = report_payload(m)
+    v = _verdict(m)
+    fr = {f["tf"]: f for f in p["frames"]}
+
+    try:
+        b15 = closed(bars(TREND_FILTER_TF, 300), TREND_FILTER_TF)
+        adx_v = adx_series(b15)[-1] if b15 else None
+    except Exception:  # noqa: BLE001 - a dead frame must not kill the card
+        adx_v = None
+
+    up, dn = p["up"], p["dn"]
+    neu = len(FRAMES) - up - dn
+
+    def _f(tf: str) -> str:
+        f = fr.get(tf) or {}
+        r = f.get("rsi")
+        e20, e50 = f.get("ema20"), f.get("ema50")
+        side = ""
+        if e20 is not None and e50 is not None:
+            side = ("فوق المتوسطات" if live > e20 and live > e50
+                    else "تحت المتوسطات" if live < e20 and live < e50
+                    else "بين المتوسطات")
+        return f"RSI {r:.0f}" + (f" · {side}" if side else "")
+
+    # the month range, so the big picture says WHERE the price sits
+    days = p.get("days") or []
+    mpos = ""
+    if days:
+        mhi = max(d["high"] for d in days)
+        mlo = min(d["low"] for d in days)
+        if mhi > mlo:
+            mpos = f" · عند {(live - mlo) / (mhi - mlo) * 100:.0f}% من نطاق الشهر"
+
+    L = [f"🔒 <b>تحليلي الخاص</b> — {esc(p['symbol'])}",
+         (f"السعر <b>{num(live)}</b> · اليوم "
+          f"{'🔴' if (p.get('dayDiffPercent') or 0) < 0 else '🟢'} "
+          f"{(p.get('dayDiffPercent') or 0):+.2f}% · 🕐 {p['clock']} {p['tz']}"),
+         (f"<i>الفريمات: {up}ص · {dn}هـ · {neu}عرضي"
+          + (f" · ADX {adx_v:.0f}" if isinstance(adx_v, (int, float)) else "")
+          + f" · الميل {esc(p['bias'])}</i>"),
+         ""]
+
+    L += ["<b>1️⃣ الإطار الكبير</b>",
+          f"• يومي: {_f('1d')}{mpos}",
+          f"• 4س: {_f('4h')}"]
+    big_t = [fr.get(tf, {}).get("trend") for tf in ("1d", "4h")]
+    big_up = sum(1 for t in big_t if t == 1)
+    big_dn = sum(1 for t in big_t if t == -1)
+    if big_dn > big_up:
+        L.append("👉 <b>الترند الهابط قائم</b> — الإطار الكبير يميل لتحت.")
+    elif big_up > big_dn:
+        L.append("👉 <b>الترند الصاعد قائم</b> — الإطار الكبير يميل لفوق.")
+    else:
+        L.append("👉 الإطار الكبير <b>متعادل</b> — ما في اتجاه واضح.")
+    L.append("")
+
+    L += ["<b>2️⃣ الإطار الصغير</b>",
+          f"• 1س {_f('1h')} · 30د {_f('30m')}",
+          f"• 15د {_f('15m')} · 5د {_f('5m')}"]
+    small_t = [fr.get(tf, {}).get("trend") for tf in ("1h", "30m", "15m", "5m")]
+    s_up = sum(1 for t in small_t if t == 1)
+    s_dn = sum(1 for t in small_t if t == -1)
+    if s_up == s_dn:
+        L.append("👉 الفريمات القصيرة <b>متعادلة</b> — ما في اتجاه تتداوله.")
+    elif s_up > s_dn:
+        L.append("👉 القصيرة تميل <b>لفوق</b>.")
+    else:
+        L.append("👉 القصيرة تميل <b>لتحت</b>.")
+    L.append("")
+
+    if p.get("structure"):
+        L += ["<b>3️⃣ بنية السوق</b>", f"• {esc(p['structure'])}", ""]
+
+    s = p.get("sessions") or {}
+    ses = []
+    for lbl, key in (("آسيا", "asia"), ("لندن", "london"), ("نيويورك", "ny")):
+        if s.get(key):
+            ses.append(f"{lbl} {num(s[key]['low'])}→{num(s[key]['high'])} "
+                       f"({s[key]['pts']:.0f})")
+    if ses:
+        L += ["<b>🌏 نطاق الجلسات</b>", "• " + " · ".join(ses), ""]
+
+    L.append("<b>4️⃣ الزخم</b>")
+    if isinstance(adx_v, (int, float)):
+        if adx_v < ADX_TREND_MIN:
+            L.append(f"• ADX {adx_v:.1f} ← أقل من {ADX_TREND_MIN:.0f} = "
+                     "<b>بلا ترند</b> (سوق متذبذب).")
+        else:
+            L.append(f"• ADX {adx_v:.1f} — قوة اتجاه مقبولة.")
+    for h in (p.get("divergence") or [])[:2]:
+        L.append(f"• 👁 {esc(h['text'])}")
+    L.append("")
+
+    if p.get("levels"):
+        L.append("<b>5️⃣ المستويات</b>")
+        rl = [lv for lv in p["levels"] if lv["kind"] == "مقاومة"][:3]
+        sl = [lv for lv in p["levels"] if lv["kind"] == "دعم"][:3]
+        if rl:
+            L.append("🔴 مقاومات: " + " · ".join(num(lv["price"]) for lv in rl))
+        if sl:
+            L.append("🟢 دعوم: " + " · ".join(num(lv["price"]) for lv in sl))
+        L.append("")
+
+    L += ["━━━━━━━━━━━━━━",
+          "🎯 <b>الحكم</b>",
+          f"<b>{esc(_headline(v))}</b>"]
+    d = _verdict_detail(v)
+    if d:
+        L.append(d)
+    for b in (p.get("bullets") or [])[:3]:
+        L.append(f"• {esc(b)}")
+
+    L += ["", ("<i>قراءة فنية من بيانات حيّة — مو توصية ولا وعد ربح. "
+               "الوقف إلزامي دايماً.</i>")]
+    return "\n".join(L)
 
 
 def _report_lines(p: dict) -> list[str]:
@@ -5904,6 +6045,7 @@ def dispatch(action: str) -> str:
         "levels": card_levels,
         "map": card_map,
         "report": card_report,
+        "myread": card_myread,
         "news": card_news,
         "news_prep": card_news_prep,
         "open": card_open,
@@ -6207,6 +6349,13 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
         out = "⛔ قائمة المشتركين للمالك بس."
         tg.send(chat, out, card_markup("menu", chat))
         return "who"
+    if action == "myread" and not is_owner(chat):
+        # The owner's private read: a guest's tap (or a typed word) must not
+        # reach it, exactly like `who`. The button is already hidden from his
+        # grid; this is the second lock, so the card is unreachable by any path.
+        out = "⛔ هالتحليل للمالك بس."
+        tg.send(chat, out, card_markup("menu", chat))
+        return "myread"
     try:
         if action == "trade":
             out = record_trade(text)
@@ -7346,6 +7495,7 @@ def selftest() -> int:
     print("== levels ==", card_levels()[:120].replace("\n", " "))
     print("== map ==", card_map()[:120].replace("\n", " "))
     print("== report ==", card_report()[:120].replace("\n", " "))
+    print("== myread ==", card_myread()[:120].replace("\n", " "))
     print("== news ==", card_news()[:120].replace("\n", " "))
     print("== scenarios ==", card_scenarios()[:120].replace("\n", " "))
     print("== journal ==", journal_menu_text().replace("\n", " | "))

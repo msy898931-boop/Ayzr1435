@@ -2939,7 +2939,7 @@ class CollapsibleMenuTest(unittest.TestCase):
             "map", "news", "news_prep", "scenarios", "levels", "open",
             "journal_menu", "daily",
             "who", "howto", "alerts", "help", "collapse", "menu", "settings",
-            "menu_back", "menu_analysis", "menu_map", "menu_journal",
+            "menu_back", "menu_analysis", "menu_map", "menu_journal", "myread",
         }
         pairs = [p for row in bot.MENU for p in row]
         for rows in bot.SUBMENUS.values():
@@ -3491,6 +3491,86 @@ class OwnerPanelTest(unittest.TestCase):
             bot.handle(tg2, self._cb(self.OWNER, "who"), {self.OWNER})
         sent2 = " ".join(str(c.args[1]) for c in tg2.send.call_args_list)
         self.assertIn("مين موجود بالبوت", sent2)
+
+
+class MyReadCardTest(unittest.TestCase):
+    """🔒 «تحليلي الخاص» is the OWNER's private card: he asked for a button only
+    he sees, and a guest must never reach it by any path -- neither the grid, a
+    tapped callback, nor a typed word. The card is a VIEW of the ONE report
+    engine, so it cannot lean against the desk on the same tape.
+    """
+
+    OWNER = bot.SEED_CHATS[0]
+    GUEST = "8545528489"
+
+    def _cb(self, chat, data, mid=99):
+        return {"callback_query": {"id": "c1", "data": data,
+                                   "message": {"message_id": mid,
+                                               "chat": {"id": chat}}}}
+
+    def _msg(self, chat, text):
+        return {"message": {"chat": {"id": chat}, "text": text}}
+
+    def test_the_owner_sees_the_button_and_a_guest_does_not(self):
+        owner = [a for r in bot._menu_rows(self.OWNER) for _, a in r]
+        guest = [a for r in bot._menu_rows(self.GUEST) for _, a in r]
+        self.assertIn("myread", owner)
+        self.assertNotIn("myread", guest)
+
+    def test_the_button_is_reachable_from_the_grid(self):
+        pairs = [p for row in bot.MENU for p in row]
+        self.assertIn(("🔒 تحليلي الخاص", "myread"), pairs)
+
+    def test_a_guest_tap_is_refused(self):
+        tg = unittest.mock.Mock()
+        bot.handle(tg, self._cb(self.GUEST, "myread"), {self.OWNER, self.GUEST})
+        sent = " ".join(str(c.args[1]) for c in tg.send.call_args_list)
+        self.assertIn("للمالك", sent)
+
+    def test_a_guest_typed_word_is_refused(self):
+        tg = unittest.mock.Mock()
+        bot.handle(tg, self._msg(self.GUEST, "تحليلي الخاص"),
+                   {self.OWNER, self.GUEST})
+        sent = " ".join(str(c.args[1]) for c in tg.send.call_args_list)
+        self.assertIn("للمالك", sent)
+
+    def test_the_text_triggers_route_to_it(self):
+        for t in ("تحليلي الخاص", "الخاص", "/myread", "myread"):
+            self.assertEqual(bot.action_for(t), "myread")
+
+    def test_the_card_renders_the_sections_on_a_live_tape(self):
+        with FakeFeed(mid=3900.0, closes={tf: [3900, 3901, 3900, 3901] * 20
+                                          for tf in bot.FRAMES}):
+            out = bot.card_myread()
+        for sec in ("الإطار الكبير", "الإطار الصغير", "الزخم", "الحكم"):
+            self.assertIn(sec, out)
+        self.assertIn("تحليلي الخاص", out)
+
+    def test_the_card_is_a_view_of_the_one_report_engine(self):
+        # Every frame RSI the card prints must be the report's own number, so the
+        # private read cannot drift from the desk. A second engine would diverge.
+        with FakeFeed(mid=3900.0, closes={tf: [3900, 3901, 3900, 3901] * 20
+                                          for tf in bot.FRAMES}):
+            out = bot.card_myread()
+            p = bot.report_payload()
+            m = bot.read_market()
+            head = bot._headline(bot._verdict(m))
+        # the daily frame's RSI, as the report measured it, is on the card
+        r1d = next(f for f in p["frames"] if f["tf"] == "1d")["rsi"]
+        self.assertIn(f"RSI {r1d:.0f}", out)
+        # and the call is the SAME headline the action card prints
+        plain = head.replace("<b>", "").replace("</b>", "")
+        self.assertIn(plain, out)
+
+    def test_a_chopping_tape_is_not_called_a_trend(self):
+        # ADX below 20 is "no trend"; the card must say so. A flat tape pins ADX
+        # near zero, and a card that printed "trend strength acceptable" there
+        # would be the exact over-claim the owner keeps catching.
+        flat = {tf: [3900 + (i % 2) for i in range(120)] for tf in bot.FRAMES}
+        with FakeFeed(mid=3900.0, closes=flat):
+            out = bot.card_myread()
+        self.assertIn("بلا ترند", out)
+        self.assertNotIn("قوة اتجاه مقبولة", out)
 
 
 class DeskTickRestartTest(_DbCase):
