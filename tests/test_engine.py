@@ -27,20 +27,32 @@ import bot  # noqa: E402
 
 
 def setUpModule():
-    """Every test in this file runs against a throwaway sticky-level pool.
+    """Every test in this file runs against throwaway files, never the real ones.
 
-    map_payload/chart_payload now WRITE the sticky pool (that is the feature),
-    so without this a test run would leave the real data/levels_seen.json full
-    of the fake feed's levels -- and the next live read would inherit them.
+    Two module-level paths must be redirected, or the suite fails on a clean
+    checkout and pollutes a working one:
+
+      * the sticky-level pool -- map_payload/chart_payload WRITE it (that is
+        the feature), so without this a run leaves the real
+        data/levels_seen.json full of the fake feed's levels;
+      * the journal db -- data/journal.db is gitignored, so a fresh clone has
+        no `trades` table and any card that reads open_trades() dies with
+        "no such table: trades" (card_recommend, _dump_journal). _DbCase points
+        it at a temp file, but the module-level default must too so the plain
+        cases are isolated as well.
     """
-    global _STICKY_DIR
+    global _STICKY_DIR, _DB_DIR
     _STICKY_DIR = tempfile.mkdtemp()
     bot.STICKY_PATH = pathlib.Path(_STICKY_DIR) / "levels.json"
+    _DB_DIR = tempfile.mkdtemp()
+    bot.DB_PATH = pathlib.Path(_DB_DIR) / "journal.db"
+    bot._init_db()
 
 
 def tearDownModule():
-    bot.STICKY_PATH = pathlib.Path(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / "data" / "levels_seen.json"
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bot.STICKY_PATH = pathlib.Path(root) / "data" / "levels_seen.json"
+    bot.DB_PATH = pathlib.Path(root) / "data" / "journal.db"
 
 
 def _bar(open_time, o, h, lo, c):
@@ -1452,10 +1464,17 @@ class FullCardTest(unittest.TestCase):
         self.assertNotIn("❌", s)
         self.assertIn("خطتي", plain)
         # The market facts are measured and printed BELOW the score, not mixed
-        # into it: a perfect layout must never hide the edge reading.
+        # into it: a perfect layout must never hide the edge reading. The
+        # section is always present; the two measured lines need the 2026
+        # replay data (backtest/duka_2026.json, gitignored, 34 MB), so a clean
+        # checkout gets the "no study data" branch instead -- assert that
+        # branch rather than fail, since the suite must run anywhere.
         self.assertIn("حقائق السوق", s)
-        self.assertIn("الحافة الزمنية", s)
-        self.assertIn("المعايرة", s)
+        if bot._study_edge() is None:
+            self.assertIn("ما في بيانات دراسة", s)
+        else:
+            self.assertIn("الحافة الزمنية", s)
+            self.assertIn("المعايرة", s)
 
     def test_a_retracement_is_not_called_a_range(self):
         # The owner's complaint: the card said "عرضي, stay out" while the price
