@@ -2939,7 +2939,7 @@ class CollapsibleMenuTest(unittest.TestCase):
             "map", "news", "news_prep", "scenarios", "levels", "open",
             "journal_menu", "daily",
             "who", "howto", "alerts", "help", "collapse", "menu", "settings",
-            "menu_back", "menu_analysis", "menu_map", "menu_journal", "myread",
+            "menu_back", "menu_analysis", "menu_map", "menu_journal",
         }
         pairs = [p for row in bot.MENU for p in row]
         for rows in bot.SUBMENUS.values():
@@ -3494,10 +3494,10 @@ class OwnerPanelTest(unittest.TestCase):
 
 
 class MyReadCardTest(unittest.TestCase):
-    """🔒 «تحليلي الخاص» is the OWNER's private card: he asked for a button only
-    he sees, and a guest must never reach it by any path -- neither the grid, a
-    tapped callback, nor a typed word. The card is a VIEW of the ONE report
-    engine, so it cannot lean against the desk on the same tape.
+    """🔒 «تحليلي الخاص» is the OWNER's private card, reached from a button that
+    rides UNDER his analysis message -- NOT a bot-menu entry. He asked for a
+    button only he sees; a guest must never reach the card by any path, and the
+    button must never appear in the shared menu grid.
     """
 
     OWNER = bot.SEED_CHATS[0]
@@ -3511,15 +3511,32 @@ class MyReadCardTest(unittest.TestCase):
     def _msg(self, chat, text):
         return {"message": {"chat": {"id": chat}, "text": text}}
 
-    def test_the_owner_sees_the_button_and_a_guest_does_not(self):
-        owner = [a for r in bot._menu_rows(self.OWNER) for _, a in r]
-        guest = [a for r in bot._menu_rows(self.GUEST) for _, a in r]
-        self.assertIn("myread", owner)
-        self.assertNotIn("myread", guest)
+    def test_the_button_rides_under_the_owners_analysis(self):
+        k = bot.card_markup("analysis", self.OWNER)
+        self.assertIn("inline_keyboard", k)
+        flat = [b for r in k["inline_keyboard"] for b in r]
+        self.assertEqual(flat, [{"text": "🔒 تحليلي الخاص", "callback_data": "myread"}])
 
-    def test_the_button_is_reachable_from_the_grid(self):
+    def test_the_button_is_on_every_analysis_card(self):
+        for action in ("analysis", "full", "report", "day_analysis"):
+            k = bot.card_markup(action, self.OWNER)
+            self.assertIn("inline_keyboard", k,
+                          f"{action} must carry the button")
+
+    def test_a_guests_analysis_carries_no_button(self):
+        # The guest's card must fall back to the standing menu reply keyboard,
+        # not the inline private-read button.
+        k = bot.card_markup("analysis", self.GUEST)
+        self.assertNotIn("inline_keyboard", k)
+        self.assertIn("keyboard", k)
+
+    def test_the_button_is_not_a_menu_entry(self):
+        # It is a button on a message, never a row in the shared grid.
         pairs = [p for row in bot.MENU for p in row]
-        self.assertIn(("🔒 تحليلي الخاص", "myread"), pairs)
+        self.assertNotIn(("🔒 تحليلي الخاص", "myread"), pairs)
+        for rows in bot.SUBMENUS.values():
+            for row in rows:
+                self.assertNotIn("myread", [a for _t, a in row])
 
     def test_a_guest_tap_is_refused(self):
         tg = unittest.mock.Mock()

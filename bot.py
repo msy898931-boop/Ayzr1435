@@ -570,7 +570,6 @@ NEWS_ITEMS: list[tuple[str, str]] = [
 
 MENU = [
     [("🧠 قراءتي للسوق", "full")],
-    [("🔒 تحليلي الخاص", "myread")],
     [("🥇 التحليل والتوصية", "menu_analysis")],
     [("🗺️ الخرائط والأخبار", "menu_map")],
     [("📂 الصفقات والسجل", "menu_journal")],
@@ -605,10 +604,16 @@ SUBMENUS = {
     ],
 }
 
-# Buttons only the OWNER sees: the control panel, the book of who is on the bot,
-# and his private read. `_menu_rows` drops them for a guest, so a subscriber
-# never sees the desk's switches, the subscriber roll, or the owner's own read.
-GUEST_HIDDEN_ACTIONS = {"settings", "who", "myread"}
+# Buttons only the OWNER sees in the top grid: the control panel and the book
+# of who is on the bot. `_menu_rows` drops them for a guest, so a subscriber
+# never sees the desk's switches or the subscriber roll.
+GUEST_HIDDEN_ACTIONS = {"settings", "who"}
+
+# The analysis cards that carry the owner's private-read button UNDER the text.
+# These are NOT menu entries: the button rides the analysis message the owner
+# asked for, so it appears with the analysis itself and nowhere else. A "what to
+# do" card (action/recommend) is not an analysis, so it carries no button.
+OWNER_ANALYSIS_ACTIONS = {"analysis", "full", "report", "day_analysis"}
 
 
 def _menu_rows(chat: str | None = None) -> list:
@@ -903,6 +908,13 @@ def keyboard_for(action: str, chat: str | None = None) -> dict | None:
         return settings_keyboard()
     if action == "open":
         return close_keyboard()      # one close button per open trade
+    # The owner's analysis cards carry ONE inline button under the text: his
+    # private read. This is NOT a bot-menu entry -- it is a button on the
+    # message itself, so it appears the moment an analysis is delivered and
+    # nowhere else. Only the owner's message carries it; a guest's card has no
+    # button, and the action is refused for a guest in handle() besides.
+    if action in OWNER_ANALYSIS_ACTIONS and chat is not None and is_owner(chat):
+        return kb([[("🔒 تحليلي الخاص", "myread")]])
     return nav(action)
 
 
@@ -6754,7 +6766,9 @@ def maybe_daily_analysis(tg: Telegram, allow: set[str]) -> None:
         ok = False
         for c in _alert_chats(allow):
             try:
-                tg.send(c, text, MENU_REPLY_KB)
+                # The owner's copy carries his private-read button under the
+                # text; a guest's copy carries the standing menu as before.
+                tg.send(c, text, card_markup("day_analysis", c))
                 ok = True
             except Exception:  # noqa: BLE001
                 continue
