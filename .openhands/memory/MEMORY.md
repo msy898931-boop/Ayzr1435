@@ -1254,3 +1254,21 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   `AGENTS.md` corrected to 288 tests / ruff 41. `ruff`/`mypy` need
   `pip install` in this image. Always re-run, never trust the note.
 
+
+## MarketDesk — owner-only card = TWO locks (2026-11-17)
+
+- ⭐ **"Only the owner sees it" is TWO mechanisms, and hiding is not refusing.**
+  A new owner-only button needs (1) `GUEST_HIDDEN_ACTIONS` so `_menu_rows` drops
+  it from a guest's grid AND (2) a refusal in `handle()` for the action — because
+  a guest can still TAP a stale callback or TYPE the trigger word. `myread`
+  follows `who` exactly. A test must pin both paths.
+- ⭐ **A private card is a VIEW of the one engine, never a second engine.**
+  `card_myread()` reads `report_payload()` for numbers and `_verdict()` for the
+  call — so it cannot lean against the desk on the same tape. Any new "owner
+  view" card must do the same.
+- ⚠ **`ADX_MIN` (0.0) is a GATE floor, not a trend threshold.** `x < ADX_MIN`
+  is a DEAD branch. Use `ADX_TREND_MIN = 20.0` for "no trend". The dead branch
+  still exists in `card_scenarios` (~bot.py:1680).
+- ⚠ **`test_every_menu_action_is_wired` keeps its OWN `known` set** — every new
+  menu action must be added there by hand (bit again on `myread`).
+- `--selftest` must build EVERY card (AGENTS.md); add the new card to it.
