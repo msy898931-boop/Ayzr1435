@@ -418,11 +418,21 @@ NEWS_ALERTS_ON = os.environ.get("DESK_NEWS_ALERTS", "1").strip().lower() not in 
 # clobbered by this default at import.
 NEWS_PREP_ON = os.environ.get("DESK_NEWS_PREP", "1").strip().lower() not in \
     ("0", "off", "no", "false")
+# The post-event RESULT alert: when a print the desk prepared for actually
+# LANDS, tell the owner the number and what price did with it. The prep card
+# could only ever show the CONSENSUS; the calendar carries the ACTUAL, which
+# `_cal_parse` used to drop. A result is spoken once per event, and only within
+# this window of its scheduled time -- a feed can backfill an old number, and a
+# stale "the news landed" alert is worse than none. Its own switch, defined HERE
+# like the others so a saved panel choice is not clobbered at import.
+CAL_RESULT_ON = os.environ.get("DESK_CAL_RESULT", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
 _GATE_VAR = {"entry_basis": "ENTRY_BASIS_ON", "nochase": "NOCHASE_ON",
              "filters": "FILTERS_ON", "trend_filter": "TREND_FILTER_ON",
              "bounce_entry": "BOUNCE_ENTRY",
              "fast_basis": "FAST_BASIS",
-             "news_alerts": "NEWS_ALERTS_ON", "news_prep": "NEWS_PREP_ON"}
+             "news_alerts": "NEWS_ALERTS_ON", "news_prep": "NEWS_PREP_ON",
+             "news_result": "CAL_RESULT_ON"}
 GATE_LABELS = {"entry_basis": "أساس الدخول (عند مستوى)",
                "nochase": "منع المطاردة",
                "filters": "بوابة الجودة (ADX/ATR)",
@@ -430,11 +440,12 @@ GATE_LABELS = {"entry_basis": "أساس الدخول (عند مستوى)",
                "bounce_entry": "بيع الارتداد (من المستوى)",
                "fast_basis": "باسيس سريع (فريم 15د)",
                "news_alerts": "تنبيه الأخبار المهمة",
-               "news_prep": "تنبيه التحضير قبل الخبر"}
+               "news_prep": "تنبيه التحضير قبل الخبر",
+               "news_result": "تنبيه نزول الخبر (النتيجة)"}
 # Everything the panel shows and persists. `gate_state` stays GATE_KEYS only so
 # `open_all`/`close_all` keep meaning "the entry filters"; the news switches and
 # the bounce-entry behaviour are carried alongside but flipped on their own.
-PANEL_KEYS = GATE_KEYS + ("news_alerts", "news_prep",
+PANEL_KEYS = GATE_KEYS + ("news_alerts", "news_prep", "news_result",
                            "bounce_entry", "fast_basis")
 
 
@@ -632,6 +643,11 @@ CAL_NOISE = tuple(
 # far ahead for "the next event". Both in minutes.
 CAL_LEAD_MIN = int(os.environ.get("DESK_CAL_LEAD_MIN", "60") or "60")
 CAL_LEAD_MIN2 = int(os.environ.get("DESK_CAL_LEAD_MIN2", "15") or "15")
+# The post-event result window (the switch CAL_RESULT_ON is defined up top, with
+# the other panel switches). A result is only spoken within this many minutes of
+# the event's scheduled time.
+CAL_RESULT_WINDOW_MIN = int(
+    os.environ.get("DESK_CAL_RESULT_WINDOW", "30") or "30")
 # The automatic direction alert: tell the owner when the desk's net direction
 # flips (up / down / range) without a tap. A cooldown damps a chop at the edge.
 TREND_ALERTS = os.environ.get("DESK_TREND_ALERTS", "1").strip().lower() in (
@@ -703,7 +719,7 @@ SUBMENUS = {
     ],
     "menu_map": [
         [("🗺️ خريطة المناطق", "map"), ("📰 الأخبار", "news")],
-        [("⏰ قبل الخبر", "news_prep")],
+        [("⏰ قبل الخبر", "news_prep"), ("🔔 نتيجة خبر", "news_result")],
         [("🎬 السيناريوهات", "scenarios"), ("🔔 المستويات", "levels")],
         [("↩️ رجوع", "menu_back")],
     ],
@@ -804,6 +820,8 @@ TEXT_ACTIONS = {
     "مساعدة": "help", "قائمة": "menu", "القائمة": "menu", "☰ القائمة": "menu",
     "مين": "who", "المشتركين": "who", "المشتركين؟": "who",
     "قبل الخبر": "news_prep", "تحضير الخبر": "news_prep", "الخبر": "news_prep",
+    "نتيجة الخبر": "news_result", "نتيجة": "news_result",
+    "آخر خبر": "news_result", "اخر خبر": "news_result",
 }
 TRADE_VERBS = {"سجل", "سجّل", "صفقة", "/trade", "trade"}
 CLOSE_VERBS = {"سكر", "سكّر", "أغلق", "اغلق", "اقفل", "أقفل", "/close", "close"}
@@ -3687,7 +3705,13 @@ def _cal_parse(raw) -> list[dict]:
                     "forecast": str(e.get("forecast") if e.get("forecast")
                                     is not None else "").strip(),
                     "previous": str(e.get("previous") if e.get("previous")
-                                    is not None else "").strip()})
+                                    is not None else "").strip(),
+                    # The number the print LANDED at, when the feed has it.
+                    # `actual` is null until the release, then the figure; both
+                    # sources name it the same. Kept so the result alert can say
+                    # what came out, not just what was expected.
+                    "actual": str(e.get("actual") if e.get("actual")
+                                  is not None else "").strip()})
     out.sort(key=lambda x: x["when"])
     return out
 
@@ -3907,6 +3931,185 @@ def news_prep_watch(seen: dict) -> str | None:
     return (f"⏰ <b>تنبيه خبر — {label}</b>\n"
             f"{_cal_impact_ar(ev['impact'])} <b>{esc(ev['title'])}</b> "
             f"({ev['currency']}) · <b>{when_txt}</b>\n\n" + body)
+
+
+def card_news_result_latest() -> str:
+    """The most recent LANDED event, or an honest line when there is none."""
+    head = f"🔔 <b>آخر نتيجة خبر — {SYMBOL}</b>"
+    try:
+        events = _cal_fetch()
+    except Exception:  # noqa: BLE001
+        events = []
+    now = datetime.now(UTC)
+    landed = _cal_result_events(events, now)
+    landed = [e for e in landed if e["impact"] == "High"]
+    if not landed:
+        # Widen the window: the owner asking by hand deserves the last print,
+        # not only one from the last half hour.
+        lo = now - timedelta(hours=12)
+        landed = [e for e in events
+                  if e.get("actual") and e["impact"] == "High"
+                  and lo <= e["when"] <= now]
+        landed.sort(key=lambda x: x["when"], reverse=True)
+    if not landed:
+        return (head + "\n\nما في خبر عالي الأثر نزل مؤخراً.\n"
+                "<i>لما ينزل رقم كنت مستنيه، بوصلك تلقائياً.</i>")
+    return card_news_result(landed[0])
+
+
+def _cal_result_events(events: list[dict], now: datetime) -> list[dict]:
+    """Events that LANDED (have an `actual`) within the result window.
+
+    Newest first, so a burst of releases in one window is reported in order. An
+    event with no `actual` has not printed yet; one older than the window is a
+    backfill the desk missed, and alerting on it would be late and misleading.
+    """
+    lo = now - timedelta(minutes=CAL_RESULT_WINDOW_MIN)
+    out = [e for e in events
+           if e.get("actual") and lo <= e["when"] <= now]
+    out.sort(key=lambda x: x["when"], reverse=True)
+    return out
+
+
+def _cal_surprise(actual: str, forecast: str) -> int:
+    """-1 below consensus, 0 on it (or unreadable), +1 above.
+
+    The numbers arrive as display strings ("3.1%", "150K", "-0.2"). We only
+    need the SIGN of the surprise, so both are parsed to a float and compared;
+    anything unparseable is treated as "no surprise" rather than guessed.
+    """
+    a = _cal_num(actual)
+    f = _cal_num(forecast)
+    if a is None or f is None or a == f:
+        return 0
+    return 1 if a > f else -1
+
+
+def _cal_num(s: str) -> float | None:
+    """A calendar figure -> float, or None. Handles %, K/M suffixes, commas."""
+    if not s:
+        return None
+    t = str(s).strip().replace(",", "").replace("%", "")
+    mult = 1.0
+    if t[-1:].upper() == "K":
+        mult, t = 1e3, t[:-1]
+    elif t[-1:].upper() == "M":
+        mult, t = 1e6, t[:-1]
+    elif t[-1:].upper() == "B":
+        mult, t = 1e9, t[:-1]
+    with suppress(ValueError):
+        return float(t) * mult
+    return None
+
+
+def card_news_result(ev: dict) -> str:
+    """The result card for ONE landed event: the number AND what price did.
+
+    The prep card could only prepare both directions; this is the answer. It
+    states the actual against the consensus, the mechanical lean of the
+    surprise (a RULE, the same one the prep card named), and the price's move
+    since the print -- read from the live quote, never predicted.
+    """
+    L = [f"🔔 <b>نزل خبر — {SYMBOL}</b>", ""]
+    L.append(f"<b>{esc(ev['title'])}</b> ({ev['currency']}) · "
+             f"{_cal_impact_ar(ev['impact'])}")
+    loc = ev["when"].astimezone(timezone(timedelta(hours=TZ_OFFSET_H)))
+    L.append(f"🕒 نزل الساعة <b>{loc.strftime('%H:%M')}</b> {TZ_LABEL}")
+    L.append("")
+    L.append(f"📊 الفعلي: <b>{esc(ev['actual'])}</b> · "
+             f"المتوقّع: <b>{esc(ev['forecast'] or '—')}</b> · "
+             f"السابق: <b>{esc(ev['previous'] or '—')}</b>")
+    surp = _cal_surprise(ev["actual"], ev["forecast"])
+    if surp:
+        word = "أعلى" if surp > 0 else "أقل"
+        L.append(f"⚖️ جاء <b>{word}</b> من المتوقّع.")
+    else:
+        L.append("⚖️ جاء <b>مطابق</b> للمتوقّع.")
+    # The mechanical lean, restated as a rule -- never a call.
+    lean = _cal_lean(ev)
+    if lean:
+        L.append("")
+        L.append(f"⚙️ {lean}")
+    # What price actually did with the number: a fact from the tape.
+    move = _price_since(ev["when"])
+    if move is not None:
+        first, last, delta = move
+        arrow = "🔺" if delta > 0 else ("🔻" if delta < 0 else "▪️")
+        L.append("")
+        L.append(f"{arrow} <b>تأثير السعر:</b> {num(first)} → "
+                 f"<b>{num(last)}</b> "
+                 f"({'+' if delta >= 0 else ''}{num(delta)} نقطة)")
+    else:
+        L.append("")
+        L.append("📉 <i>ما قدرت أقرأ حركة السعر حول لحظة الخبر هلّق.</i>")
+    L.append("")
+    L.append("<i>⚠️ معلومة فقط — مو إشارة دخول. الاتجاه بيتأكد بإغلاق شمعة "
+             "فوق/تحت المشغّل. القرار إلك.</i>")
+    return "\n".join(L)
+
+
+def _price_since(when: datetime) -> tuple[float, float, float] | None:
+    """(price at the release, latest price, delta) from the 5m tape.
+
+    `when` is the event's scheduled UTC time. We take the CLOSED 5m bar nearest
+    at/after the print and the latest quote, so "what price did" is measured
+    from the release, not from an arbitrary later read. None when the tape or
+    quote is unreadable -- the card must render without inventing a move.
+    """
+    try:
+        b = [x for x in bars("5m", 60)
+             if datetime.fromisoformat(x["openTime"]) >= when]
+        if not b:
+            return None
+        first = float(b[0]["open"])
+        q = quote()
+        last = float(q.get("mid") or q.get("last") or 0.0)
+        if not last:
+            return None
+        return first, last, round(last - first, 2)
+    except Exception:  # noqa: BLE001 - a card must never raise
+        return None
+
+
+def news_result_watch(seen: dict) -> str | None:
+    """The unprompted result alert: speak once when a prepared print LANDS.
+
+    Keyed by title+time so a restart never replays a result already sent. The
+    first tick after boot SEEDS every already-landed event silently -- a desk
+    that was down over the release must not dump yesterday's prints into the
+    chat -- and only a print that lands WHILE running speaks. Only a HIGH-impact
+    event earns the alert, matching the prep alert's bar.
+    """
+    if not CAL_RESULT_ON:
+        return None
+    booting = seen.get("result_booted") is None
+    seen["result_booted"] = True
+    try:
+        events = _cal_fetch()
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return None
+    now = datetime.now(UTC)
+    landed = _cal_result_events(events, now)
+    fired = seen.setdefault("result_fired", {})
+    fresh = None
+    for ev in landed:
+        if ev["impact"] != "High":
+            continue
+        key = f"result:{ev['title']}:{ev['when'].isoformat()}"
+        if key in fired:
+            continue
+        fired[key] = True
+        if fresh is None and not booting:
+            fresh = ev
+    # Keep the map small: forget keys for events long past.
+    for k in list(fired):
+        with suppress(Exception):
+            stamp = datetime.fromisoformat(k.split(":", 2)[2])
+            if stamp < now - timedelta(days=1):
+                del fired[k]
+    if fresh is None:
+        return None
+    return card_news_result(fresh)
 
 
 def _sized(entry: float, direction: str, stop_level: float | None) -> dict:
@@ -5073,6 +5276,9 @@ def card_settings() -> str:
     mark = "🟢" if st["news_prep"] else "🔴"
     lines.append(f"{mark} {GATE_LABELS['news_prep']}: "
                  f"<b>{'مشغّل' if st['news_prep'] else 'مطفّي'}</b>")
+    mark = "🟢" if st["news_result"] else "🔴"
+    lines.append(f"{mark} {GATE_LABELS['news_result']}: "
+                 f"<b>{'مشغّل' if st['news_result'] else 'مطفّي'}</b>")
     lines.append("")
     bmark = "🟢" if st["bounce_entry"] else "🔴"
     lines.append(f"{bmark} {GATE_LABELS['bounce_entry']}: "
@@ -5102,6 +5308,8 @@ def settings_keyboard() -> dict:
     rows.append([(nlabel, "cfg:news_alerts")])
     plabel = f"{'🟢' if st['news_prep'] else '🔴'} {GATE_LABELS['news_prep']}"
     rows.append([(plabel, "cfg:news_prep")])
+    rlabel = f"{'🟢' if st['news_result'] else '🔴'} {GATE_LABELS['news_result']}"
+    rows.append([(rlabel, "cfg:news_result")])
     blabel = f"{'🟢' if st['bounce_entry'] else '🔴'} {GATE_LABELS['bounce_entry']}"
     rows.append([(blabel, "cfg:bounce_entry")])
     flabel = f"{'🟢' if st['fast_basis'] else '🔴'} {GATE_LABELS['fast_basis']}"
@@ -6281,6 +6489,12 @@ def alerts_guide() -> str:
             "  يعني: خبر مهم (تضخم/وظائف/فائدة) قرّب — بعد ساعة، وبعدها ربع.\n"
             "  👉 <i>جهّز السيناريوهين (فوق/تحت). الاتجاه بيتحدد عند الرقم نفسه، "
             "ما حد بيعرف قبل — استنّى الشمعة تنسكّر قبل الدخول.</i>\n\n"
+            "<b>1️⃣3️⃣ نزل الخبر (النتيجة)</b> 🔔\n"
+            "  يعني: الرقم نزل فعلاً — الرسالة فيها <b>الفعلي</b> مقابل "
+            "<b>المتوقّع</b>، وإذا جاء أعلى أو أقل، و<b>شو عمل السعر</b> من "
+            "لحظة الخبر.\n"
+            "  👉 <i>هاي الإجابة، مو تحضير: شوف الاتجاه وين راح مع الرقم، "
+            "وبلا مطاردة — استنّى إغلاق شمعة فوق/تحت المشغّل.</i>\n\n"
             "📌 <b>القاعدة الذهبية:</b> كل تنبيه بيقوللك «شو تعمل» بسطر — "
             "اقرأ آخر سطر دايماً.\n\n"
             "<i>قراءة تحليلية، مو وعد ربح.</i>")
@@ -6320,6 +6534,7 @@ def dispatch(action: str) -> str:
         "ayzr": card_ayzr,
         "news": card_news,
         "news_prep": card_news_prep,
+        "news_result": card_news_result_latest,
         "open": card_open,
         "monitor": card_monitor,
         "journal": full_journal,
@@ -7776,6 +7991,12 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     if note:
         for c in _alert_chats(allow):
             tg.send(c, note, menu_reply_kb(c))
+    # The result alert: when a prepared print LANDS, say the number and what
+    # price did. A fact about the market, so it also runs before the switch.
+    note = news_result_watch(seen)
+    if note:
+        for c in _alert_chats(allow):
+            tg.send(c, note, menu_reply_kb(c))
     for t in all_trades():
         st = t["status"]
         was = seen.get(t["id"])
@@ -8073,6 +8294,8 @@ def selftest() -> int:
     print("== myread ==", card_myread()[:120].replace("\n", " "))
     print("== ayzr ==", card_ayzr()[:120].replace("\n", " "))
     print("== news ==", card_news()[:120].replace("\n", " "))
+    print("== news_prep ==", card_news_prep()[:120].replace("\n", " "))
+    print("== news_result ==", card_news_result_latest()[:120].replace("\n", " "))
     print("== scenarios ==", card_scenarios()[:120].replace("\n", " "))
     print("== journal ==", journal_menu_text().replace("\n", " | "))
     print("== open ==", card_open()[:80].replace("\n", " "))

@@ -1287,6 +1287,133 @@ class EconomicCalendarTest(unittest.TestCase):
         self.assertNotIn("news_prep", bot.GATE_KEYS)
 
 
+class NewsResultTest(unittest.TestCase):
+    """The post-event RESULT alert: when a prepared print LANDS, the desk says
+    the number AND what price did -- the answer the prep card could not give."""
+
+    def setUp(self):
+        self._saved = (bot._CAL_CACHE["at"], list(bot._CAL_CACHE["events"]))
+
+    def tearDown(self):
+        bot._CAL_CACHE["at"], bot._CAL_CACHE["events"] = self._saved
+
+    def _ev(self, title, mins_from_now, actual="", forecast="3.1%",
+            previous="3.0%", cur="USD", impact="High"):
+        when = datetime.now(UTC) + timedelta(minutes=mins_from_now)
+        return {"title": title, "currency": cur, "impact": impact,
+                "when": when, "forecast": forecast, "previous": previous,
+                "actual": actual}
+
+    def test_parse_keeps_the_actual(self):
+        raw = [{"title": "CPI m/m", "country": "USD", "impact": "High",
+                "date": "2026-11-07T13:30:00-05:00", "forecast": "3.1%",
+                "previous": "3.0%", "actual": "3.4%"}]
+        out = bot._cal_parse(raw)
+        self.assertEqual(out[0]["actual"], "3.4%")
+
+    def test_an_event_without_actual_has_not_landed(self):
+        events = [self._ev("CPI m/m", -5)]      # 5 min ago, no actual
+        self.assertEqual(bot._cal_result_events(events, datetime.now(UTC)), [])
+
+    def test_an_event_past_the_window_is_not_a_live_result(self):
+        events = [self._ev("CPI m/m", -90, actual="3.4%")]
+        self.assertEqual(bot._cal_result_events(events, datetime.now(UTC)), [])
+
+    def test_a_landed_event_inside_the_window_is_reported(self):
+        events = [self._ev("CPI m/m", -3, actual="3.4%")]
+        got = bot._cal_result_events(events, datetime.now(UTC))
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["title"], "CPI m/m")
+
+    def test_the_surprise_reads_the_sign_of_the_number(self):
+        self.assertEqual(bot._cal_surprise("3.4%", "3.1%"), 1)
+        self.assertEqual(bot._cal_surprise("2.9%", "3.1%"), -1)
+        self.assertEqual(bot._cal_surprise("3.1%", "3.1%"), 0)
+        # Unreadable numbers are "no surprise", never a guess.
+        self.assertEqual(bot._cal_surprise("n/a", "3.1%"), 0)
+
+    def test_the_card_names_the_actual_forecast_and_the_move(self):
+        ev = self._ev("CPI m/m", -3, actual="3.4%")
+        with unittest.mock.patch.object(bot, "_price_since",
+                                        return_value=(3900.0, 3920.0, 20.0)):
+            out = bot.card_news_result(ev)
+        self.assertIn("3.4%", out)                 # the actual
+        self.assertIn("3.1%", out)                 # the consensus
+        self.assertIn("أعلى", out)                 # the surprise, as a rule
+        self.assertIn("3,920", out)                # the price it moved to
+        self.assertIn("+20", out)                  # and the delta
+        # It is information, never a signal.
+        self.assertIn("مو إشارة", out)
+
+    def test_the_card_renders_without_a_tape(self):
+        # A dead feed must not stop the card from stating the number.
+        ev = self._ev("CPI m/m", -3, actual="3.4%")
+        with unittest.mock.patch.object(bot, "_price_since", return_value=None):
+            out = bot.card_news_result(ev)
+        self.assertIn("3.4%", out)
+        self.assertIn("ما قدرت أقرأ حركة السعر", out)
+
+    def test_the_alert_fires_once_when_a_print_lands_while_running(self):
+        seen: dict = {}
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=[]):
+            self.assertIsNone(bot.news_result_watch(seen))    # boot, nothing
+        events = [self._ev("CPI m/m", -2, actual="3.4%")]
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=events), \
+             unittest.mock.patch.object(bot, "_price_since",
+                                        return_value=(3900.0, 3910.0, 10.0)):
+            out = bot.news_result_watch(seen)
+        self.assertIsNotNone(out)
+        self.assertIn("نزل خبر", out)
+        self.assertIn("3.4%", out)
+        # Once only: the same landed event must not speak again.
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=events), \
+             unittest.mock.patch.object(bot, "_price_since",
+                                        return_value=(3900.0, 3910.0, 10.0)):
+            self.assertIsNone(bot.news_result_watch(seen))
+
+    def test_a_restart_does_not_replay_a_result_already_landed(self):
+        # A desk that was down over the release must not dump it on boot.
+        events = [self._ev("CPI m/m", -5, actual="3.4%")]
+        seen: dict = {}
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=events):
+            self.assertIsNone(bot.news_result_watch(seen))   # boot: seed, silent
+        # A SECOND print landing later still speaks.
+        more = events + [self._ev("PPI m/m", -1, actual="0.5%")]
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=more), \
+             unittest.mock.patch.object(bot, "_price_since",
+                                        return_value=(3900.0, 3905.0, 5.0)):
+            out = bot.news_result_watch(seen)
+        self.assertIsNotNone(out)
+        self.assertIn("PPI", out)
+
+    def test_only_a_high_impact_print_earns_the_alert(self):
+        events = [self._ev("Minor print", -2, actual="1.0", impact="Medium")]
+        seen = {"result_booted": True}
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=events):
+            self.assertIsNone(bot.news_result_watch(seen))
+
+    def test_the_switch_off_silences_the_result_alert(self):
+        saved = bot.CAL_RESULT_ON
+        bot.CAL_RESULT_ON = False
+        try:
+            seen = {"result_booted": True}
+            events = [self._ev("CPI m/m", -2, actual="3.4%")]
+            with unittest.mock.patch.object(bot, "_cal_fetch",
+                                            return_value=events):
+                self.assertIsNone(bot.news_result_watch(seen))
+        finally:
+            bot.CAL_RESULT_ON = saved
+
+    def test_the_panel_shows_the_result_switch(self):
+        self.assertIn("news_result", bot.panel_state())
+        self.assertIn("news_result", bot.GATE_LABELS)
+        keys = [b["callback_data"]
+                for r in bot.settings_keyboard()["inline_keyboard"] for b in r]
+        self.assertIn("cfg:news_result", keys)
+        # It is NOT an entry gate: open_all/close_all must leave it alone.
+        self.assertNotIn("news_result", bot.GATE_KEYS)
+
+
 class WatchLevelsTest(unittest.TestCase):
     """The owner's levels (4138 / 4108) must be watchable, and a crossing of
     one must speak -- via the env extension and the existing watch."""
@@ -3094,7 +3221,8 @@ class CollapsibleMenuTest(unittest.TestCase):
         # with a typo and this fails.
         known = {
             "full", "report", "action", "day_analysis", "analysis", "recommend",
-            "map", "news", "news_prep", "scenarios", "levels", "open",
+            "map", "news", "news_prep", "news_result", "scenarios", "levels",
+            "open",
             "journal_menu", "daily",
             "who", "howto", "alerts", "help", "collapse", "menu", "settings",
             "menu_back", "menu_analysis", "menu_map", "menu_journal", "myread",
@@ -4039,6 +4167,10 @@ class DeskTickRestartTest(_DbCase):
              unittest.mock.patch.object(bot, "trend_watch", return_value=None), \
              unittest.mock.patch.object(bot, "entry_watch", return_value=None), \
              unittest.mock.patch.object(bot, "news_watch", return_value=None), \
+             unittest.mock.patch.object(bot, "news_prep_watch",
+                                        return_value=None), \
+             unittest.mock.patch.object(bot, "news_result_watch",
+                                        return_value=None), \
              unittest.mock.patch.object(bot, "trade_watch", return_value=None), \
              unittest.mock.patch.object(bot, "desk_is_silenced",
                                        return_value=True):
