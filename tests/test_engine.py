@@ -3697,8 +3697,11 @@ class AyzrButtonTest(unittest.TestCase):
         with unittest.mock.patch.object(bot, "_ayzr_plan_chats",
                                         return_value=[self.OWNER, self.ZEIN]), \
              unittest.mock.patch.object(bot, "AYZR_PLAN_PUSH", True), \
+             unittest.mock.patch.object(engine, "quote",
+                                        return_value={"mid": 3900.0}), \
              unittest.mock.patch.object(engine, "snapshot",
                                         return_value={"live": 3900.0,
+                                                      "a1h": 16.0,
                                                       "bias": "short"}), \
              unittest.mock.patch.object(engine, "plan_section",
                                         return_value="PLAN"), \
@@ -3707,21 +3710,22 @@ class AyzrButtonTest(unittest.TestCase):
             bot.ayzr_plan_loop(tg, stop)
         self.assertTrue(sent, "the loop sent nothing")
         self.assertEqual({c for c, _ in sent}, {self.OWNER, self.ZEIN})
-        # First cycle after boot is the bare PLAN -- never the full report, so a
+        # First send after boot is the bare PLAN -- never the full report, so a
         # restart cannot replay a report the owner already saw.
         self.assertEqual(sent[0][1], "PLAN")
 
     def test_the_full_report_follows_a_direction_flip(self):
-        # The plan rides the clock; the full "why" only rides a FLIP. Here the
-        # bias goes short -> long on the second cycle, so the second message is
-        # the whole report -- and only the second.
+        # The plan rides the price; the full "why" only rides a FLIP. The bias
+        # goes short -> long after price walks 10 pts (> 0.5 * ATR = 8), so the
+        # second message is the whole report -- and only the second.
         import threading
 
         import ayzr as engine
         sent: list[tuple[str, str]] = []
         stop = threading.Event()
-        reads = [{"live": 3900.0, "bias": "short"},
-                 {"live": 3905.0, "bias": "long"}]
+        quotes = [{"mid": 3900.0}] + [{"mid": 3910.0}] * 50
+        snaps = [{"live": 3900.0, "a1h": 16.0, "bias": "short"},
+                 {"live": 3910.0, "a1h": 16.0, "bias": "long"}]
 
         def fake_send(chat, text, markup=None):
             sent.append((str(chat), text))
@@ -3733,11 +3737,13 @@ class AyzrButtonTest(unittest.TestCase):
         with unittest.mock.patch.object(bot, "_ayzr_plan_chats",
                                         return_value=[self.OWNER]), \
              unittest.mock.patch.object(bot, "AYZR_PLAN_PUSH", True), \
-             unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_TREND", 0.001), \
-             unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_S", 0.0), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_MIN", 0), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_MOVE_ATR", 0.5), \
              unittest.mock.patch.object(bot, "AYZR_PLAN_STEP_S", 0.001), \
+             unittest.mock.patch.object(engine, "quote",
+                                        side_effect=quotes), \
              unittest.mock.patch.object(engine, "snapshot",
-                                        side_effect=reads), \
+                                        side_effect=snaps), \
              unittest.mock.patch.object(engine, "plan_section",
                                         return_value="PLAN"), \
              unittest.mock.patch.object(engine, "report",
@@ -3745,20 +3751,62 @@ class AyzrButtonTest(unittest.TestCase):
             bot.ayzr_plan_loop(tg, stop)
         self.assertEqual([t for _, t in sent][:2], ["PLAN", "REPORT"])
 
-    def test_a_strong_tape_shortens_the_wait_to_half_an_hour(self):
-        # The owner asked for every half hour "when the move is strong". The
-        # pure chooser reads snap["strong"] first, then range, then trend.
-        with unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_STRONG", 30), \
-             unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_TREND", 60), \
-             unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_RANGE", 120):
-            self.assertEqual(
-                bot._ayzr_plan_wait_min({"strong": True, "bias": "short"}), 30.0)
-            self.assertEqual(
-                bot._ayzr_plan_wait_min({"strong": True, "bias": None}), 30.0)
-            self.assertEqual(
-                bot._ayzr_plan_wait_min({"strong": False, "bias": "long"}), 60.0)
-            self.assertEqual(
-                bot._ayzr_plan_wait_min({"strong": False, "bias": None}), 120.0)
+    def test_a_flat_tape_does_not_re_send(self):
+        # The floor and the distance rule together: once sent, a tape that does
+        # not move must not be re-sent, however many ticks pass.
+        import threading
+
+        import ayzr as engine
+        sent: list[str] = []
+        stop = threading.Event()
+        ticks = {"n": 0}
+
+        def fake_quote():
+            ticks["n"] += 1
+            if ticks["n"] > 40:
+                stop.set()                   # give up after many flat ticks
+            return {"mid": 3900.0}           # never moves
+
+        def fake_send(chat, text, markup=None):
+            sent.append(text)
+
+        tg = unittest.mock.Mock()
+        tg.send.side_effect = fake_send
+        with unittest.mock.patch.object(bot, "_ayzr_plan_chats",
+                                        return_value=[self.OWNER]), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_PUSH", True), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_MIN", 30), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_MAX_MIN", 120), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_STEP_S", 0.001), \
+             unittest.mock.patch.object(engine, "quote", side_effect=fake_quote), \
+             unittest.mock.patch.object(engine, "snapshot",
+                                        return_value={"live": 3900.0,
+                                                      "a1h": 16.0,
+                                                      "bias": "short"}), \
+             unittest.mock.patch.object(engine, "plan_section",
+                                        return_value="PLAN"), \
+             unittest.mock.patch.object(engine, "report",
+                                        return_value="REPORT"):
+            bot.ayzr_plan_loop(tg, stop)
+        self.assertEqual(sent, ["PLAN"])     # exactly one, the first
+
+    def test_the_distance_rule_bounds_the_cadence(self):
+        # The cadence is DISTANCE, not ADX strength: a plan goes stale when
+        # PRICE moves. Pin the pure rule with no sleep.
+        with unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_MIN", 30), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_MAX_MIN", 120), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_MOVE_ATR", 0.5):
+            due = bot._ayzr_plan_due
+            # Below the floor: never, however far it moved.
+            self.assertFalse(due(10 * 60, 999.0, 16.0))
+            # Past the ceiling: always, however still it sat.
+            self.assertFalse(due(119 * 60, 0.1, 16.0))
+            self.assertTrue(due(120 * 60, 0.1, 16.0))
+            # Between: it is the DISTANCE that decides (0.5 * ATR = 8 pts here).
+            self.assertFalse(due(45 * 60, 7.9, 16.0))
+            self.assertTrue(due(45 * 60, 8.0, 16.0))
+            # No ATR yet (first cycle): never fire on distance, only the ceiling.
+            self.assertFalse(due(45 * 60, 999.0, None))
 
     def test_the_plan_push_is_off_when_the_switch_is_off(self):
         import threading

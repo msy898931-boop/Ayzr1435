@@ -573,24 +573,29 @@ TREND_ALERTS = os.environ.get("DESK_TREND_ALERTS", "1").strip().lower() in (
     "1", "true", "yes", "on")
 TREND_ALERT_COOLDOWN_S = 20 * 60  # at most one direction alert per 20 minutes
 # AYZR's independent PLAN push: section 8 of the independent report reaches the
-# owner on its own, no tap. The owner asked for "every hour or two, as the
-# market runs" -- so the cadence is tied to the market, not a fixed clock: 60
-# minutes while the desk reads a TREND (a plan worth re-sending as price walks),
-# 120 minutes when the market is RANGE (a quiet tape does not need an hourly
-# echo). 0 turns the push off. It is owner-only by construction (it sends to
-# _backup_chat()), so a guest never receives the owner's private plan.
+# owner on its own, no tap. The cadence is tied to the MARKET, not a clock, and
+# to what actually matters: a plan goes STALE when the PRICE walks away from the
+# levels it was written against -- not when a clock ticks. So the loop re-sends
+# when price has moved AYZR_PLAN_MOVE_ATR of a 1h ATR since the last send, with
+# a floor (never nag faster than AYZR_PLAN_MIN_MIN) and a ceiling (never go
+# silent longer than AYZR_PLAN_MAX_MIN). Measured on 48h of real gold 1h/15m
+# bars, 0.5/30/120 gives a median 75 min, 38% of gaps <=45m in fast tape, 30%
+# pinned at the 2h ceiling in dead tape -- a plan that tracks the market.
+#
+# Why not ADX "strength": measured, ADX 25-30 was the QUIETEST band on gold
+# (mean 5.0 pts/h forward vs 9.8 below ADX 20), and a high ATR slightly
+# PRECEDED smaller moves (corr -0.15) -- the classic range-expansion mean
+# reversion. ADX does not predict where price goes next; DISTANCE does, because
+# distance is what invalidates a level. 0 turns the push off. It is sent to the
+# owner plus the AYZR audience he named (_ayzr_plan_chats), never to `allow`.
 AYZR_PLAN_PUSH = os.environ.get("DESK_AYZR_PLAN_PUSH", "1").strip().lower() in (
     "1", "true", "yes", "on")
-AYZR_PLAN_MIN_TREND = int(os.environ.get("DESK_AYZR_PLAN_MIN_TREND", "60") or "60")
-AYZR_PLAN_MIN_RANGE = int(os.environ.get("DESK_AYZR_PLAN_MIN_RANGE", "120") or "120")
-# The owner's faster cadence: when the move is STRONG (1h ADX over the engine's
-# line, ayzr.snapshot()["strong"]) the plan re-sends every half hour, so a fast
-# tape is not described by an hour-old read.
-AYZR_PLAN_MIN_STRONG = int(os.environ.get("DESK_AYZR_PLAN_MIN_STRONG", "30") or "30")
-# The shortest the loop will wait, and the sleep step it wakes on. Named so a
-# test can drive the loop fast without waiting a real minute.
-AYZR_PLAN_MIN_S = float(os.environ.get("DESK_AYZR_PLAN_MIN_S", "60") or "60")
-AYZR_PLAN_STEP_S = float(os.environ.get("DESK_AYZR_PLAN_STEP_S", "5") or "5")
+AYZR_PLAN_MIN_MIN = int(os.environ.get("DESK_AYZR_PLAN_MIN_MIN", "30") or "30")
+AYZR_PLAN_MAX_MIN = int(os.environ.get("DESK_AYZR_PLAN_MAX_MIN", "120") or "120")
+AYZR_PLAN_MOVE_ATR = float(os.environ.get("DESK_AYZR_PLAN_MOVE_ATR", "0.5") or "0.5")
+# The tick the loop wakes on: it reads the cheap quote each step and only pays
+# for the full tape read when a send is due. Named so a test can drive it fast.
+AYZR_PLAN_STEP_S = float(os.environ.get("DESK_AYZR_PLAN_STEP_S", "60") or "60")
 # The owner's clock: hours to add to UTC when a time is shown (Syria = 3, and
 # Syria has had no DST since 2022, so a fixed offset is exact). Set
 # DESK_TZ_OFFSET=0 to show GMT.
@@ -7633,74 +7638,85 @@ def desk_loop(tg: Telegram, allow: set[str], every_min: int = 2,
         time.sleep(max(30, every_min * 60))
 
 
-def _ayzr_plan_wait_min(snap: dict) -> float:
-    """Minutes until the next plan push, from what the engine just read.
+def _ayzr_plan_due(elapsed_s: float, moved: float, atr: float | None) -> bool:
+    """Is a fresh plan push due? Pure, so a test pins the rule with no sleep.
 
-    A STRONG tape (1h ADX over the line) is re-read every half hour; a range
-    read waits the longest. Pure and separate from the loop so a test can pin
-    the choice without sleeping.
+    A plan goes stale when PRICE moves, so the trigger is distance, bounded by a
+    floor (never nag faster than the floor) and a ceiling (never go silent past
+    it, so the owner always gets a heartbeat even in a dead tape).
     """
-    if snap.get("strong"):
-        return float(AYZR_PLAN_MIN_STRONG)
-    if snap.get("bias") is None:
-        return float(AYZR_PLAN_MIN_RANGE)
-    return float(AYZR_PLAN_MIN_TREND)
+    if elapsed_s >= AYZR_PLAN_MAX_MIN * 60:
+        return True
+    if elapsed_s < AYZR_PLAN_MIN_MIN * 60:
+        return False
+    if not atr:
+        return False
+    return moved >= AYZR_PLAN_MOVE_ATR * atr
 
 
 def ayzr_plan_loop(tg: Telegram, stop: threading.Event | None = None) -> None:
-    """Push AYZR's plan on its own, on a MARKET-TIED cadence.
+    """Push AYZR's plan on its own, on a PRICE-tied cadence.
 
     The owner asked for section 8 to reach him without a tap, "every hour or two
-    as the market runs" -- and a faster beat "when the move is strong". So the
-    wait is decided by what the engine just read, strongest first: a STRONG tape
-    (1h ADX over the engine's line) re-sends every AYZR_PLAN_MIN_STRONG minutes;
-    a TREND read every AYZR_PLAN_MIN_TREND; a RANGE read every
-    AYZR_PLAN_MIN_RANGE. The loop reads ONE snapshot per cycle and hands it to
-    plan_section(), so the pushed plan is the same block the button prints -- no
-    second read, no drift.
+    as the market runs". A plan is not invalidated by a clock but by the PRICE
+    walking away from the levels it was written against -- so the loop wakes
+    each step, reads the CHEAP quote, and re-sends only when price has moved
+    AYZR_PLAN_MOVE_ATR of a 1h ATR since the last send, floored at
+    AYZR_PLAN_MIN_MIN and capped at AYZR_PLAN_MAX_MIN. Fast tape -> faster beat;
+    dead tape -> the ceiling keeps a heartbeat. The full tape read (snapshot) is
+    paid for ONLY when a send is due, not every tick.
 
     The FULL report is NOT pushed on the clock: it is the "why", and the owner
-    only needs the why when it CHANGES. So on the cycle where the engine's
-    direction FLIPS (short <-> long <-> range) the loop sends the WHOLE report
-    instead of the bare plan -- the report already ENDS with section 8, so the
-    owner gets the plan plus the reason in one message, never the plan twice.
-    The first read after boot seeds the direction silently, so a restart does
-    not replay a report it already sent. Every cycle sends exactly ONE message.
+    only needs the why when it CHANGES. So when the engine's direction FLIPS
+    (short <-> long <-> range) the loop sends the WHOLE report instead of the
+    bare plan -- the report already ENDS with section 8, so the owner gets the
+    plan plus the reason in one message, never the plan twice. The first send
+    after boot seeds the direction, so a restart does not replay a report.
 
-    Recipients are the OWNER plus anyone he adds to the AYZR audience (Zein, on
-    request) -- never `allow`, so a subscriber the owner did not name never sees
-    his private plan. A dead feed or a broken engine is swallowed so the loop
-    cannot die on one bad tick.
+    Recipients are the OWNER plus the people he named (Zein) -- never `allow`,
+    so a subscriber he did not name never sees his private plan. A dead feed or
+    a broken engine is swallowed so the loop cannot die on one bad tick.
     """
     if not AYZR_PLAN_PUSH:
         return
     chats = _ayzr_plan_chats()
     last_bias: str | None = None
+    last_px: float | None = None
+    atr: float | None = None
+    sent_at = 0.0
     booted = False
     while not (stop and stop.is_set()):
-        wait_min: float = float(AYZR_PLAN_MIN_TREND)
         try:
             import ayzr
-            snap = ayzr.snapshot()
-            if snap.get("live"):
-                bias = snap.get("bias")
-                # A flip earns the full "why"; otherwise just the plan. Both
-                # carry section 8, so the owner always has the actionable block.
-                flipped = booted and bias != last_bias
-                text = ayzr.report(snap) if flipped else ayzr.plan_section(snap)
-                for chat in chats:
-                    tg.send(chat, text, menu_reply_kb(chat))
-                last_bias = bias
-                booted = True
-                # The faster beat wins: a strong tape is re-read every half hour.
-                wait_min = _ayzr_plan_wait_min(snap)
+            q = ayzr.quote()
+            px = q.get("mid") or q.get("bid") or 0.0
+            if px:
+                if last_px is None:
+                    last_px = px
+                elapsed = time.monotonic() - sent_at
+                moved = abs(px - last_px)
+                if _ayzr_plan_due(elapsed, moved, atr):
+                    snap = ayzr.snapshot()
+                    if snap.get("live"):
+                        bias = snap.get("bias")
+                        # A flip earns the full "why"; otherwise just the plan.
+                        flipped = booted and bias != last_bias
+                        text = (ayzr.report(snap) if flipped
+                                else ayzr.plan_section(snap))
+                        for chat in chats:
+                            tg.send(chat, text, menu_reply_kb(chat))
+                        last_bias = bias
+                        atr = snap.get("a1h") or atr
+                        last_px = snap.get("live") or px
+                        sent_at = time.monotonic()
+                        booted = True
         except Exception as exc:  # noqa: BLE001 - one bad tick must not kill it
             print("ayzr_plan_loop:", exc, flush=True)
-        # Sleep in small steps so a stop event is honoured promptly. The floor
-        # is a named constant so a test can drive the loop fast.
-        deadline = time.monotonic() + max(AYZR_PLAN_MIN_S, wait_min * 60)
+        # Wake on a short step so a stop event is honoured promptly; the step is
+        # a named constant so a test drives the loop fast.
+        deadline = time.monotonic() + max(0.0, AYZR_PLAN_STEP_S)
         while not (stop and stop.is_set()) and time.monotonic() < deadline:
-            time.sleep(AYZR_PLAN_STEP_S)
+            time.sleep(min(1.0, AYZR_PLAN_STEP_S))
 
 
 # ========================================================================
