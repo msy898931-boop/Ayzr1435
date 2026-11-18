@@ -3,6 +3,21 @@
 Three projects live in this workspace. This file is the durable index; the full
 detail for each is in the archive beside it.
 
+## MarketDesk — news RESULT alert (2026-11-17)
+
+- ⭐ **The calendar always carried the print; `_cal_parse` dropped `actual`.**
+  Kept it. `news_result_watch` now speaks ONCE when a High-impact print LANDS
+  (within `CAL_RESULT_WINDOW_MIN`=30 of its time, seeded silently on boot, keyed
+  `result:<title>:<when>`), via `card_news_result`: actual vs forecast vs
+  previous, the surprise sign, `_cal_lean`, and the price move from the release
+  bar (`_price_since`). Panel switch `news_result` (env `DESK_CAL_RESULT`).
+- ⚠️ **Adding a `*_watch` to `desk_tick` breaks tests that mock the other
+  watches by name** — add it to `DeskTickRestartTest._tick`'s patch list, and a
+  new menu button to `test_every_menu_action_is_wired`'s own `known` set.
+- ⚠️ **`git push` did not auto-deploy here; POST `$RENDER_DEPLOY_HOOK`.** Verify
+  with `/health` → `commit`. Shipped `b975ba3`, 361 tests green, baselines
+  ruff 41/5, mypy 3.
+
 | project | where | detail |
 |---|---|---|
 | **GoldBot** | `src/goldbot/`, bot `@Xauusd1435_bot` | `GOLDBOT.md` |
