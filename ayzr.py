@@ -41,6 +41,11 @@ USD_PER_POINT = 1.0
 RISK_USD = 10.0          # the desk's risk window centre ($8-12)
 RISK_MIN, RISK_MAX = 8.0, 12.0
 RR_TARGET = 2.0
+# The line between a trend and chop, on the 1h ADX. The owner asked the plan to
+# update every 30 minutes "when the move is strong" -- this is what "strong"
+# means, measured, not felt: a trending tape (ADX over its own trend line) is
+# worth a faster cadence than a quiet one.
+STRONG_ADX = float(os.environ.get("AYZR_STRONG_ADX", "25") or "25")
 
 
 def num(x: float | None) -> str:
@@ -634,12 +639,17 @@ def snapshot() -> dict:
     up = sum(1 for f in fv.values() if f.get("trend") == 1)
     dn = sum(1 for f in fv.values() if f.get("trend") == -1)
     bias = "short" if dn > up else ("long" if up > dn else None)
+    # "Strong move" is MEASURED, not felt: the 1h ADX above its trend line says
+    # the tape is moving, not chopping. The plan push reads this to choose a
+    # faster cadence (see bot.ayzr_plan_loop).
+    adx1h = fv["1h"].get("adx")
+    strong = bool(adx1h and adx1h >= STRONG_ADX)
     return {"q": q, "live": live, "raw": raw, "fv": fv, "b1h": b1h, "a1h": a1h,
             "day_hi": day_hi, "day_lo": day_lo, "st": st, "tol": tol,
             "res": res, "sup": sup, "ups": ups, "dns": dns, "dem": dem,
             "sup_z": sup_z, "bull_g": bull_g, "bear_g": bear_g, "liq": liq,
-            "cnd": candle_read(b1h), "up": up, "dn": dn,
-            "neu": len(FRAMES) - up - dn, "bias": bias}
+            "cnd": candle_read(b1h), "up": up, "dn": dn, "strong": strong,
+            "adx1h": adx1h, "neu": len(FRAMES) - up - dn, "bias": bias}
 
 
 def plan_section(snap: dict | None = None) -> str:

@@ -3582,6 +3582,7 @@ class MyReadCardTest(unittest.TestCase):
 
 class AyzrButtonTest(unittest.TestCase):
     OWNER, GUEST = "933571066", "555"
+    ZEIN = "997487756"          # @ZeinHasan992, named by the owner for the engine
 
     def _cb(self, chat, data, mid=99):
         return {"callback_query": {"id": "c1", "data": data,
@@ -3649,9 +3650,38 @@ class AyzrButtonTest(unittest.TestCase):
     def test_the_reply_button_text_routes_to_ayzr(self):
         self.assertEqual(bot.action_for(bot.AYZR_BUTTON_TEXT), "ayzr")
 
-    def test_the_plan_push_sends_to_the_owner_alone(self):
-        # The scheduled plan is the owner's private read: the loop must send to
-        # _backup_chat() and never to `allow`, so a guest never receives it.
+    def test_the_named_audience_gets_the_engine_but_not_the_panel(self):
+        # The owner named Zein for the ENGINE only. He must get the button, the
+        # grid entry and the card -- but NOT the control panel, the subscriber
+        # roll or the owner's private read. Two predicates, two scopes.
+        self.assertTrue(bot.may_use_ayzr(self.ZEIN))
+        self.assertFalse(bot.is_owner(self.ZEIN))
+        grid = [a for r in bot._menu_rows(self.ZEIN) for _, a in r]
+        self.assertIn("ayzr", grid)
+        for owner_only in ("settings", "who", "myread"):
+            self.assertNotIn(owner_only, grid)
+        row = bot.menu_reply_kb(self.ZEIN)["keyboard"][0]
+        self.assertEqual([b["text"] for b in row],
+                         [bot.MENU_BUTTON_TEXT, bot.AYZR_BUTTON_TEXT])
+
+    def test_the_named_audience_can_open_the_engine(self):
+        tg = unittest.mock.Mock()
+        with unittest.mock.patch.object(bot, "card_ayzr", return_value="AYZR!"):
+            bot.handle(tg, self._cb(self.ZEIN, "ayzr"), {self.OWNER, self.ZEIN})
+        sent = " ".join(str(c.args[1]) for c in tg.send.call_args_list)
+        self.assertIn("AYZR!", sent)
+
+    def test_an_unnamed_subscriber_is_still_refused(self):
+        self.assertFalse(bot.may_use_ayzr(self.GUEST))
+        grid = [a for r in bot._menu_rows(self.GUEST) for _, a in r]
+        self.assertNotIn("ayzr", grid)
+        row = bot.menu_reply_kb(self.GUEST)["keyboard"][0]
+        self.assertNotIn(bot.AYZR_BUTTON_TEXT, [b["text"] for b in row])
+
+    def test_the_plan_push_sends_to_the_named_audience_alone(self):
+        # The scheduled plan is the owner's private read, shared only with the
+        # people he named: the loop sends to _ayzr_plan_chats() and never to
+        # `allow`, so a subscriber he did not name never receives it.
         import threading
 
         import ayzr as engine
@@ -3664,8 +3694,8 @@ class AyzrButtonTest(unittest.TestCase):
 
         tg = unittest.mock.Mock()
         tg.send.side_effect = fake_send
-        with unittest.mock.patch.object(bot, "_backup_chat",
-                                        return_value=self.OWNER), \
+        with unittest.mock.patch.object(bot, "_ayzr_plan_chats",
+                                        return_value=[self.OWNER, self.ZEIN]), \
              unittest.mock.patch.object(bot, "AYZR_PLAN_PUSH", True), \
              unittest.mock.patch.object(engine, "snapshot",
                                         return_value={"live": 3900.0,
@@ -3676,7 +3706,7 @@ class AyzrButtonTest(unittest.TestCase):
                                         return_value="REPORT"):
             bot.ayzr_plan_loop(tg, stop)
         self.assertTrue(sent, "the loop sent nothing")
-        self.assertEqual({c for c, _ in sent}, {self.OWNER})
+        self.assertEqual({c for c, _ in sent}, {self.OWNER, self.ZEIN})
         # First cycle after boot is the bare PLAN -- never the full report, so a
         # restart cannot replay a report the owner already saw.
         self.assertEqual(sent[0][1], "PLAN")
@@ -3700,8 +3730,8 @@ class AyzrButtonTest(unittest.TestCase):
 
         tg = unittest.mock.Mock()
         tg.send.side_effect = fake_send
-        with unittest.mock.patch.object(bot, "_backup_chat",
-                                        return_value=self.OWNER), \
+        with unittest.mock.patch.object(bot, "_ayzr_plan_chats",
+                                        return_value=[self.OWNER]), \
              unittest.mock.patch.object(bot, "AYZR_PLAN_PUSH", True), \
              unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_TREND", 0.001), \
              unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_S", 0.0), \
@@ -3714,6 +3744,21 @@ class AyzrButtonTest(unittest.TestCase):
                                         return_value="REPORT"):
             bot.ayzr_plan_loop(tg, stop)
         self.assertEqual([t for _, t in sent][:2], ["PLAN", "REPORT"])
+
+    def test_a_strong_tape_shortens_the_wait_to_half_an_hour(self):
+        # The owner asked for every half hour "when the move is strong". The
+        # pure chooser reads snap["strong"] first, then range, then trend.
+        with unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_STRONG", 30), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_TREND", 60), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_RANGE", 120):
+            self.assertEqual(
+                bot._ayzr_plan_wait_min({"strong": True, "bias": "short"}), 30.0)
+            self.assertEqual(
+                bot._ayzr_plan_wait_min({"strong": True, "bias": None}), 30.0)
+            self.assertEqual(
+                bot._ayzr_plan_wait_min({"strong": False, "bias": "long"}), 60.0)
+            self.assertEqual(
+                bot._ayzr_plan_wait_min({"strong": False, "bias": None}), 120.0)
 
     def test_the_plan_push_is_off_when_the_switch_is_off(self):
         import threading

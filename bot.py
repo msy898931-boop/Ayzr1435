@@ -75,6 +75,14 @@ DAILY_PATH = DATA / "daily.json"
 # redeploy.
 SEED_CHATS = ["933571066", "8545528489"]
 
+# Who the owner lets see the AYZR engine and receive its scheduled plan. It is
+# the OWNER plus anyone he names -- NOT `allow`: the owner asked to give this to
+# one person (Zein, @ZeinHasan992) without opening it to every subscriber, so
+# this stays a separate, explicit list. DESK_AYZR_CHATS adds ids (comma-joined).
+AYZR_EXTRA_CHATS = [c.strip() for c in
+                    os.environ.get("DESK_AYZR_CHATS", "997487756").split(",")
+                    if c.strip()]
+
 # ---- the desk's plan, sized to the owner's account ----------------------
 # The owner trades gold with $200 and 0.01 lots. On XAUUSD 1 lot is 100 oz, so
 # 0.01 lot moves $1 per $1 of gold -- a stop of 9 points is $9 of risk. Every
@@ -414,6 +422,17 @@ def is_owner(chat: str) -> bool:
     return str(chat) in (SEED_CHATS[0], BACKUP_CHAT)
 
 
+def may_use_ayzr(chat: str) -> bool:
+    """Who may open the AYZR engine and hold its standing button: the owner,
+    plus the people he named (AYZR_EXTRA_CHATS).
+
+    Deliberately SEPARATE from is_owner: the owner asked to share the ENGINE
+    with one friend, not the control panel, the subscriber roll or his private
+    reads. So this opens `ayzr` only; everything else stays is_owner.
+    """
+    return is_owner(chat) or str(chat) in AYZR_EXTRA_CHATS
+
+
 apply_settings(load_settings())
 
 
@@ -564,6 +583,10 @@ AYZR_PLAN_PUSH = os.environ.get("DESK_AYZR_PLAN_PUSH", "1").strip().lower() in (
     "1", "true", "yes", "on")
 AYZR_PLAN_MIN_TREND = int(os.environ.get("DESK_AYZR_PLAN_MIN_TREND", "60") or "60")
 AYZR_PLAN_MIN_RANGE = int(os.environ.get("DESK_AYZR_PLAN_MIN_RANGE", "120") or "120")
+# The owner's faster cadence: when the move is STRONG (1h ADX over the engine's
+# line, ayzr.snapshot()["strong"]) the plan re-sends every half hour, so a fast
+# tape is not described by an hour-old read.
+AYZR_PLAN_MIN_STRONG = int(os.environ.get("DESK_AYZR_PLAN_MIN_STRONG", "30") or "30")
 # The shortest the loop will wait, and the sleep step it wakes on. Named so a
 # test can drive the loop fast without waiting a real minute.
 AYZR_PLAN_MIN_S = float(os.environ.get("DESK_AYZR_PLAN_MIN_S", "60") or "60")
@@ -623,20 +646,34 @@ SUBMENUS = {
 }
 
 # Buttons only the OWNER sees in the top grid: his private AYZR-team read, the
-# control panel and the book of who is on the bot. `_menu_rows` drops them for a
-# guest, so a subscriber never sees the desk's switches, the subscriber roll, or
-# the owner's own read.
-GUEST_HIDDEN_ACTIONS = {"settings", "who", "myread", "ayzr"}
+# control panel and the book of who is on the bot. `ayzr` is separate -- it goes
+# to the owner AND the AYZR audience he named (see may_use_ayzr / _menu_rows).
+GUEST_HIDDEN_ACTIONS = {"settings", "who", "myread"}
 
 
 def _menu_rows(chat: str | None = None) -> list:
     """The top grid a chat may see. Default (no chat) keeps every button, so
-    `--menu` and tests that build the grid without a chat are unchanged."""
+    `--menu` and tests that build the grid without a chat are unchanged.
+
+    The owner-only switches (`settings`, `who`, `myread`) are dropped for anyone
+    but the owner; `ayzr` is dropped for anyone but the owner and the AYZR
+    audience he named (may_use_ayzr).
+    """
     owner = chat is None or is_owner(chat)
+    ayzr_ok = chat is None or may_use_ayzr(chat)
     rows = []
     for row in MENU:
-        kept = [pair for pair in row
-                if owner or pair[1] not in GUEST_HIDDEN_ACTIONS]
+        kept = []
+        for pair in row:
+            act = pair[1]
+            if act == "ayzr":
+                if ayzr_ok:
+                    kept.append(pair)
+            elif act in GUEST_HIDDEN_ACTIONS:
+                if owner:
+                    kept.append(pair)
+            else:
+                kept.append(pair)
         if kept:
             rows.append(kept)
     return rows
@@ -648,22 +685,23 @@ MENU_BUTTON_TEXT = "☰ القائمة"
 # AYZR's independent engine gets its OWN standing button, to the RIGHT of the
 # menu button. It is a reply button for the same reason the menu is one: the
 # owner asked to reach the independent plan without opening the grid first. The
-# button is OWNER-ONLY -- a reply keyboard is per chat, so a guest's keyboard is
-# built without it (menu_reply_kb takes the chat), and handle() refuses the tap
-# by word as the second lock, exactly like the inline button.
+# button is for the OWNER and the AYZR audience he named -- a reply keyboard is
+# per chat, so `menu_reply_kb(chat)` builds it only for them (is_owner(chat)),
+# and handle() refuses the tap by word as the second lock, like the inline one.
 AYZR_BUTTON_TEXT = "🏛️ محرك AYZR"
 
 
 def menu_reply_kb(chat: str | None = None) -> dict:
     """The standing reply keyboard, per chat.
 
-    Only the OWNER's chat gains the AYZR button; a guest's keyboard -- and an
-    unknown chat (None, from `--menu` or a test) -- keeps just the menu button.
-    Least privilege: the button that opens the owner's private engine is never
-    built for a chat we cannot prove is his.
+    Only the OWNER and the AYZR audience he named gain the AYZR button
+    (is_owner); anyone else's keyboard -- and an unknown chat (None, from
+    `--menu` or a test) -- keeps just the menu button. Least privilege: the
+    button that opens the private engine is never built for a chat we cannot
+    prove may see it.
     """
     row = [{"text": MENU_BUTTON_TEXT}]
-    if chat is not None and is_owner(chat):
+    if chat is not None and may_use_ayzr(chat):
         row.append({"text": AYZR_BUTTON_TEXT})
     return {"keyboard": [row], "resize_keyboard": True, "is_persistent": True}
 
@@ -6270,6 +6308,21 @@ def _backup_chat() -> str:
     return BACKUP_CHAT or SEED_CHATS[0]
 
 
+def _ayzr_plan_chats() -> list[str]:
+    """Who receives the AYZR plan and holds the AYZR button: the owner, plus the
+    people he explicitly named (AYZR_EXTRA_CHATS).
+
+    Deliberately NOT `load_allow()`: the owner asked to give the engine to one
+    named friend without opening it to every subscriber. The owner is always
+    first, and the list is de-duplicated so an id named twice is not sent twice.
+    """
+    out: list[str] = []
+    for c in (_backup_chat(), *AYZR_EXTRA_CHATS):
+        if c and c not in out:
+            out.append(str(c))
+    return out
+
+
 def _desk_chats(allow: set[str]) -> list[str]:
     """Who hears the DESK's own messages: a trade opened, closed, refused, or
     watched; the day's record and the account.
@@ -6514,9 +6567,10 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
         out = "⛔ هالتحليل للمالك بس."
         tg.send(chat, out, card_markup("menu", chat))
         return "myread"
-    if action == "ayzr" and not is_owner(chat):
-        # AYZR's independent engine is the owner's own reader too. Same two
-        # locks as `myread`: hidden from a guest's grid, and refused here.
+    if action == "ayzr" and not may_use_ayzr(chat):
+        # AYZR's independent engine goes to the owner and the audience he named
+        # (may_use_ayzr covers both). Same two locks as `myread`: hidden from
+        # anyone else's grid, and refused here.
         out = "⛔ محرك AYZR للمالك بس."
         tg.send(chat, out, card_markup("menu", chat))
         return "ayzr"
@@ -7579,16 +7633,31 @@ def desk_loop(tg: Telegram, allow: set[str], every_min: int = 2,
         time.sleep(max(30, every_min * 60))
 
 
+def _ayzr_plan_wait_min(snap: dict) -> float:
+    """Minutes until the next plan push, from what the engine just read.
+
+    A STRONG tape (1h ADX over the line) is re-read every half hour; a range
+    read waits the longest. Pure and separate from the loop so a test can pin
+    the choice without sleeping.
+    """
+    if snap.get("strong"):
+        return float(AYZR_PLAN_MIN_STRONG)
+    if snap.get("bias") is None:
+        return float(AYZR_PLAN_MIN_RANGE)
+    return float(AYZR_PLAN_MIN_TREND)
+
+
 def ayzr_plan_loop(tg: Telegram, stop: threading.Event | None = None) -> None:
     """Push AYZR's plan on its own, on a MARKET-TIED cadence.
 
     The owner asked for section 8 to reach him without a tap, "every hour or two
-    as the market runs". So the wait is decided by what the engine just read:
-    a TREND read re-sends every AYZR_PLAN_MIN_TREND minutes (the plan is worth
-    re-hearing as price walks toward a level); a RANGE read waits
-    AYZR_PLAN_MIN_RANGE (a quiet tape does not need an hourly echo). The loop
-    reads ONE snapshot per cycle and hands it to plan_section(), so the pushed
-    plan is the same block the button prints -- no second read, no drift.
+    as the market runs" -- and a faster beat "when the move is strong". So the
+    wait is decided by what the engine just read, strongest first: a STRONG tape
+    (1h ADX over the engine's line) re-sends every AYZR_PLAN_MIN_STRONG minutes;
+    a TREND read every AYZR_PLAN_MIN_TREND; a RANGE read every
+    AYZR_PLAN_MIN_RANGE. The loop reads ONE snapshot per cycle and hands it to
+    plan_section(), so the pushed plan is the same block the button prints -- no
+    second read, no drift.
 
     The FULL report is NOT pushed on the clock: it is the "why", and the owner
     only needs the why when it CHANGES. So on the cycle where the engine's
@@ -7598,17 +7667,18 @@ def ayzr_plan_loop(tg: Telegram, stop: threading.Event | None = None) -> None:
     The first read after boot seeds the direction silently, so a restart does
     not replay a report it already sent. Every cycle sends exactly ONE message.
 
-    Owner-only by construction: it sends to _backup_chat() (the owner), never to
-    `allow`, so a guest never sees the owner's private plan. A dead feed or a
-    broken engine is swallowed so the loop cannot die on one bad tick.
+    Recipients are the OWNER plus anyone he adds to the AYZR audience (Zein, on
+    request) -- never `allow`, so a subscriber the owner did not name never sees
+    his private plan. A dead feed or a broken engine is swallowed so the loop
+    cannot die on one bad tick.
     """
     if not AYZR_PLAN_PUSH:
         return
-    chat = _backup_chat()
+    chats = _ayzr_plan_chats()
     last_bias: str | None = None
     booted = False
     while not (stop and stop.is_set()):
-        wait_min = AYZR_PLAN_MIN_TREND
+        wait_min: float = float(AYZR_PLAN_MIN_TREND)
         try:
             import ayzr
             snap = ayzr.snapshot()
@@ -7618,11 +7688,12 @@ def ayzr_plan_loop(tg: Telegram, stop: threading.Event | None = None) -> None:
                 # carry section 8, so the owner always has the actionable block.
                 flipped = booted and bias != last_bias
                 text = ayzr.report(snap) if flipped else ayzr.plan_section(snap)
-                tg.send(chat, text, menu_reply_kb(chat))
+                for chat in chats:
+                    tg.send(chat, text, menu_reply_kb(chat))
                 last_bias = bias
                 booted = True
-                wait_min = (AYZR_PLAN_MIN_RANGE if bias is None
-                            else AYZR_PLAN_MIN_TREND)
+                # The faster beat wins: a strong tape is re-read every half hour.
+                wait_min = _ayzr_plan_wait_min(snap)
         except Exception as exc:  # noqa: BLE001 - one bad tick must not kill it
             print("ayzr_plan_loop:", exc, flush=True)
         # Sleep in small steps so a stop event is honoured promptly. The floor
