@@ -27,6 +27,11 @@ The corollaries that keep recurring:
 - **A check that is also an intervention cannot observe** (a probe that wakes the
   thing it measures).
 - **Look-ahead produces a beautiful, significant, wrong answer.**
+- **An indicator chosen for "strength"/"signal" is a hypothesis about the
+  FUTURE — grade it on forward moves before wiring it to money.** (ADX ≥ 25 as a
+  "strong tape" proxy was not just weak but INVERTED on gold: the 25-30 band was
+  the quietest, and high ATR preceded *smaller* moves, r = -0.15. The honest
+  trigger was price DISTANCE from the levels, not any oscillator level.)
 - **Verify on every surface the value reaches**, not only the case that motivated
   the fix. Run mypy — it finds bugs tests miss.
 
