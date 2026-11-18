@@ -2939,7 +2939,7 @@ class CollapsibleMenuTest(unittest.TestCase):
             "map", "news", "news_prep", "scenarios", "levels", "open",
             "journal_menu", "daily",
             "who", "howto", "alerts", "help", "collapse", "menu", "settings",
-            "menu_back", "menu_analysis", "menu_map", "menu_journal",
+            "menu_back", "menu_analysis", "menu_map", "menu_journal", "myread",
         }
         pairs = [p for row in bot.MENU for p in row]
         for rows in bot.SUBMENUS.values():
@@ -3494,10 +3494,10 @@ class OwnerPanelTest(unittest.TestCase):
 
 
 class MyReadCardTest(unittest.TestCase):
-    """🔒 «تحليلي الخاص» is the OWNER's private card, reached from a button that
-    rides UNDER his analysis message -- NOT a bot-menu entry. He asked for a
-    button only he sees; a guest must never reach the card by any path, and the
-    button must never appear in the shared menu grid.
+    """🔒 «تحليل فريق AYZR» is the OWNER's private read: OUR own professional
+    note on the tape, not the bot's card. He asked for it to sit in the menu as
+    the FIRST button, visible to no one but him. A guest must never see the row
+    nor reach the card by any path -- tapped callback or typed word.
     """
 
     OWNER = bot.SEED_CHATS[0]
@@ -3511,32 +3511,15 @@ class MyReadCardTest(unittest.TestCase):
     def _msg(self, chat, text):
         return {"message": {"chat": {"id": chat}, "text": text}}
 
-    def test_the_button_rides_under_the_owners_analysis(self):
-        k = bot.card_markup("analysis", self.OWNER)
-        self.assertIn("inline_keyboard", k)
-        flat = [b for r in k["inline_keyboard"] for b in r]
-        self.assertEqual(flat, [{"text": "🔒 تحليلي الخاص", "callback_data": "myread"}])
+    def test_it_is_the_first_menu_button(self):
+        first = bot.MENU[0][0]
+        self.assertEqual(first, ("🔒 تحليل فريق AYZR", "myread"))
 
-    def test_the_button_is_on_every_analysis_card(self):
-        for action in ("analysis", "full", "report", "day_analysis"):
-            k = bot.card_markup(action, self.OWNER)
-            self.assertIn("inline_keyboard", k,
-                          f"{action} must carry the button")
-
-    def test_a_guests_analysis_carries_no_button(self):
-        # The guest's card must fall back to the standing menu reply keyboard,
-        # not the inline private-read button.
-        k = bot.card_markup("analysis", self.GUEST)
-        self.assertNotIn("inline_keyboard", k)
-        self.assertIn("keyboard", k)
-
-    def test_the_button_is_not_a_menu_entry(self):
-        # It is a button on a message, never a row in the shared grid.
-        pairs = [p for row in bot.MENU for p in row]
-        self.assertNotIn(("🔒 تحليلي الخاص", "myread"), pairs)
-        for rows in bot.SUBMENUS.values():
-            for row in rows:
-                self.assertNotIn("myread", [a for _t, a in row])
+    def test_the_owner_sees_it_and_a_guest_does_not(self):
+        owner = [a for r in bot._menu_rows(self.OWNER) for _, a in r]
+        guest = [a for r in bot._menu_rows(self.GUEST) for _, a in r]
+        self.assertIn("myread", owner)
+        self.assertNotIn("myread", guest)
 
     def test_a_guest_tap_is_refused(self):
         tg = unittest.mock.Mock()
@@ -3546,22 +3529,24 @@ class MyReadCardTest(unittest.TestCase):
 
     def test_a_guest_typed_word_is_refused(self):
         tg = unittest.mock.Mock()
-        bot.handle(tg, self._msg(self.GUEST, "تحليلي الخاص"),
+        bot.handle(tg, self._msg(self.GUEST, "تحليل فريق AYZR"),
                    {self.OWNER, self.GUEST})
         sent = " ".join(str(c.args[1]) for c in tg.send.call_args_list)
         self.assertIn("للمالك", sent)
 
     def test_the_text_triggers_route_to_it(self):
-        for t in ("تحليلي الخاص", "الخاص", "/myread", "myread"):
+        for t in ("تحليل فريق AYZR", "فريق AYZR", "تحليلي الخاص", "الخاص",
+                  "/myread", "myread"):
             self.assertEqual(bot.action_for(t), "myread")
 
     def test_the_card_renders_the_sections_on_a_live_tape(self):
         with FakeFeed(mid=3900.0, closes={tf: [3900, 3901, 3900, 3901] * 20
                                           for tf in bot.FRAMES}):
             out = bot.card_myread()
-        for sec in ("الإطار الكبير", "الإطار الصغير", "الزخم", "الحكم"):
+        for sec in ("الخلاصة السريعة", "الصورة الكبيرة", "الصورة القريبة",
+                    "البنية", "الزخم", "خطة فريق AYZR"):
             self.assertIn(sec, out)
-        self.assertIn("تحليلي الخاص", out)
+        self.assertIn("تحليل فريق AYZR", out)
 
     def test_the_card_is_a_view_of_the_one_report_engine(self):
         # Every frame RSI the card prints must be the report's own number, so the

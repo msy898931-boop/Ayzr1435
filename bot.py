@@ -569,6 +569,7 @@ NEWS_ITEMS: list[tuple[str, str]] = [
 ]
 
 MENU = [
+    [("🔒 تحليل فريق AYZR", "myread")],
     [("🧠 قراءتي للسوق", "full")],
     [("🥇 التحليل والتوصية", "menu_analysis")],
     [("🗺️ الخرائط والأخبار", "menu_map")],
@@ -604,16 +605,11 @@ SUBMENUS = {
     ],
 }
 
-# Buttons only the OWNER sees in the top grid: the control panel and the book
-# of who is on the bot. `_menu_rows` drops them for a guest, so a subscriber
-# never sees the desk's switches or the subscriber roll.
-GUEST_HIDDEN_ACTIONS = {"settings", "who"}
-
-# The analysis cards that carry the owner's private-read button UNDER the text.
-# These are NOT menu entries: the button rides the analysis message the owner
-# asked for, so it appears with the analysis itself and nowhere else. A "what to
-# do" card (action/recommend) is not an analysis, so it carries no button.
-OWNER_ANALYSIS_ACTIONS = {"analysis", "full", "report", "day_analysis"}
+# Buttons only the OWNER sees in the top grid: his private AYZR-team read, the
+# control panel and the book of who is on the bot. `_menu_rows` drops them for a
+# guest, so a subscriber never sees the desk's switches, the subscriber roll, or
+# the owner's own read.
+GUEST_HIDDEN_ACTIONS = {"settings", "who", "myread"}
 
 
 def _menu_rows(chat: str | None = None) -> list:
@@ -651,6 +647,7 @@ TEXT_ACTIONS = {
     "كامل": "full", "شامل": "full", "كل شي": "full", "التحليل الكامل": "full",
     "تفصيلي": "report", "التحليل التفصيلي": "report", "تقرير": "report",
     "التقرير": "report", "تقرير كامل": "report", "تحليلي": "report",
+    "تحليل فريق AYZR": "myread", "فريق AYZR": "myread", "ayzr": "myread",
     "تحليلي الخاص": "myread", "الخاص": "myread", "/myread": "myread",
     "myread": "myread",
     "سيناريوهات": "scenarios", "مستويات": "levels", "مفتوحة": "open",
@@ -908,13 +905,6 @@ def keyboard_for(action: str, chat: str | None = None) -> dict | None:
         return settings_keyboard()
     if action == "open":
         return close_keyboard()      # one close button per open trade
-    # The owner's analysis cards carry ONE inline button under the text: his
-    # private read. This is NOT a bot-menu entry -- it is a button on the
-    # message itself, so it appears the moment an analysis is delivered and
-    # nowhere else. Only the owner's message carries it; a guest's card has no
-    # button, and the action is refused for a guest in handle() besides.
-    if action in OWNER_ANALYSIS_ACTIONS and chat is not None and is_owner(chat):
-        return kb([[("🔒 تحليلي الخاص", "myread")]])
     return nav(action)
 
 
@@ -1974,24 +1964,32 @@ def card_report() -> str:
 
 
 def card_myread() -> str:
-    """🔒 The owner's PRIVATE executive read -- his eyes only.
+    """🔒 <b>تحليل فريق AYZR</b> — the desk's OWN private read, the owner's eyes only.
 
-    A VIEW, not a second engine: every number comes from the ONE report engine
-    (report_payload) and the ONE verdict engine (_verdict), so this card can
-    never lean against the desk. It is the five-section read the owner asked for
-    in his own words -- big picture, small picture, the day's structure,
-    momentum, levels, then the call -- condensed to be scanned in one glance.
+    This is OUR read of the tape, written the way a desk note reads: a plain
+    summary first, then the evidence in numbered sections, then the plan. It is
+    NOT the bot's card and it does not have to agree with it word for word -- the
+    owner asked for the team's own professional read, in its own voice.
 
-    The owner asked for a button only HE sees. `handle()` refuses it for anyone
-    else and `_menu_rows` hides it from a guest's grid; both must hold.
+    It is still built from the ONE engine, never a second opinion on the same
+    tape: every number (price, frames, levels, fib, sessions, the call) comes
+    from `report_payload()` and `_verdict()`, so the private note cannot quote a
+    price the desk would deny. What is ours is the ORDER, the LANGUAGE and the
+    judgement of what matters now -- not a made-up figure.
+
+    Owner-only, two locks: `_menu_rows` hides the button from a guest's grid and
+    `handle()` refuses the action for anyone but the owner. Both must hold.
     """
     m = read_market()
     live = m["live"]
     if live <= 0:
-        return "🔒 <b>تحليلي الخاص</b>\n⚠️ ما في قراءة سوق هلّق — جرّب بعد شوي."
+        return ("🔒 <b>تحليل فريق AYZR</b>\n"
+                "⚠️ ما في قراءة سوق هلّق — جرّب بعد شوي.")
     p = report_payload(m)
     v = _verdict(m)
     fr = {f["tf"]: f for f in p["frames"]}
+    up, dn = p["up"], p["dn"]
+    neu = len(FRAMES) - up - dn
 
     try:
         b15 = closed(bars(TREND_FILTER_TF, 300), TREND_FILTER_TF)
@@ -1999,69 +1997,146 @@ def card_myread() -> str:
     except Exception:  # noqa: BLE001 - a dead frame must not kill the card
         adx_v = None
 
-    up, dn = p["up"], p["dn"]
-    neu = len(FRAMES) - up - dn
+    def _tile(tf: str) -> str:
+        t = (fr.get(tf) or {}).get("trend")
+        return "🟢" if t == 1 else ("🔴" if t == -1 else "⚪")
 
-    def _f(tf: str) -> str:
+    def _frame(tf: str) -> str:
         f = fr.get(tf) or {}
         r = f.get("rsi")
-        e20, e50 = f.get("ema20"), f.get("ema50")
+        e20 = f.get("ema20")
         side = ""
-        if e20 is not None and e50 is not None:
-            side = ("فوق المتوسطات" if live > e20 and live > e50
-                    else "تحت المتوسطات" if live < e20 and live < e50
-                    else "بين المتوسطات")
-        return f"RSI {r:.0f}" + (f" · {side}" if side else "")
+        if e20 is not None:
+            side = "فوق EMA20" if live > e20 else "تحت EMA20"
+        bits = [x for x in (f"RSI {r:.0f}" if r is not None else "", side) if x]
+        return " · ".join(bits)
 
-    # the month range, so the big picture says WHERE the price sits
+    # ---- the header ----------------------------------------------------
+    dd = p.get("dayDiffPercent")
+    L = [f"🔒 <b>تحليل فريق AYZR</b> · {esc(p['symbol'])}",
+         f"🗓️ {p['clock']} {p['tz']}"]
+    head = f"السعر <b>{num(live)}</b>"
+    if dd is not None:
+        head += f" · اليوم {'🔴' if dd < 0 else '🟢'} {dd:+.2f}%"
+    L.append(head)
+    L.append("")
+
+    # ---- 0. the summary: what we say in one breath ---------------------
+    L.append("<b>🧭 الخلاصة السريعة</b>")
+    L.append(f"<b>{esc(_headline(v))}</b>")
+    L.append(f"الميل العام: {esc(p['bias'])} · "
+             f"الفريمات {up}صاعد · {dn}هابط · {neu}عرضي")
+    L.append("")
+
+    # ---- 1. the big picture: the multi-day leg -------------------------
+    L.append("<b>1️⃣ الصورة الكبيرة (أين نحن في الموجة)</b>")
     days = p.get("days") or []
-    mpos = ""
+    if days:
+        d4 = days[-4:]
+        run = d4[-1]["close"] - d4[0]["open"]
+        L.append(f"• آخر {len(d4)} أيام: <b>{run:+.1f}</b> نقطة")
+        for d in d4[-3:]:
+            L.append(f"   └ {d['date']}: {num(d['open'])}→{num(d['close'])} "
+                     f"({d['chg']:+.1f})")
+    big_t = [fr.get(tf, {}).get("trend") for tf in ("1d", "4h")]
+    b_up = sum(1 for t in big_t if t == 1)
+    b_dn = sum(1 for t in big_t if t == -1)
+    if b_dn > b_up:
+        L.append("👉 <b>الإطار الكبير هابط</b> — البيع هو الاتجاه، "
+                 "والطلوع مجرد ارتداد.")
+    elif b_up > b_dn:
+        L.append("👉 <b>الإطار الكبير صاعد</b> — الشراء هو الاتجاه، "
+                 "والنزول مجرد تصحيح.")
+    else:
+        L.append("👉 الإطار الكبير <b>متعادل</b> — لا ترند واضح على اليومي/4س.")
     if days:
         mhi = max(d["high"] for d in days)
         mlo = min(d["low"] for d in days)
         if mhi > mlo:
-            mpos = f" · عند {(live - mlo) / (mhi - mlo) * 100:.0f}% من نطاق الشهر"
-
-    L = [f"🔒 <b>تحليلي الخاص</b> — {esc(p['symbol'])}",
-         (f"السعر <b>{num(live)}</b> · اليوم "
-          f"{'🔴' if (p.get('dayDiffPercent') or 0) < 0 else '🟢'} "
-          f"{(p.get('dayDiffPercent') or 0):+.2f}% · 🕐 {p['clock']} {p['tz']}"),
-         (f"<i>الفريمات: {up}ص · {dn}هـ · {neu}عرضي"
-          + (f" · ADX {adx_v:.0f}" if isinstance(adx_v, (int, float)) else "")
-          + f" · الميل {esc(p['bias'])}</i>"),
-         ""]
-
-    L += ["<b>1️⃣ الإطار الكبير</b>",
-          f"• يومي: {_f('1d')}{mpos}",
-          f"• 4س: {_f('4h')}"]
-    big_t = [fr.get(tf, {}).get("trend") for tf in ("1d", "4h")]
-    big_up = sum(1 for t in big_t if t == 1)
-    big_dn = sum(1 for t in big_t if t == -1)
-    if big_dn > big_up:
-        L.append("👉 <b>الترند الهابط قائم</b> — الإطار الكبير يميل لتحت.")
-    elif big_up > big_dn:
-        L.append("👉 <b>الترند الصاعد قائم</b> — الإطار الكبير يميل لفوق.")
-    else:
-        L.append("👉 الإطار الكبير <b>متعادل</b> — ما في اتجاه واضح.")
+            pos = (live - mlo) / (mhi - mlo) * 100
+            if pos < 0:
+                L.append(f"• السعر <b>كسر أدنى</b> نافذة الأيام "
+                         f"({num(mlo)}) — تحت النطاق بامتداد.")
+            elif pos > 100:
+                L.append(f"• السعر <b>فوق أعلى</b> نافذة الأيام "
+                         f"({num(mhi)}) — فوق النطاق بامتداد.")
+            else:
+                L.append(f"• السعر عند <b>{pos:.0f}%</b> من نطاق الأيام "
+                         f"({num(mlo)}–{num(mhi)})")
     L.append("")
 
-    L += ["<b>2️⃣ الإطار الصغير</b>",
-          f"• 1س {_f('1h')} · 30د {_f('30m')}",
-          f"• 15د {_f('15m')} · 5د {_f('5m')}"]
+    # ---- 2. the near picture: the frames we trade ----------------------
+    L.append("<b>2️⃣ الصورة القريبة (الفريمات التنفيذية)</b>")
+    for tf in ("1h", "30m", "15m", "5m"):
+        L.append(f"• {TF_AR.get(tf, tf)} {_tile(tf)} {_frame(tf)}")
     small_t = [fr.get(tf, {}).get("trend") for tf in ("1h", "30m", "15m", "5m")]
     s_up = sum(1 for t in small_t if t == 1)
     s_dn = sum(1 for t in small_t if t == -1)
     if s_up == s_dn:
-        L.append("👉 الفريمات القصيرة <b>متعادلة</b> — ما في اتجاه تتداوله.")
+        L.append("👉 القصيرة <b>متعادلة</b> — ما في اتجاه نتداوله هون.")
     elif s_up > s_dn:
-        L.append("👉 القصيرة تميل <b>لفوق</b>.")
+        L.append("👉 القصيرة تميل <b>لفوق</b> — زخم شراء قصير المدى.")
     else:
-        L.append("👉 القصيرة تميل <b>لتحت</b>.")
+        L.append("👉 القصيرة تميل <b>لتحت</b> — زخم بيع قصير المدى.")
     L.append("")
 
-    if p.get("structure"):
-        L += ["<b>3️⃣ بنية السوق</b>", f"• {esc(p['structure'])}", ""]
+    # ---- 3. structure --------------------------------------------------
+    L.append("<b>3️⃣ البنية (قمم وقيعان)</b>")
+    L.append(f"• {esc(p['structure'])}" if p.get("structure")
+             else "• ما قدرت أقرأ البنية الآن.")
+    with suppress(Exception):
+        b1 = bars("1h", 200)
+        hh, ll = pivots(b1, 3, 3)
+        if len(hh) >= 2 and len(ll) >= 2:
+            L.append("• قمم 1س: " + " · ".join(num(x) for x in hh[-3:]))
+            L.append("• قيعان 1س: " + " · ".join(num(x) for x in ll[-3:]))
+    L.append("")
 
+    # ---- 4. momentum ---------------------------------------------------
+    L.append("<b>4️⃣ الزخم (هل الحركة حيّة؟)</b>")
+    if isinstance(adx_v, (int, float)):
+        if adx_v < ADX_TREND_MIN:
+            L.append(f"• ADX <b>{adx_v:.1f}</b> (أقل من {ADX_TREND_MIN:.0f}) — "
+                     "<b>بلا ترند</b>: السوق متذبذب، والاختراقات الكاذبة كتير.")
+        elif adx_v < 25:
+            L.append(f"• ADX <b>{adx_v:.1f}</b> — ترند خفيف، اتعامل بحذر.")
+        else:
+            L.append(f"• ADX <b>{adx_v:.1f}</b> — ترند قوي، الاتجاه يستاهل.")
+    r15 = (fr.get("15m") or {}).get("rsi")
+    if r15 is not None:
+        if r15 >= 70:
+            L.append(f"• RSI 15د {r15:.0f} — تشبّع شراء، احترس من التصحيح.")
+        elif r15 <= 30:
+            L.append(f"• RSI 15د {r15:.0f} — تشبّع بيع، احترس من الارتداد.")
+        else:
+            L.append(f"• RSI 15د {r15:.0f} — منطقة محايدة، في مجال للحركة.")
+    for h in (p.get("divergence") or [])[:2]:
+        L.append(f"• 👁 {esc(h['text'])}")
+    L.append("")
+
+    # ---- 5. levels -----------------------------------------------------
+    if p.get("levels"):
+        L.append("<b>5️⃣ المستويات اللي بتحكم</b>")
+        rl = [lv for lv in p["levels"] if lv["kind"] == "مقاومة"][:3]
+        sl = [lv for lv in p["levels"] if lv["kind"] == "دعم"][:3]
+        if rl:
+            L.append("🔴 مقاومات: " + " · ".join(
+                f"{num(lv['price'])} (بعد {abs(lv['dist']):.0f})" for lv in rl))
+        if sl:
+            L.append("🟢 دعوم: " + " · ".join(
+                f"{num(lv['price'])} (بعد {abs(lv['dist']):.0f})" for lv in sl))
+        if rl and sl:
+            L.append(f"👉 السعر بين دعم <b>{num(sl[0]['price'])}</b> ومقاومة "
+                     f"<b>{num(rl[0]['price'])}</b> — راقب الإغلاق برّاهن.")
+        L.append("")
+
+    # ---- 6. fibonacci --------------------------------------------------
+    if p.get("fib_line"):
+        L.append("<b>6️⃣ فيبوناتشي</b>")
+        L.append(f"• {esc(p['fib_line'])}")
+        L.append("")
+
+    # ---- 7. sessions ---------------------------------------------------
     s = p.get("sessions") or {}
     ses = []
     for lbl, key in (("آسيا", "asia"), ("لندن", "london"), ("نيويورك", "ny")):
@@ -2069,40 +2144,56 @@ def card_myread() -> str:
             ses.append(f"{lbl} {num(s[key]['low'])}→{num(s[key]['high'])} "
                        f"({s[key]['pts']:.0f})")
     if ses:
-        L += ["<b>🌏 نطاق الجلسات</b>", "• " + " · ".join(ses), ""]
-
-    L.append("<b>4️⃣ الزخم</b>")
-    if isinstance(adx_v, (int, float)):
-        if adx_v < ADX_TREND_MIN:
-            L.append(f"• ADX {adx_v:.1f} ← أقل من {ADX_TREND_MIN:.0f} = "
-                     "<b>بلا ترند</b> (سوق متذبذب).")
-        else:
-            L.append(f"• ADX {adx_v:.1f} — قوة اتجاه مقبولة.")
-    for h in (p.get("divergence") or [])[:2]:
-        L.append(f"• 👁 {esc(h['text'])}")
-    L.append("")
-
-    if p.get("levels"):
-        L.append("<b>5️⃣ المستويات</b>")
-        rl = [lv for lv in p["levels"] if lv["kind"] == "مقاومة"][:3]
-        sl = [lv for lv in p["levels"] if lv["kind"] == "دعم"][:3]
-        if rl:
-            L.append("🔴 مقاومات: " + " · ".join(num(lv["price"]) for lv in rl))
-        if sl:
-            L.append("🟢 دعوم: " + " · ".join(num(lv["price"]) for lv in sl))
+        L.append("<b>7️⃣ نطاق الجلسات (وين تحرّك السعر)</b>")
+        L.append("• " + " · ".join(ses))
         L.append("")
 
-    L += ["━━━━━━━━━━━━━━",
-          "🎯 <b>الحكم</b>",
-          f"<b>{esc(_headline(v))}</b>"]
-    d = _verdict_detail(v)
-    if d:
-        L.append(d)
-    for b in (p.get("bullets") or [])[:3]:
-        L.append(f"• {esc(b)}")
+    # ---- the plan: what the team would actually do ---------------------
+    L.append("━━━━━━━━━━━━━━")
+    L.append("🎯 <b>خطة فريق AYZR</b>")
+    if v["state"] == "hold":
+        t = v["trade"]
+        d = 1 if t["direction"] == "long" else -1
+        r_now = ((live - float(t["entry"])) * d /
+                 abs(float(t["entry"]) - float(t["stop"]))
+                 if abs(float(t["entry"]) - float(t["stop"])) else 0)
+        L.append(f"📂 عندك صفقة مفتوحة #{t['id']} — حالياً <b>{r_now:+.2f}R</b>")
+        L.append("👉 خلّيها: الوقف والهدف شغّالين لحالهن. لا تعزّز بنفس الاتجاه.")
+    elif v["state"] == "enter":
+        p2 = v["plan"]
+        L.append("✅ <b>في صفقة جاهزة — الشروط مكتملة:</b>")
+        L += ["   " + x for x in _plan_lines(p2)]
+        for line in (_fragility_note(m), _divergence_note(p2["direction"])):
+            if line:
+                L.append(line)
+    elif v["state"] == "closed":
+        L.append("⛔ السوق مسكّر — ما في شي نعمله.")
+    else:
+        # wait: name the basis, never a generic "no entry".
+        L.append("⏸️ <b>ما في دخول هلّق — بنستنى أساس.</b>")
+        if v.get("wall"):
+            want = "بيع" if v.get("direction") == "short" else "شراء"
+            L.append(f"👉 السعر بيمشي عكس موجة كبيرة؛ بنستنى يلمس "
+                     f"<b>{num(v['wall'])}</b> ويغلق 1س {want}.")
+        elif v.get("reason") == "no_setup":
+            L.append(f"👉 {esc(v.get('detail') or 'الاتجاه واضح بس بلا أساس.')}")
+            L.append("👉 بنستنى يرتد لمستوى ويرفضه، أو يكسره بإغلاق واضح.")
+        elif v["up"] >= CONFIRM_FRAMES:
+            L.append(f"👉 الاتجاه <b>صاعد</b> ({v['up']}/6) بس السعر لسا ما "
+                     "وصل لزناد الدخول.")
+        elif v["dn"] >= CONFIRM_FRAMES:
+            L.append(f"👉 الاتجاه <b>هابط</b> ({v['dn']}/6) بس السعر لسا ما "
+                     "وصل لزناد الدخول.")
+        else:
+            L.append(f"👉 الفريمات ما اتفقت ({v['up']}ص · {v['dn']}هـ) — "
+                     f"الميل {esc(v.get('mark') or '')} <b>{esc(v.get('lean') or '')}</b>.")
+    frag = _fragility_note(m)
+    if frag and v["state"] != "enter":
+        L.append(frag)
 
-    L += ["", ("<i>قراءة فنية من بيانات حيّة — مو توصية ولا وعد ربح. "
-               "الوقف إلزامي دايماً.</i>")]
+    L.append("")
+    L.append("<i>📌 قراءة فريق AYZR من بيانات حيّة — اجتهاد فني، مو توصية "
+             "ولا وعد ربح. الوقف إلزامي دايماً.</i>")
     return "\n".join(L)
 
 
@@ -6766,9 +6857,7 @@ def maybe_daily_analysis(tg: Telegram, allow: set[str]) -> None:
         ok = False
         for c in _alert_chats(allow):
             try:
-                # The owner's copy carries his private-read button under the
-                # text; a guest's copy carries the standing menu as before.
-                tg.send(c, text, card_markup("day_analysis", c))
+                tg.send(c, text, MENU_REPLY_KB)
                 ok = True
             except Exception:  # noqa: BLE001
                 continue
