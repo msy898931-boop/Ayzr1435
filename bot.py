@@ -564,6 +564,10 @@ AYZR_PLAN_PUSH = os.environ.get("DESK_AYZR_PLAN_PUSH", "1").strip().lower() in (
     "1", "true", "yes", "on")
 AYZR_PLAN_MIN_TREND = int(os.environ.get("DESK_AYZR_PLAN_MIN_TREND", "60") or "60")
 AYZR_PLAN_MIN_RANGE = int(os.environ.get("DESK_AYZR_PLAN_MIN_RANGE", "120") or "120")
+# The shortest the loop will wait, and the sleep step it wakes on. Named so a
+# test can drive the loop fast without waiting a real minute.
+AYZR_PLAN_MIN_S = float(os.environ.get("DESK_AYZR_PLAN_MIN_S", "60") or "60")
+AYZR_PLAN_STEP_S = float(os.environ.get("DESK_AYZR_PLAN_STEP_S", "5") or "5")
 # The owner's clock: hours to add to UTC when a time is shown (Syria = 3, and
 # Syria has had no DST since 2022, so a fixed offset is exact). Set
 # DESK_TZ_OFFSET=0 to show GMT.
@@ -7586,6 +7590,14 @@ def ayzr_plan_loop(tg: Telegram, stop: threading.Event | None = None) -> None:
     reads ONE snapshot per cycle and hands it to plan_section(), so the pushed
     plan is the same block the button prints -- no second read, no drift.
 
+    The FULL report is NOT pushed on the clock: it is the "why", and the owner
+    only needs the why when it CHANGES. So on the cycle where the engine's
+    direction FLIPS (short <-> long <-> range) the loop sends the WHOLE report
+    instead of the bare plan -- the report already ENDS with section 8, so the
+    owner gets the plan plus the reason in one message, never the plan twice.
+    The first read after boot seeds the direction silently, so a restart does
+    not replay a report it already sent. Every cycle sends exactly ONE message.
+
     Owner-only by construction: it sends to _backup_chat() (the owner), never to
     `allow`, so a guest never sees the owner's private plan. A dead feed or a
     broken engine is swallowed so the loop cannot die on one bad tick.
@@ -7593,22 +7605,31 @@ def ayzr_plan_loop(tg: Telegram, stop: threading.Event | None = None) -> None:
     if not AYZR_PLAN_PUSH:
         return
     chat = _backup_chat()
+    last_bias: str | None = None
+    booted = False
     while not (stop and stop.is_set()):
         wait_min = AYZR_PLAN_MIN_TREND
         try:
             import ayzr
             snap = ayzr.snapshot()
             if snap.get("live"):
-                text = ayzr.plan_section(snap)
+                bias = snap.get("bias")
+                # A flip earns the full "why"; otherwise just the plan. Both
+                # carry section 8, so the owner always has the actionable block.
+                flipped = booted and bias != last_bias
+                text = ayzr.report(snap) if flipped else ayzr.plan_section(snap)
                 tg.send(chat, text, menu_reply_kb(chat))
-                wait_min = (AYZR_PLAN_MIN_RANGE if snap.get("bias") is None
+                last_bias = bias
+                booted = True
+                wait_min = (AYZR_PLAN_MIN_RANGE if bias is None
                             else AYZR_PLAN_MIN_TREND)
         except Exception as exc:  # noqa: BLE001 - one bad tick must not kill it
             print("ayzr_plan_loop:", exc, flush=True)
-        # Sleep in small steps so a stop event is honoured promptly.
-        deadline = time.monotonic() + max(60, wait_min * 60)
+        # Sleep in small steps so a stop event is honoured promptly. The floor
+        # is a named constant so a test can drive the loop fast.
+        deadline = time.monotonic() + max(AYZR_PLAN_MIN_S, wait_min * 60)
         while not (stop and stop.is_set()) and time.monotonic() < deadline:
-            time.sleep(5)
+            time.sleep(AYZR_PLAN_STEP_S)
 
 
 # ========================================================================

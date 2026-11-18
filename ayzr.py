@@ -673,8 +673,8 @@ def plan_section(snap: dict | None = None) -> str:
     return "\n".join(L)
 
 
-def report() -> str:
-    s = snapshot()
+def report(snap: dict | None = None) -> str:
+    s = snap or snapshot()
     q, live = s["q"], s["live"]
     if not live:
         return "⚠️ ما في تسعيرة هلّق — جرّب بعد شوي."

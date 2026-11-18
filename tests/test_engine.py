@@ -3671,11 +3671,49 @@ class AyzrButtonTest(unittest.TestCase):
                                         return_value={"live": 3900.0,
                                                       "bias": "short"}), \
              unittest.mock.patch.object(engine, "plan_section",
-                                        return_value="PLAN"):
+                                        return_value="PLAN"), \
+             unittest.mock.patch.object(engine, "report",
+                                        return_value="REPORT"):
             bot.ayzr_plan_loop(tg, stop)
         self.assertTrue(sent, "the loop sent nothing")
         self.assertEqual({c for c, _ in sent}, {self.OWNER})
+        # First cycle after boot is the bare PLAN -- never the full report, so a
+        # restart cannot replay a report the owner already saw.
         self.assertEqual(sent[0][1], "PLAN")
+
+    def test_the_full_report_follows_a_direction_flip(self):
+        # The plan rides the clock; the full "why" only rides a FLIP. Here the
+        # bias goes short -> long on the second cycle, so the second message is
+        # the whole report -- and only the second.
+        import threading
+
+        import ayzr as engine
+        sent: list[tuple[str, str]] = []
+        stop = threading.Event()
+        reads = [{"live": 3900.0, "bias": "short"},
+                 {"live": 3905.0, "bias": "long"}]
+
+        def fake_send(chat, text, markup=None):
+            sent.append((str(chat), text))
+            if len(sent) >= 2:
+                stop.set()
+
+        tg = unittest.mock.Mock()
+        tg.send.side_effect = fake_send
+        with unittest.mock.patch.object(bot, "_backup_chat",
+                                        return_value=self.OWNER), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_PUSH", True), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_TREND", 0.001), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_S", 0.0), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_STEP_S", 0.001), \
+             unittest.mock.patch.object(engine, "snapshot",
+                                        side_effect=reads), \
+             unittest.mock.patch.object(engine, "plan_section",
+                                        return_value="PLAN"), \
+             unittest.mock.patch.object(engine, "report",
+                                        return_value="REPORT"):
+            bot.ayzr_plan_loop(tg, stop)
+        self.assertEqual([t for _, t in sent][:2], ["PLAN", "REPORT"])
 
     def test_the_plan_push_is_off_when_the_switch_is_off(self):
         import threading
