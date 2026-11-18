@@ -265,6 +265,34 @@ LEVEL_BAND = 1.0                 # hysteresis: a crossing needs this much cleara
 # frozen set never expires, but live pivots are re-read each cycle; latching
 # them within this band keeps a broken level around long enough to speak once.
 LIVE_LEVEL_BAND = 25.0           # points; ~2x the 1h ATR on gold
+# The owner's WATCH POINTS, each with a MEANING -- the honest replacement for
+# the blind crossing watch. A round number is not an event; a level that price
+# REJECTS is, and the rejection is a trade. So each point carries its identity:
+# a RESISTANCE says "a rejection here is a short"; a SUPPORT says "a break below
+# is a short". The desk is short-biased here, so the actions are the ones the
+# trend supports -- the crossing watch could only ever say "breakout -> BUY",
+# which against a 5-frame downtrend is the worst alert the bot could send. The
+# owner sets these with DESK_WATCH_POINTS="3770:R,3780:R,3757:S".
+# Format: price:R|S (R = resistance, reject -> short; S = support, break -> short).
+def _parse_watch_points(spec: str) -> tuple[tuple[float, str], ...]:
+    out = []
+    for tok in spec.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            p, kind = tok.split(":")
+            out.append((float(p), kind.strip().upper()[:1]))
+        except (ValueError, IndexError):
+            continue
+    return tuple(sorted(out))
+
+
+WATCH_POINTS: tuple[tuple[float, str], ...] = _parse_watch_points(
+    os.environ.get("DESK_WATCH_POINTS", "3770:R,3780:R,3757:S") or "")
+# A touch inside this band counts as REACHING the point (gold runs fast, so a
+# rejection must fire before price has already turned and left).
+WATCH_POINT_NEAR = float(os.environ.get("DESK_WATCH_POINT_NEAR", "1.5") or "1.5")
 # The green-light watch: the desk's own entry filter is "a long needs price
 # above the 15m EMA20". So rather than hard-code the number 4103 (which the
 # EMA moves away from within the hour), watch the EMA itself -- the owner hears
@@ -6190,6 +6218,10 @@ def alerts_guide() -> str:
             "<b>7.5️⃣ اختراق/كسر مستوى مراقب</b> 🚀⚠️\n"
             "  يعني: السعر تعدّى مستوى من قائمة المراقبة (منها 4,138 و4,108).\n"
             "  👉 <i>مستوى مراقب اتكسر — راقب التأكيد قبل الدخول.</i>\n\n"
+            "<b>7.7️⃣ وصل نقطة مراقبة</b> 🎯\n"
+            "  يعني: السعر وصل مستوى انت حددته (مقاومة أو دعم).\n"
+            "  👉 <i>إذا رفض المقاومة أو كسر الدعم = فرصة بيع. الرسالة فيها "
+            "الدخول والوقف والهدف.</i>\n\n"
             "<b>8️⃣ باب الشراء / البيع انفتح</b> 🟢🔴\n"
             "  يعني: شمعة 15د سكّرت فوق/تحت EMA20 (فلتري).\n"
             "  👉 <i>إذا الاتجاه العام بنفس الجهة = فرصة دخول.</i>\n\n"
@@ -7160,6 +7192,67 @@ def _level_cross_msg(level: float, side: str, live: float) -> str:
             "<i>مستوى انكسر — راقب التأكيد قبل الدخول (الصفقة تحت عتبة R:R).</i>")
 
 
+def _watch_point_chats(allow: set[str]) -> list[str]:
+    """Who hears a watch-point hit: the OWNER only.
+
+    Unlike a level crossing (a fact for the whole roll), a watch point carries a
+    trade plan the owner set himself, so it goes to him alone.
+    """
+    return [_backup_chat()]
+
+
+def watch_points_watch(seen: dict) -> str | None:
+    """Speak when price REACHES a named watch point, and say the trade it means.
+
+    Each point is one-shot per approach: the fired set is cleared once price is
+    well clear, so a level re-tested later speaks again. A missing feed, or no
+    watch points configured, stays silent.
+    """
+    if not WATCH_POINTS:
+        return None
+    try:
+        m = read_market()
+        live = float(m["live"])
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return None
+    fired = seen.setdefault("watch_points_fired", {})
+    for k in list(fired):
+        if abs(live - float(k)) > WATCH_POINT_NEAR * 4:
+            del fired[k]
+    hits = [(px, kind) for px, kind in WATCH_POINTS
+            if abs(live - px) <= WATCH_POINT_NEAR]
+    if not hits:
+        return None
+    px, kind = min(hits, key=lambda h: abs(live - h[0]))
+    key = f"{px:.2f}"
+    if fired.get(key):
+        return None
+    fired[key] = True
+    return _watch_point_msg(px, kind, live)
+
+
+def _watch_point_msg(px: float, kind: str, live: float) -> str:
+    """The watch-point alert: the level, the setup it means, and the trade."""
+    if kind == "R":
+        head = (f"🎯 <b>السعر وصل مقاومة</b> — {SYMBOL}\n"
+                f"السعر <b>{num(live)}</b> · المقاومة <b>{num(px)}</b>")
+        why = "إذا رفض السعر هالمستوى (شمعة رفض) = فرصة <b>بيع</b>."
+    else:
+        head = (f"🎯 <b>السعر وصل دعم</b> — {SYMBOL}\n"
+                f"السعر <b>{num(live)}</b> · الدعم <b>{num(px)}</b>")
+        why = "إذا كسر السعر هالدعم بإغلاق = فرصة <b>بيع</b>؛ إذا ارتد = انتبه."
+    try:
+        p = _sized(live, "short", px)
+        plan = (f"\n🔴 بيع عند <b>{num(p['entry'])}</b> · "
+                f"وقف {num(p['stop'])} (−${p['risk_usd']:.0f}) · "
+                f"هدف {num(p['target'])} (+${p['gain_usd']:.0f})\n"
+                f"R:R ≈ {p['rr']:.2f}")
+    except Exception:  # noqa: BLE001 - the alert must fire without sizing
+        plan = ""
+    return (head + "\n" + why + plan +
+            "\n<i>استنى تأكيد الشمعة قبل الدخول. الوقف إلزامي.</i>")
+
+
 def gate_watch(seen: dict) -> str | None:
     """The green light: tell the owner when the desk's own entry gate opens.
 
@@ -7491,6 +7584,10 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     note = levels_watch(seen)
     if note:
         for c in _alert_chats(allow):
+            tg.send(c, note, menu_reply_kb(c))
+    note = watch_points_watch(seen)
+    if note:
+        for c in _watch_point_chats(allow):
             tg.send(c, note, menu_reply_kb(c))
     note = gate_watch(seen)
     if note:

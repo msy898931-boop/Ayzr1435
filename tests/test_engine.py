@@ -607,6 +607,73 @@ class LevelsWatchTest(unittest.TestCase):
             self.assertIn("4,084", note)
             self.assertEqual(seen["levels"]["4096.00"], "below")
 
+
+class WatchPointsTest(unittest.TestCase):
+    """The named watch points: each carries a MEANING, fires once per approach,
+    and speaks only to the owner."""
+
+    def test_reaching_a_resistance_means_a_short(self):
+        with unittest.mock.patch.object(bot, "WATCH_POINTS",
+                                        ((3770.0, "R"),)):
+            with FakeFeed(mid=3770.4):
+                seen: dict = {}
+                note = bot.watch_points_watch(seen)
+            self.assertIsNotNone(note)
+            self.assertIn("مقاومة", note)
+            self.assertIn("3,770", note)
+            self.assertIn("بيع", note)          # the trade it implies
+            # a second read on the same approach stays quiet
+            with FakeFeed(mid=3770.6):
+                self.assertIsNone(bot.watch_points_watch(seen))
+
+    def test_reaching_a_support_means_a_short_on_the_break(self):
+        with unittest.mock.patch.object(bot, "WATCH_POINTS",
+                                        ((3757.0, "S"),)):
+            with FakeFeed(mid=3757.2):
+                note = bot.watch_points_watch({})
+            self.assertIsNotNone(note)
+            self.assertIn("دعم", note)
+            self.assertIn("بيع", note)
+
+    def test_a_level_re_tested_after_clearing_speaks_again(self):
+        with unittest.mock.patch.object(bot, "WATCH_POINTS",
+                                        ((3770.0, "R"),)):
+            seen: dict = {}
+            with FakeFeed(mid=3770.0):
+                self.assertIsNotNone(bot.watch_points_watch(seen))
+            with FakeFeed(mid=3800.0):          # price walks well away
+                self.assertIsNone(bot.watch_points_watch(seen))
+            with FakeFeed(mid=3770.0):          # comes back: speaks again
+                self.assertIsNotNone(bot.watch_points_watch(seen))
+
+    def test_no_points_configured_is_silent(self):
+        with unittest.mock.patch.object(bot, "WATCH_POINTS", ()), \
+             FakeFeed(mid=3770.0):
+            self.assertIsNone(bot.watch_points_watch({}))
+
+    def test_a_missing_feed_returns_none_and_does_not_raise(self):
+        saved = bot.read_market
+        bot.read_market = lambda: (_ for _ in ()).throw(RuntimeError("no feed"))
+        try:
+            with unittest.mock.patch.object(bot, "WATCH_POINTS",
+                                            ((3770.0, "R"),)):
+                self.assertIsNone(bot.watch_points_watch({}))
+        finally:
+            bot.read_market = saved
+
+    def test_the_alert_goes_to_the_owner_alone(self):
+        # It carries a trade plan, so a guest on the roll must not receive it.
+        self.assertEqual(bot._watch_point_chats({"1", "2", "3"}),
+                         [bot._backup_chat()])
+
+    def test_the_parser_reads_the_env_format(self):
+        self.assertEqual(bot._parse_watch_points("3770:R,3780:R,3757:S"),
+                         ((3757.0, "S"), (3770.0, "R"), (3780.0, "R")))
+        # junk tokens are skipped, not fatal
+        self.assertEqual(bot._parse_watch_points("3770:R,,bad,x"),
+                         ((3770.0, "R"),))
+
+
 class WindowTest(unittest.TestCase):
     """The owner's windows: risk $8-12, reward $15-20, R:R >= the floor. Both
     clamps must hold together -- a wide stop must not push the target out of the
