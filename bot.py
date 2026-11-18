@@ -648,6 +648,16 @@ CAL_LEAD_MIN2 = int(os.environ.get("DESK_CAL_LEAD_MIN2", "15") or "15")
 # the event's scheduled time.
 CAL_RESULT_WINDOW_MIN = int(
     os.environ.get("DESK_CAL_RESULT_WINDOW", "30") or "30")
+# How far BACK the calendar window reaches. The result alert needs the feed to
+# still carry a print that fired minutes ago (its `actual` only appears once it
+# releases), so the window cannot start at "now".
+CAL_LOOKBACK_H = int(os.environ.get("DESK_CAL_LOOKBACK_H", "6") or "6")
+# The result alert must not read a stale list: with the normal 30-minute cache a
+# print could be seen up to half an hour late, past its own result window. This
+# shorter age is used only by the result watch -- fresh enough to catch the
+# number, long enough that a 2-minute tick does not hammer a rate-limited feed.
+CAL_RESULT_CACHE_S = int(
+    os.environ.get("DESK_CAL_RESULT_CACHE", "240") or "240")
 # The automatic direction alert: tell the owner when the desk's net direction
 # flips (up / down / range) without a tap. A cooldown damps a chop at the edge.
 TREND_ALERTS = os.environ.get("DESK_TREND_ALERTS", "1").strip().lower() in (
@@ -3646,13 +3656,22 @@ _TV_IMPACT = {1: "High", 0: "Medium", -1: "Low", 2: "High", 3: "High"}
 
 
 def _cal_url() -> str:
-    """The URL to fetch. An explicit DESK_CAL_URL wins; else the source default."""
+    """The URL to fetch. An explicit DESK_CAL_URL wins; else the source default.
+
+    The window starts `CAL_LOOKBACK_H` hours BEFORE now, not at now. A print
+    lands at its scheduled minute and only then does the feed carry its
+    `actual`; if we asked from now, an event that released two minutes ago
+    would already be outside the window and the result alert could never see
+    the number it exists to report. The prep card is unaffected -- it looks
+    FORWARD (`_cal_next` skips anything already past).
+    """
     if CAL_URL:
         return CAL_URL
     if CAL_SOURCE == "ff":
         return _FF_URL
     now = datetime.now(UTC)
-    frm = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    frm = (now - timedelta(hours=CAL_LOOKBACK_H)).strftime(
+        "%Y-%m-%dT%H:%M:%S.000Z")
     to = (now + timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     countries = ",".join(c for c in CAL_CURRENCIES if c in ("US", "EU", "GB"))
     q = urllib.parse.urlencode({"from": frm, "to": to,
@@ -3716,16 +3735,18 @@ def _cal_parse(raw) -> list[dict]:
     return out
 
 
-def _cal_fetch() -> list[dict]:
+def _cal_fetch(max_age_s: int | None = None) -> list[dict]:
     """The week's calendar, cached. A failed fetch returns the last good list.
 
     The feed rate-limits, so this is fetched at most once per CAL_CACHE_S and
     the cache is what every caller reads. On a failed fetch the STALE list is
     returned rather than [], so a hiccup does not blank the card the owner is
-    looking at.
+    looking at. `max_age_s` overrides the cache age for callers that must not
+    read a stale list (the result alert), so a just-landed print is seen.
     """
     now = time.monotonic()
-    if _CAL_CACHE["events"] and now - _CAL_CACHE["at"] < CAL_CACHE_S:
+    age = CAL_CACHE_S if max_age_s is None else max_age_s
+    if _CAL_CACHE["events"] and now - _CAL_CACHE["at"] < age:
         return list(_CAL_CACHE["events"])
     try:
         raw = _get(_cal_url(), timeout=20, headers=_cal_headers())
@@ -4085,7 +4106,9 @@ def news_result_watch(seen: dict) -> str | None:
     booting = seen.get("result_booted") is None
     seen["result_booted"] = True
     try:
-        events = _cal_fetch()
+        # A SHORTER cache than the cards use: a print must be caught within its
+        # own result window, not up to CAL_CACHE_S late.
+        events = _cal_fetch(CAL_RESULT_CACHE_S)
     except Exception:  # noqa: BLE001 - a watch must never kill the loop
         return None
     now = datetime.now(UTC)

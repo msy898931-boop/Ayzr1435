@@ -1414,6 +1414,55 @@ class NewsResultTest(unittest.TestCase):
         self.assertNotIn("news_result", bot.GATE_KEYS)
 
 
+    def test_the_window_looks_back_so_a_just_landed_print_is_visible(self):
+        # The bug: the calendar window started at NOW, so a print that released
+        # two minutes ago was already outside it and the result alert could
+        # never see the number it exists to report.
+        url = bot._cal_url()
+        self.assertIn("from=", url)
+        from urllib.parse import parse_qs, urlparse
+        frm = parse_qs(urlparse(url).query)["from"][0]
+        # ISO-8601 strings with a Z sort lexicographically, so this compares the
+        # window's start to an hour ago without parsing either one.
+        an_hour_ago = (datetime.now(UTC) - timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%S")
+        self.assertLess(frm[:19], an_hour_ago)
+
+    def test_the_result_watch_reads_a_fresher_list_than_the_cards(self):
+        # A 30-minute cache could surface a print up to 30 minutes late, past
+        # its own result window. The result watch asks for a fresher list.
+        seen_calls = []
+        saved = bot._cal_fetch
+
+        def spy(max_age_s=None):
+            seen_calls.append(max_age_s)
+            return []
+
+        bot._cal_fetch = spy
+        try:
+            bot.news_result_watch({"result_booted": True})
+        finally:
+            bot._cal_fetch = saved
+        self.assertTrue(seen_calls)
+        self.assertEqual(seen_calls[0], bot.CAL_RESULT_CACHE_S)
+        self.assertLess(bot.CAL_RESULT_CACHE_S, bot.CAL_CACHE_S)
+
+    def test_a_landed_print_is_reported_after_the_lookback_fix(self):
+        # End to end: the feed now carries an event that fired inside the
+        # window, and the watch speaks with the number and the move.
+        ev = self._ev("Housing Starts", -3, actual="1.309",
+                      forecast="1.245", previous="1.191")
+        seen = {"result_booted": True}
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=[ev]), \
+             unittest.mock.patch.object(bot, "_price_since",
+                                        return_value=(3771.0, 3785.0, 14.0)):
+            out = bot.news_result_watch(seen)
+        self.assertIsNotNone(out)
+        self.assertIn("1.309", out)
+        self.assertIn("1.245", out)
+        self.assertIn("+14", out)
+
+
 class WatchLevelsTest(unittest.TestCase):
     """The owner's levels (4138 / 4108) must be watchable, and a crossing of
     one must speak -- via the env extension and the existing watch."""
