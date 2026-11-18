@@ -3,6 +3,52 @@
 Three projects live in this workspace. This file is the durable index; the full
 detail for each is in the archive beside it.
 
+## MarketDesk — FX-AI Quant teardown (2026-11-18)
+
+- ⭐ **The owner asked for a full, read-only teardown of a COMPETITOR site**,
+  `forex-consensus-production.up.railway.app` ("FX-AI Quant"), to build our own
+  version. **Report committed at `FXAI_REFERENCE.md` in the Ayzr1435 repo root**
+  (the workspace itself is ephemeral, so the report must ride the repo).
+  Read-only only: GET + POST-with-dummy-values to learn response shapes; nothing
+  written on their side. Do NOT reuse their brand, copy, wallet or channels.
+- ⭐ **Their stack:** one 100KB `index.html` + `style.css` + `app.js?v=3.7`
+  (vanilla JS, 41 functions, 188 DOM ids, 6 poll intervals), **Tailwind via CDN**,
+  Font Awesome, Cairo font, TradingView `tv.js` widget, backend **Express on
+  Railway** (not Render; `server: railway-hikari`, ord1). No source maps, no
+  `.env`/`package.json`/`/health` exposed (all 404) — nothing server-side leaks.
+- ⭐ **Their API surface** (all `access-control-allow-origin: *`):
+  `GET /api/quotes`, `/api/realtime-price?symbol=`, `/api/visitors/stats`,
+  `/api/analyze?symbol=&timeframe=` (header `x-vip-key`), `/api/market-intelligence?symbol=`,
+  `POST /api/vip/verify|submit-payment`, VIP-only `GET /api/signal-chart-preview`
+  (image) + `POST /api/deep-ai`, admin `POST /api/vip/admin-{data,generate,delete-key,update-payment,send-daily-report}`.
+- ⭐ **Their paywall sends the WHOLE math free** (RSI/MACD/EMA/BB/ATR/pivots/fib)
+  and locks only signal, confluence, execution plan, SMC. **The lock is
+  PRESENTATION, not server-side:** `signal:"VIP_LOCKED"` ships alongside
+  `signalArabic:"بيع (Sell)"` + `signalClass:"sell"` (direction leaked), and
+  `smc.lastSwingHigh/Low` ship while `smc.structure` says "🔒 محجوب". Our build
+  must drop the field server-side for a non-subscriber, never mask it in the UI.
+- 🔴 **Their "verified track record" is inflated — the best lesson in the whole
+  teardown.** Panel reads 19 trades / 84% / **+1120 pts**; from their OWN
+  `recentTrades` (exit−entry) it is **−353 pts** (≈+1473 of invention). Every
+  trade closed at the "profit secured" step is stamped **+50 pts "BE"** whatever
+  the exit — e.g. a SELL 3869.75→3872.86 (−31 pts) shows **+50 🛡️**, and one
+  `today-tp2` has NO entry/exit yet counts **+380**. Rule for us: a result needs
+  a measured exit; BE = 0, not +50.
+- 🐞 **Confirmed bugs by measurement:** `timeframe` is IGNORED (5m=30m=1h=1w,
+  identical rsi/atr/ema/fib; only 15m/4h/1d differ); `symbol=GBPUSD=X` returns
+  gold's price (3724) with GBP indicators (ema20 1.316) AND `tvSymbol:"OANDA:XAUUSD"`
+  (chart shows gold for the pound); `timeframe=abc` → 200; unknown symbol → 500;
+  **lot calculator uses `$10/pip for gold AND GBP** (their own comment) — gold is
+  **$100/pip**, a 10× error; the "26 indicators/TF" claim is 4 fields/TF.
+- ⚠️ **Their VIP key lives 10 YEARS in a cookie + localStorage and travels in
+  the URL (`?vip=`); a `?dev=<secret>` backdoor auto-grants the owner key.**
+  No server session anywhere; admin "secret" is a body field on CORS-`*` routes.
+  Our build must use an HttpOnly server session, no backdoor.
+- ⚠️ **The owner's own ask was "don't harm anything"** — keep any future probing
+  to GETs and read-only inspection; never write to a third party's endpoints.
+  (The one `submit-payment` POST used an all-zero dummy TxID; it was accepted,
+  which itself proves they do not verify TxIDs — noted, not exploited.)
+
 ## MarketDesk — news RESULT alert (2026-11-17)
 
 - ⭐ **The calendar always carried the print; `_cal_parse` dropped `actual`.**
