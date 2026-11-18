@@ -1257,29 +1257,29 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
 
 ## MarketDesk — owner-only card = TWO locks (2026-11-17)
 
-- ⭐ **A button that belongs to a MESSAGE rides UNDER that message — never in
-  the shared `MENU` grid.** The owner rejected the first cut of «🔒 تحليلي الخاص»
-  precisely because it sat in the bot's menu: it is the agent's own read, not a
-  desk feature. Ship it as an INLINE keyboard attached by `keyboard_for()` for
-  the owner only, on the analysis cards (`OWNER_ANALYSIS_ACTIONS`).
+- ⭐ **«تحليل فريق AYZR» lives IN THE MENU, as the FIRST row, and the OWNER only
+  sees it.** The owner settled the design over three rounds: not a floating
+  button under a message — a menu row, first, hidden from a guest's grid. Do not
+  re-litigate this; it is the spec.
+- ⭐ **"A view of the one engine" ≠ "the same card".** The card takes every
+  NUMBER from `report_payload()` + `_verdict()` (nothing invented), but the
+  ORDER, the LANGUAGE and the JUDGEMENT are the team's OWN — it need not match
+  the bot word for word. The owner asked for the team's read, not a clone.
 - ⭐ **"Only the owner sees it" is TWO mechanisms, and hiding is not refusing.**
-  An owner-only action needs (1) the button kept off every guest's surface AND
-  (2) a refusal in `handle()` for the action — because a guest can still TAP a
-  stale callback or TYPE the trigger word. `myread` follows `who` exactly. A test
-  must pin both paths.
-- ⚠ **One `reply_markup` per message.** An inline button and the standing reply
-  keyboard CANNOT ride the same message, so a card carrying the owner button
-  shows it INSTEAD of «☰ القائمة» for that message; the reply keyboard returns on
-  the next button-less card (same trade-off the journal/close cards make).
-- ⭐ **A private card is a VIEW of the one engine, never a second engine.**
-  `card_myread()` reads `report_payload()` for numbers and `_verdict()` for the
-  call — so it cannot lean against the desk on the same tape.
+  (1) `GUEST_HIDDEN_ACTIONS` drops the row from a guest's grid AND (2) a refusal
+  in `handle()` for the action — a guest can still TAP a stale callback or TYPE
+  the trigger word. `myread` follows `who` exactly. Pin both in a test.
+- ⚠ **A live render catches what green tests miss.** The card shipped two
+  presentation bugs the unit tests could not see: a NEGATIVE range percent
+  («عند -14%») when price broke below the window, and a support distance printed
+  with a stray minus. Always eyeball the live card before saying "done".
 - ⚠ **`ADX_MIN` (0.0) is a GATE floor, not a trend threshold.** `x < ADX_MIN`
   is a DEAD branch. Use `ADX_TREND_MIN = 20.0` for "no trend". The dead branch
   still exists in `card_scenarios` (~bot.py:1680).
 - ⚠ **`test_every_menu_action_is_wired` keeps its OWN `known` set** — a new
-  MENU action must be added there by hand (an action reached only by an inline
-  button, like `myread`, must NOT be — it is not a grid entry).
+  MENU action must be added there by hand.
 - ⚠ **`Telegram.send()` returns a bool, not the API dict** — `res.get("ok")`
   raises `AttributeError`. Use the bool.
+- ⚠ **`ruff`/`mypy` are not installed on a fresh box** — `pip install ruff mypy`
+  before checking the baselines (bot.py 41, tests 5, mypy 3).
 - `--selftest` must build EVERY card (AGENTS.md); add the new card to it.
