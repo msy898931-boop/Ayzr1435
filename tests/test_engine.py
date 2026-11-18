@@ -514,15 +514,19 @@ class EntryPointTest(unittest.TestCase):
     def test_start_desk_starts_the_desk_and_backup_but_not_the_poller(self):
         import threading
         started = []
-        saved = (bot.desk_loop, bot.backup_loop)
+        saved = (bot.desk_loop, bot.backup_loop, bot.ayzr_plan_loop)
         bot.desk_loop = lambda *a, **k: started.append("desk")
         bot.backup_loop = lambda *a, **k: started.append("backup")
+        bot.ayzr_plan_loop = lambda *a, **k: started.append("ayzr_plan")
         try:
             threads = bot.start_desk("FAKE", threading.Event())
             names = sorted(t.name for t in threads)
         finally:
-            bot.desk_loop, bot.backup_loop = saved
-        self.assertEqual(sorted(started), ["backup", "desk"])
+            (bot.desk_loop, bot.backup_loop, bot.ayzr_plan_loop) = saved
+        # The AYZR plan push is one of the desk's loops, so it must be started
+        # here with the others -- adding it to one entry point only is the exact
+        # bug start_desk() exists to prevent.
+        self.assertEqual(sorted(started), ["ayzr_plan", "backup", "desk"])
         self.assertNotIn("poller", names)
 
 
@@ -3625,6 +3629,60 @@ class AyzrButtonTest(unittest.TestCase):
             out = bot.card_ayzr()
         self.assertIn("AYZR", out)
         self.assertIn("تعذّر", out)
+
+    def test_the_reply_button_sits_right_of_the_menu(self):
+        # The owner asked for the engine button NEXT TO the menu button, on the
+        # bottom-right. Row order is [menu, ayzr] for the owner...
+        row = bot.menu_reply_kb(self.OWNER)["keyboard"][0]
+        self.assertEqual([b["text"] for b in row],
+                         [bot.MENU_BUTTON_TEXT, bot.AYZR_BUTTON_TEXT])
+
+    def test_a_guest_gets_no_ayzr_reply_button(self):
+        # ...and a guest's reply keyboard is the menu button alone. A reply
+        # keyboard is per chat, so this is the real lock; handle() is the second.
+        for chat in (self.GUEST, None):
+            row = bot.menu_reply_kb(chat)["keyboard"][0]
+            texts = [b["text"] for b in row]
+            self.assertNotIn(bot.AYZR_BUTTON_TEXT, texts)
+            self.assertEqual(texts, [bot.MENU_BUTTON_TEXT])
+
+    def test_the_reply_button_text_routes_to_ayzr(self):
+        self.assertEqual(bot.action_for(bot.AYZR_BUTTON_TEXT), "ayzr")
+
+    def test_the_plan_push_sends_to_the_owner_alone(self):
+        # The scheduled plan is the owner's private read: the loop must send to
+        # _backup_chat() and never to `allow`, so a guest never receives it.
+        import threading
+
+        import ayzr as engine
+        sent: list[tuple[str, str]] = []
+        stop = threading.Event()
+
+        def fake_send(chat, text, markup=None):
+            sent.append((str(chat), text))
+            stop.set()                       # one cycle is enough
+
+        tg = unittest.mock.Mock()
+        tg.send.side_effect = fake_send
+        with unittest.mock.patch.object(bot, "_backup_chat",
+                                        return_value=self.OWNER), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_PUSH", True), \
+             unittest.mock.patch.object(engine, "snapshot",
+                                        return_value={"live": 3900.0,
+                                                      "bias": "short"}), \
+             unittest.mock.patch.object(engine, "plan_section",
+                                        return_value="PLAN"):
+            bot.ayzr_plan_loop(tg, stop)
+        self.assertTrue(sent, "the loop sent nothing")
+        self.assertEqual({c for c, _ in sent}, {self.OWNER})
+        self.assertEqual(sent[0][1], "PLAN")
+
+    def test_the_plan_push_is_off_when_the_switch_is_off(self):
+        import threading
+        tg = unittest.mock.Mock()
+        with unittest.mock.patch.object(bot, "AYZR_PLAN_PUSH", False):
+            bot.ayzr_plan_loop(tg, threading.Event())   # returns at once
+        tg.send.assert_not_called()
 
 
 class DeskTickRestartTest(_DbCase):

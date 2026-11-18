@@ -26,6 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Callable
 from contextlib import closing, suppress
 from datetime import UTC, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -552,6 +553,17 @@ CAL_LEAD_MIN2 = int(os.environ.get("DESK_CAL_LEAD_MIN2", "15") or "15")
 TREND_ALERTS = os.environ.get("DESK_TREND_ALERTS", "1").strip().lower() in (
     "1", "true", "yes", "on")
 TREND_ALERT_COOLDOWN_S = 20 * 60  # at most one direction alert per 20 minutes
+# AYZR's independent PLAN push: section 8 of the independent report reaches the
+# owner on its own, no tap. The owner asked for "every hour or two, as the
+# market runs" -- so the cadence is tied to the market, not a fixed clock: 60
+# minutes while the desk reads a TREND (a plan worth re-sending as price walks),
+# 120 minutes when the market is RANGE (a quiet tape does not need an hourly
+# echo). 0 turns the push off. It is owner-only by construction (it sends to
+# _backup_chat()), so a guest never receives the owner's private plan.
+AYZR_PLAN_PUSH = os.environ.get("DESK_AYZR_PLAN_PUSH", "1").strip().lower() in (
+    "1", "true", "yes", "on")
+AYZR_PLAN_MIN_TREND = int(os.environ.get("DESK_AYZR_PLAN_MIN_TREND", "60") or "60")
+AYZR_PLAN_MIN_RANGE = int(os.environ.get("DESK_AYZR_PLAN_MIN_RANGE", "120") or "120")
 # The owner's clock: hours to add to UTC when a time is shown (Syria = 3, and
 # Syria has had no DST since 2022, so a fixed offset is exact). Set
 # DESK_TZ_OFFSET=0 to show GMT.
@@ -628,14 +640,30 @@ def _menu_rows(chat: str | None = None) -> list:
 # The standing menu button: ONE button pinned at the BOTTOM-LEFT of the screen,
 # not inside a card. It is a persistent reply keyboard, so it stays under every
 # message; tapping it sends its text, which action_for() routes to the grid.
-# The invisible spacer on its right keeps the real button on the LEFT -- a lone
-# reply button is centred by some clients, and the owner asked for the left.
 MENU_BUTTON_TEXT = "☰ القائمة"
-MENU_REPLY_KB = {
-    "keyboard": [[{"text": MENU_BUTTON_TEXT}, {"text": "\u2063"}]],
-    "resize_keyboard": True,
-    "is_persistent": True,
-}
+# AYZR's independent engine gets its OWN standing button, to the RIGHT of the
+# menu button. It is a reply button for the same reason the menu is one: the
+# owner asked to reach the independent plan without opening the grid first. The
+# button is OWNER-ONLY -- a reply keyboard is per chat, so a guest's keyboard is
+# built without it (menu_reply_kb takes the chat), and handle() refuses the tap
+# by word as the second lock, exactly like the inline button.
+AYZR_BUTTON_TEXT = "🏛️ محرك AYZR"
+
+
+def menu_reply_kb(chat: str | None = None) -> dict:
+    """The standing reply keyboard, per chat.
+
+    Only the OWNER's chat gains the AYZR button; a guest's keyboard -- and an
+    unknown chat (None, from `--menu` or a test) -- keeps just the menu button.
+    Least privilege: the button that opens the owner's private engine is never
+    built for a chat we cannot prove is his.
+    """
+    row = [{"text": MENU_BUTTON_TEXT}]
+    if chat is not None and is_owner(chat):
+        row.append({"text": AYZR_BUTTON_TEXT})
+    return {"keyboard": [row], "resize_keyboard": True, "is_persistent": True}
+
+
 JOURNAL_MENU = [
     [("📅 السجل اليومي", "j_day"), ("🗓️ السجل الأسبوعي", "j_week")],
     [("📆 السجل الشهري", "j_month"), ("📋 كل الصفقات", "journal")],
@@ -650,6 +678,7 @@ TEXT_ACTIONS = {
     "التقرير": "report", "تقرير كامل": "report", "تحليلي": "report",
     "تحليل فريق AYZR": "myread", "فريق AYZR": "myread",
     "محرك AYZR": "ayzr", "المحرك المستقل": "ayzr", "/ayzr": "ayzr",
+    "🏛️ محرك AYZR": "ayzr",
     "ayzr": "ayzr", "تحليلي الخاص": "myread", "الخاص": "myread",
     "/myread": "myread", "myread": "myread",
     "سيناريوهات": "scenarios", "مستويات": "levels", "مفتوحة": "open",
@@ -887,7 +916,7 @@ def nav(action: str) -> dict | None:
     """The keyboard under a normal card: NONE.
 
     The menu toggle is no longer an inline button inside the card -- it is the
-    standing reply keyboard (MENU_REPLY_KB) pinned at the bottom-left of the
+    standing reply keyboard (menu_reply_kb) pinned at the bottom-left of the
     screen, so it is always reachable and a card carries no buttons of its own.
     A card that IS a list (the journal) or an open trade keeps its own inline
     buttons; those are handled in keyboard_for() before this default.
@@ -922,7 +951,7 @@ def card_markup(action: str, chat: str | None = None) -> dict:
     inline buttons and the reply keyboard stays from the previous card.
     """
     inline = keyboard_for(action, chat)
-    return inline if inline is not None else MENU_REPLY_KB
+    return inline if inline is not None else menu_reply_kb(chat)
 
 
 # ========================================================================
@@ -6852,7 +6881,7 @@ def maybe_daily_report(tg: Telegram, allow: set[str]) -> None:
     if st.get("was_open") and st.get("last_sent") != today:
         text = daily_report()
         for c in _desk_chats(allow):
-            tg.send(c, text, MENU_REPLY_KB)
+            tg.send(c, text, menu_reply_kb(c))
         st["was_open"] = False
         st["last_sent"] = today
         _save_daily(st)
@@ -6885,7 +6914,7 @@ def maybe_daily_analysis(tg: Telegram, allow: set[str]) -> None:
         ok = False
         for c in _alert_chats(allow):
             try:
-                tg.send(c, text, MENU_REPLY_KB)
+                tg.send(c, text, menu_reply_kb(c))
                 ok = True
             except Exception:  # noqa: BLE001
                 continue
@@ -7395,36 +7424,36 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     note = support_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note, MENU_REPLY_KB)
+            tg.send(c, note, menu_reply_kb(c))
     note = levels_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note, MENU_REPLY_KB)
+            tg.send(c, note, menu_reply_kb(c))
     note = gate_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note, MENU_REPLY_KB)
+            tg.send(c, note, menu_reply_kb(c))
     note = trend_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note, MENU_REPLY_KB)
+            tg.send(c, note, menu_reply_kb(c))
     note = entry_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note, MENU_REPLY_KB)
+            tg.send(c, note, menu_reply_kb(c))
     # The news alert runs before the silence switch too: an important headline
     # is a fact about the market, not a trade decision, so the owner still
     # hears it when auto-trading is off.
     note = news_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note, MENU_REPLY_KB)
+            tg.send(c, note, menu_reply_kb(c))
     # The pre-event prep alert: a fact about the calendar, not a trade decision,
     # so it also runs before the silence switch.
     note = news_prep_watch(seen)
     if note:
         for c in _alert_chats(allow):
-            tg.send(c, note, MENU_REPLY_KB)
+            tg.send(c, note, menu_reply_kb(c))
     for t in all_trades():
         st = t["status"]
         was = seen.get(t["id"])
@@ -7451,7 +7480,7 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     note = trade_watch(seen)
     if note:
         for c in _desk_chats(allow):
-            tg.send(c, note, MENU_REPLY_KB)
+            tg.send(c, note, menu_reply_kb(c))
     if desk_is_silenced():
         return
     # The daily cap first: if the session already opened MAX_TRADES_DAY trades,
@@ -7546,6 +7575,42 @@ def desk_loop(tg: Telegram, allow: set[str], every_min: int = 2,
         time.sleep(max(30, every_min * 60))
 
 
+def ayzr_plan_loop(tg: Telegram, stop: threading.Event | None = None) -> None:
+    """Push AYZR's plan on its own, on a MARKET-TIED cadence.
+
+    The owner asked for section 8 to reach him without a tap, "every hour or two
+    as the market runs". So the wait is decided by what the engine just read:
+    a TREND read re-sends every AYZR_PLAN_MIN_TREND minutes (the plan is worth
+    re-hearing as price walks toward a level); a RANGE read waits
+    AYZR_PLAN_MIN_RANGE (a quiet tape does not need an hourly echo). The loop
+    reads ONE snapshot per cycle and hands it to plan_section(), so the pushed
+    plan is the same block the button prints -- no second read, no drift.
+
+    Owner-only by construction: it sends to _backup_chat() (the owner), never to
+    `allow`, so a guest never sees the owner's private plan. A dead feed or a
+    broken engine is swallowed so the loop cannot die on one bad tick.
+    """
+    if not AYZR_PLAN_PUSH:
+        return
+    chat = _backup_chat()
+    while not (stop and stop.is_set()):
+        wait_min = AYZR_PLAN_MIN_TREND
+        try:
+            import ayzr
+            snap = ayzr.snapshot()
+            if snap.get("live"):
+                text = ayzr.plan_section(snap)
+                tg.send(chat, text, menu_reply_kb(chat))
+                wait_min = (AYZR_PLAN_MIN_RANGE if snap.get("bias") is None
+                            else AYZR_PLAN_MIN_TREND)
+        except Exception as exc:  # noqa: BLE001 - one bad tick must not kill it
+            print("ayzr_plan_loop:", exc, flush=True)
+        # Sleep in small steps so a stop event is honoured promptly.
+        deadline = time.monotonic() + max(60, wait_min * 60)
+        while not (stop and stop.is_set()) and time.monotonic() < deadline:
+            time.sleep(5)
+
+
 # ========================================================================
 # entry points
 # ========================================================================
@@ -7589,8 +7654,11 @@ def start_desk(tg: Telegram, stop: threading.Event | None = None,
     restart the process itself (Fly, a VPS) leaves it off.
     """
     allow = load_allow()
-    jobs = (("desk", desk_loop, (tg, allow, 2, stop)),
-            ("backup", backup_loop, (tg, 60, stop)))
+    jobs: list[tuple[str, Callable[..., None], tuple]] = [
+        ("desk", desk_loop, (tg, allow, 2, stop)),
+        ("backup", backup_loop, (tg, 60, stop))]
+    if AYZR_PLAN_PUSH:
+        jobs.append(("ayzr_plan", ayzr_plan_loop, (tg, stop)))
     threads: list[threading.Thread] = []
     for name, fn, args in jobs:
         target = (lambda n=name, f=fn, a=args: _supervise(n, f, a, stop)) \

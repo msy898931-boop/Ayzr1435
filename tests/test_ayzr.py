@@ -129,5 +129,67 @@ class IndicatorsTest(unittest.TestCase):
         self.assertAlmostEqual(ayzr.ema([50.0] * 30, 20), 50.0, places=6)
 
 
+class PlanSectionTest(unittest.TestCase):
+    """The plan push is section 8 of the report and nothing else.
+
+    The owner asked for the plan to reach him on its own; the failure mode to
+    guard is a SECOND copy of the plan that drifts from the button's. These pin
+    that plan_section() and report() share ONE builder, and that a handed-in
+    snapshot is not re-read.
+    """
+
+    def setUp(self):
+        self._q, self._b = ayzr.quote, ayzr.bars
+        self.prices = _zigzag(3900.0, 5.0, 20, False)   # a clean downtrend
+        self.candles = _bars(self.prices)
+        last = self.prices[-1]
+        ayzr.quote = lambda: {"mid": last, "bid": last - 0.1, "ask": last + 0.1,
+                              "spread": 0.2, "dayDiffPercent": -1.2,
+                              "high": max(self.prices), "low": min(self.prices),
+                              "time": "2026-11-18T07:00:00Z"}
+        ayzr.bars = lambda tf, limit=300: list(self.candles)
+
+    def tearDown(self):
+        ayzr.quote, ayzr.bars = self._q, self._b
+
+    def test_the_plan_push_and_the_report_share_one_builder(self):
+        # Patch the ONE plan builder; both views must carry its marker. A second
+        # builder would leave the pushed plan without it.
+        real = ayzr._plan_block
+        ayzr._plan_block = lambda *a, **k: ["MARKER-PLAN-9"]
+        try:
+            snap = ayzr.snapshot()
+            self.assertIn("MARKER-PLAN-9", ayzr.plan_section(snap))
+            self.assertIn("MARKER-PLAN-9", ayzr.report())
+        finally:
+            ayzr._plan_block = real
+
+    def test_a_handed_snapshot_is_not_read_again(self):
+        calls: list[str] = []
+        real = ayzr.bars
+        ayzr.bars = lambda tf, limit=300: (calls.append(tf), list(self.candles))[1]
+        try:
+            snap = ayzr.snapshot()
+            before = len(calls)
+            ayzr.plan_section(snap)
+            self.assertEqual(len(calls), before)   # no second read of the tape
+        finally:
+            ayzr.bars = real
+
+    def test_no_price_is_a_warning_not_a_crash(self):
+        self.assertIn("ما في تسعيرة", ayzr.plan_section({"live": 0}))
+
+    def test_the_push_names_ayzr_and_carries_the_disclaimer(self):
+        out = ayzr.plan_section(ayzr.snapshot())
+        self.assertIn("AYZR", out)
+        self.assertIn("الوقف إلزامي", out)
+
+    def test_the_snapshot_carries_the_bias_the_cadence_reads(self):
+        # The push loop decides 1h vs 2h from snap["bias"]; it must be present
+        # and one of the three honest values.
+        snap = ayzr.snapshot()
+        self.assertIn(snap["bias"], ("short", "long", None))
+
+
 if __name__ == "__main__":
     unittest.main()

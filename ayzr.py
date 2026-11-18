@@ -606,35 +606,88 @@ def news_bias(items: list[tuple[str, str, str]]) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------- report
-def report() -> str:
+def snapshot() -> dict:
+    """ONE read of the tape, everything the report needs.
+
+    The report and the scheduled plan push must read the SAME moment: if each
+    called the feed on its own they could disagree about the price, and the plan
+    the owner gets by push would contradict the plan he gets by button. One read,
+    one truth -- the same rule the desk follows between its card and its map.
+    """
     q = quote()
     live = q.get("mid") or q.get("bid") or 0.0
-    if not live:
-        return "⚠️ ما في تسعيرة هلّق — جرّب بعد شوي."
-    dd = q.get("dayDiffPercent")
-    day_hi, day_lo = q.get("high"), q.get("low")
-    clock = q.get("time", "")[11:16]
-    now = datetime.now(UTC)
-
     raw = {tf: bars(tf, 400) for tf in FRAMES}
     fv = {tf: frame_view(tf, raw[tf], live) for tf in FRAMES}
     b1h = closed(raw["1h"], "1h")
     a1h = fv["1h"].get("atr") or 10.0
+    day_hi, day_lo = q.get("high"), q.get("low")
 
     st = structure(b1h)
     tol = max(3.0, a1h * 0.6)
-    rnd = round_levels(live, 10.0, 120.0)
-    extra = rnd + [x for x in (day_hi, day_lo) if x]
+    extra = round_levels(live, 10.0, 120.0) + \
+        [x for x in (day_hi, day_lo) if x]
     res, sup = sr_levels(b1h, tol, live, top=5, extra=extra)
     ups, dns = nearest_levels(live, res, sup, a1h)
     dem, sup_z = order_blocks(b1h, 3, a1h * 0.8)
     bull_g, bear_g = fair_value_gaps(b1h, a1h)
     liq = liquidity(b1h, tol)
-    cnd = candle_read(b1h)
-
     up = sum(1 for f in fv.values() if f.get("trend") == 1)
     dn = sum(1 for f in fv.values() if f.get("trend") == -1)
-    neu = len(FRAMES) - up - dn
+    bias = "short" if dn > up else ("long" if up > dn else None)
+    return {"q": q, "live": live, "raw": raw, "fv": fv, "b1h": b1h, "a1h": a1h,
+            "day_hi": day_hi, "day_lo": day_lo, "st": st, "tol": tol,
+            "res": res, "sup": sup, "ups": ups, "dns": dns, "dem": dem,
+            "sup_z": sup_z, "bull_g": bull_g, "bear_g": bear_g, "liq": liq,
+            "cnd": candle_read(b1h), "up": up, "dn": dn,
+            "neu": len(FRAMES) - up - dn, "bias": bias}
+
+
+def plan_section(snap: dict | None = None) -> str:
+    """Section 8 alone -- the plan and the strategy -- for the scheduled push.
+
+    The owner asked for the plan to reach him on its own every hour or two,
+    without opening a button. This returns EXACTLY the block the full report
+    prints as section 8 (same helpers, same numbers), so the pushed plan and the
+    button's plan can never disagree. It does NOT re-read the tape if a snapshot
+    is handed in.
+    """
+    s = snap or snapshot()
+    if not s.get("live"):
+        return "⚠️ ما في تسعيرة هلّق — جرّب بعد شوي."
+    live = s["live"]
+    L: list[str] = []
+    L.append("🏛️ <b>AYZR — خطتي والاستراتيجية</b>")
+    L.append(f"<b>{SYMBOL}</b> · السعر <b>{num(live)}</b> · "
+             f"🕐 {datetime.now(UTC).strftime('%H:%M')} UTC")
+    L.append("")
+    L += _plan_block(live, s["bias"], s["ups"], s["dns"], s["dem"], s["sup_z"],
+                     s["liq"], s["a1h"], s["st"])
+    L.append("")
+    L.append("<b>🔎 السيناريوهات</b>")
+    L += _scenarios(live, s["ups"], s["dns"], s["liq"], s["a1h"])
+    L.append("")
+    L.append("<b>🎯 التوصية</b>")
+    L.append(_recommend(live, s["bias"], s["st"], s["fv"]["1h"]))
+    L.append("")
+    L.append("<i>📌 قراءة AYZR المستقلة — اجتهاد فني، مو وعد ربح. الوقف إلزامي.</i>")
+    return "\n".join(L)
+
+
+def report() -> str:
+    s = snapshot()
+    q, live = s["q"], s["live"]
+    if not live:
+        return "⚠️ ما في تسعيرة هلّق — جرّب بعد شوي."
+    dd = q.get("dayDiffPercent")
+    day_hi, day_lo = s["day_hi"], s["day_lo"]
+    clock = q.get("time", "")[11:16]
+    now = datetime.now(UTC)
+    fv, st, tol = s["fv"], s["st"], s["tol"]
+    res, sup, liq, cnd = s["res"], s["sup"], s["liq"], s["cnd"]
+    dem, sup_z = s["dem"], s["sup_z"]
+    bull_g, bear_g = s["bull_g"], s["bear_g"]
+    ups, dns, a1h = s["ups"], s["dns"], s["a1h"]
+    up, dn, neu, bias = s["up"], s["dn"], s["neu"], s["bias"]
 
     L: list[str] = []
     L.append("🏛️ <b>AYZR — قراءة مستقلة للسوق</b>")
@@ -759,7 +812,6 @@ def report() -> str:
 
     # 8) the plan
     L.append("<b>8️⃣ خطتي والاستراتيجية</b>")
-    bias = "short" if dn > up else ("long" if up > dn else None)
     plan_txt = _plan_block(live, bias, ups, dns, dem, sup_z, liq, a1h, st)
     L += plan_txt
     L.append("")
