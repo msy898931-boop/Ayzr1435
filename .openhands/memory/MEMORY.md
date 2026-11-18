@@ -36,6 +36,25 @@ The corollaries that keep recurring:
   the fix. Run mypy — it finds bugs tests miss.
 
 ## MarketDesk — the multi-agent market/news desk (current work)
+- ⭐⭐ **A watch point carries a MEANING, not just a price.** The owner's levels
+  (3770/3780/3757) were watched by NOTHING, and the old crossing watch would have
+  fired "breakout → BUY" on a 3770 break against a 5-frame downtrend. So each
+  point is `price:R` (reject → short) or `price:S` (break → short): the alert
+  carries the trade the trend supports. Managed from the chat by the owner:
+  `راقب 3800` adds (kind inferred from the live price), `شيل 3800` drops,
+  `نقاطي` lists. OWNER-ONLY. `data/watch_points.json`, carried in the pinned
+  backup (Render has no disk).
+- ⭐ **To resolve a Telegram @username, read the pinned backup's `allow` list and
+  `getChat` each id** — a bot cannot resolve a username it has never seen
+  (`getChat "@user"` 400s). This is how @Yousefalahmad1 → `7556758323`.
+- ⭐ **AYZR audience ≠ allow-list.** `AYZR_EXTRA_CHATS` (Zein `997487756` +
+  Yousef `7556758323`) get the ENGINE button only (`may_use_ayzr`); the panel,
+  the subscriber roll and the private read stay `is_owner`.
+- 🔴 **Never seed an elapsed clock to `0.0` against `time.monotonic()`** — it is
+  the HOST's uptime. `ayzr_plan_loop` did, so the first plan waited for the
+  container to be up `AYZR_PLAN_MAX_MIN` (120 min): two hours of AYZR silence
+  after every Render deploy. Seed to `time.monotonic()` and send the first plan
+  at boot. A loop test that HANGS on a long-lived host is this bug, not a flake.
 `marketdesk/` — pure stdlib, no deps. `gather()` (biquote candles+quote → shared
 SQLite) → `dispatch()` (**news agent FIRST, alone**, then the other 7
 concurrently) → `synthesise()` (weighted scores + risk gate + plan). **8 agents:**
@@ -1014,7 +1033,6 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   checkout; the repo mirror is all there is.
 
 ## MarketDesk — the map link the owner asked for (2026-11-12)
-
 - ⭐ **The live bot on Render is BEHIND `main`.** `/health` reads
   `commit: 5b3d570` while `origin/main` is `9b09b57` — and `5b3d570` is an
   ANCESTOR of main, so the live page is an OLDER map (12 sections, **no chart**).

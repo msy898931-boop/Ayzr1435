@@ -77,10 +77,12 @@ SEED_CHATS = ["933571066", "8545528489"]
 
 # Who the owner lets see the AYZR engine and receive its scheduled plan. It is
 # the OWNER plus anyone he names -- NOT `allow`: the owner asked to give this to
-# one person (Zein, @ZeinHasan992) without opening it to every subscriber, so
-# this stays a separate, explicit list. DESK_AYZR_CHATS adds ids (comma-joined).
+# named friends (Zein @ZeinHasan992, Yousef @Yousefalahmad1) without opening it
+# to every subscriber, so this stays a separate, explicit list. DESK_AYZR_CHATS
+# adds ids (comma-joined).
 AYZR_EXTRA_CHATS = [c.strip() for c in
-                    os.environ.get("DESK_AYZR_CHATS", "997487756").split(",")
+                    os.environ.get("DESK_AYZR_CHATS",
+                                   "997487756,7556758323").split(",")
                     if c.strip()]
 
 # ---- the desk's plan, sized to the owner's account ----------------------
@@ -288,8 +290,43 @@ def _parse_watch_points(spec: str) -> tuple[tuple[float, str], ...]:
     return tuple(sorted(out))
 
 
-WATCH_POINTS: tuple[tuple[float, str], ...] = _parse_watch_points(
-    os.environ.get("DESK_WATCH_POINTS", "3770:R,3780:R,3757:S") or "")
+WATCH_POINTS_PATH = DATA / "watch_points.json"
+
+
+def _watch_points_default() -> tuple[tuple[float, str], ...]:
+    return _parse_watch_points(
+        os.environ.get("DESK_WATCH_POINTS", "3770:R,3780:R,3757:S") or "")
+
+
+def load_watch_points() -> tuple[tuple[float, str], ...]:
+    """The owner's watch points: his saved file if present, else the env seed.
+
+    Saved so he can add and drop points by typing in the chat (the whole point
+    of the feature); the env seed is only the starting set. The file rides the
+    pinned backup, so a Render restart cannot lose a point he added.
+    """
+    try:
+        d = json.loads(WATCH_POINTS_PATH.read_text(encoding="utf-8"))
+        if isinstance(d, dict):
+            pts = d.get("points")
+            if isinstance(pts, list):
+                return tuple(sorted((float(p), str(k).upper()[:1])
+                                    for p, k in pts
+                                    if isinstance(p, (int, float))))
+    except (ValueError, OSError):
+        pass
+    return _watch_points_default()
+
+
+def save_watch_points(points) -> None:
+    try:
+        WATCH_POINTS_PATH.write_text(
+            json.dumps({"points": [[p, k] for p, k in points]}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+WATCH_POINTS: tuple[tuple[float, str], ...] = load_watch_points()
 # A touch inside this band counts as REACHING the point (gold runs fast, so a
 # rejection must fire before price has already turned and left).
 WATCH_POINT_NEAR = float(os.environ.get("DESK_WATCH_POINT_NEAR", "1.5") or "1.5")
@@ -6221,7 +6258,9 @@ def alerts_guide() -> str:
             "<b>7.7️⃣ وصل نقطة مراقبة</b> 🎯\n"
             "  يعني: السعر وصل مستوى انت حددته (مقاومة أو دعم).\n"
             "  👉 <i>إذا رفض المقاومة أو كسر الدعم = فرصة بيع. الرسالة فيها "
-            "الدخول والوقف والهدف.</i>\n\n"
+            "الدخول والوقف والهدف.</i>\n"
+            "  ⚙️ <i>تديرها بكلمة منك: «راقب 3800» تضيف · «شيل 3800» تشيل · "
+            "«نقاطي» تعرضهن.</i>\n\n"
             "<b>8️⃣ باب الشراء / البيع انفتح</b> 🟢🔴\n"
             "  يعني: شمعة 15د سكّرت فوق/تحت EMA20 (فلتري).\n"
             "  👉 <i>إذا الاتجاه العام بنفس الجهة = فرصة دخول.</i>\n\n"
@@ -6389,7 +6428,8 @@ def _dump_journal() -> dict:
             "allow": sorted(load_allow()),
             "daily": _load_daily(),
             "settings": panel_state(),
-            "sticky": _sticky_load()}
+            "sticky": _sticky_load(),
+            "watch_points": [[p, k] for p, k in WATCH_POINTS]}
 
 
 def backup_journal(tg: Telegram) -> bool:
@@ -6485,6 +6525,14 @@ def restore_journal(tg: Telegram) -> int:
     sticky = blob.get("sticky")
     if isinstance(sticky, dict) and not STICKY_PATH.exists():
         _sticky_save(sticky)
+    wp = blob.get("watch_points")
+    if isinstance(wp, list) and wp and not WATCH_POINTS_PATH.exists():
+        try:
+            save_watch_points(tuple(sorted(
+                (float(p), str(k).upper()[:1]) for p, k in wp)))
+            globals()["WATCH_POINTS"] = load_watch_points()
+        except (TypeError, ValueError):
+            pass
     return n
 
 
@@ -6562,6 +6610,20 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
         action = "menu"
     if cid:
         tg.answer(cid, "جارٍ التنفيذ…")
+    # The watch points are the owner's own; a typed "راقب 3800" / "شيل 3800" /
+    # "نقاطي" is handled here, before the menu, so a guest's tap or word can
+    # never reach it. Owner-only, exactly like the panel.
+    if msg is not None and is_owner(chat):
+        cmd = parse_watch_command(text)
+        if cmd is not None:
+            verb, price, kind_word = cmd
+            try:
+                live = float(read_market()["live"])
+            except Exception:  # noqa: BLE001 - infer with the last known price
+                live = 0.0
+            out = _apply_watch_command(verb, price, kind_word, live)
+            tg.send(chat, out, card_markup("menu", chat))
+            return "watch_points"
     # Folding the list edits the message that carries it: no new message, so the
     # owner's chat is not filled with menu copies. The card itself stays, and the
     # standing reply button at the bottom of the screen is untouched.
@@ -7201,6 +7263,106 @@ def _watch_point_chats(allow: set[str]) -> list[str]:
     return [_backup_chat()]
 
 
+# The words the owner types to manage his watch points from the chat. Arabic
+# (his language) plus a couple of latin aliases; matched on the FIRST word.
+WATCH_ADD_WORDS = ("راقب", "رااقب", "ضيف", "اضف", "أضف", "add")
+WATCH_DROP_WORDS = ("شيل", "الغ", "ألغ", "احذف", "امسح", "ازل", "أزل", "delete",
+                    "remove")
+WATCH_LIST_WORDS = ("نقاطي", "نقاط", "المراقبة", "نقاطي؟", "watch")
+RESIST_WORDS = ("مقاومة", "مقاومه", "resistance", "r")
+SUPPORT_WORDS = ("دعم", "support", "s")
+
+
+def _watch_kind_for(price: float, live: float, word: str | None) -> str:
+    """The identity of a watch point: R (reject -> short) or S (break -> short).
+
+    An explicit word wins; otherwise infer from the price -- a level ABOVE the
+    live price is resistance, below is support. The owner's two natural cases
+    ("watch 3800" above, "watch 3757" below) read correctly with no word.
+    """
+    w = (word or "").strip().lower()
+    if w in RESIST_WORDS:
+        return "R"
+    if w in SUPPORT_WORDS:
+        return "S"
+    return "R" if price >= live else "S"
+
+
+def parse_watch_command(text: str) -> tuple[str, float, str | None] | None:
+    """Read a watch-point command from the owner's message, or None.
+
+    Accepts "راقب 3800", "راقب 3800 مقاومة", "شيل 3800", "نقاطي". The number may
+    carry a comma (3,800) and the kind word is optional. Pure, so a test pins it
+    without a network.
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    parts = t.split()
+    head = parts[0]
+    if head in WATCH_LIST_WORDS:
+        return ("list", 0.0, None)
+    verb = "add" if head in WATCH_ADD_WORDS else (
+        "drop" if head in WATCH_DROP_WORDS else None)
+    if verb is None:
+        return None
+    price = None
+    kind_word = None
+    for tok in parts[1:]:
+        clean = tok.replace(",", "").replace("،", "")
+        try:
+            price = float(clean)
+            continue
+        except ValueError:
+            pass
+        if kind_word is None:
+            kind_word = tok
+    if price is None:
+        return None
+    return (verb, price, kind_word)
+
+
+def _watch_points_listing(points) -> str:
+    if not points:
+        return "📭 ما عندك نقاط مراقبة حالياً. اكتب مثلاً: «راقب 3800»."
+    lines = ["🎯 <b>نقاط مراقبتك</b> — " + SYMBOL, ""]
+    for px, kind in points:
+        label = "مقاومة (رفض = بيع)" if kind == "R" else "دعم (كسر = بيع)"
+        lines.append(f"  • <b>{num(px)}</b> — {label}")
+    lines.append("")
+    lines.append("<i>لإضافة: «راقب 3800» · للإزالة: «شيل 3800».</i>")
+    return "\n".join(lines)
+
+
+def _apply_watch_command(verb: str, price: float, kind_word: str | None,
+                         live: float) -> str:
+    """Apply a watch-point command and return the reply. Mutates WATCH_POINTS."""
+    global WATCH_POINTS
+    if verb == "list":
+        return _watch_points_listing(WATCH_POINTS)
+    if verb == "drop":
+        kept = tuple((p, k) for p, k in WATCH_POINTS
+                     if abs(p - price) > WATCH_POINT_NEAR)
+        if len(kept) == len(WATCH_POINTS):
+            return (f"🤔 ما لقيت نقطة قريبة من <b>{num(price)}</b>.\n"
+                    "اكتب «نقاطي» لشوف نقاطك.")
+        WATCH_POINTS = kept
+        save_watch_points(WATCH_POINTS)
+        return (f"✅ شلت نقطة <b>{num(price)}</b>.\n"
+                + _watch_points_listing(WATCH_POINTS))
+    kind = _watch_kind_for(price, live, kind_word)
+    merged = {p: k for p, k in WATCH_POINTS}
+    merged[round(price, 2)] = kind
+    WATCH_POINTS = tuple(sorted(merged.items()))
+    save_watch_points(WATCH_POINTS)
+    label = "مقاومة" if kind == "R" else "دعم"
+    what = "إذا رفضها السعر = فرصة بيع." if kind == "R" else (
+        "إذا كسرها السعر = فرصة بيع.")
+    return (f"✅ ضفت نقطة <b>{num(price)}</b> ({label}).\n"
+            f"<i>{what} رح تنبهك لما السعر يوصلها.</i>\n\n"
+            + _watch_points_listing(WATCH_POINTS))
+
+
 def watch_points_watch(seen: dict) -> str | None:
     """Speak when price REACHES a named watch point, and say the trade it means.
 
@@ -7780,7 +7942,13 @@ def ayzr_plan_loop(tg: Telegram, stop: threading.Event | None = None) -> None:
     last_bias: str | None = None
     last_px: float | None = None
     atr: float | None = None
-    sent_at = 0.0
+    # Seed the clock to NOW, not to 0.0. time.monotonic() is the HOST's uptime,
+    # so a literal 0.0 made the first plan "due" only once the container itself
+    # had been up for AYZR_PLAN_MAX_MIN -- on Render that is two hours of
+    # silence after every deploy, and on a freshly booted host the loop never
+    # sent at all. Elapsed is a duration, so it must be measured from boot-of-
+    # the-loop.
+    sent_at = time.monotonic()
     booted = False
     while not (stop and stop.is_set()):
         try:
@@ -7792,7 +7960,10 @@ def ayzr_plan_loop(tg: Telegram, stop: threading.Event | None = None) -> None:
                     last_px = px
                 elapsed = time.monotonic() - sent_at
                 moved = abs(px - last_px)
-                if _ayzr_plan_due(elapsed, moved, atr):
+                # The FIRST plan goes out at boot (the owner should not wait a
+                # window for the current read); after that it is the distance
+                # rule alone.
+                if not booted or _ayzr_plan_due(elapsed, moved, atr):
                     snap = ayzr.snapshot()
                     if snap.get("live"):
                         bias = snap.get("bias")

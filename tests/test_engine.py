@@ -44,6 +44,10 @@ def setUpModule():
     global _STICKY_DIR, _DB_DIR
     _STICKY_DIR = tempfile.mkdtemp()
     bot.STICKY_PATH = pathlib.Path(_STICKY_DIR) / "levels.json"
+    # The watch-points file is WRITTEN by the chat commands ("راقب 3800"), so it
+    # must be isolated too -- otherwise a run adds a fake point to the real
+    # data/watch_points.json and the live alert fires on a level nobody set.
+    bot.WATCH_POINTS_PATH = pathlib.Path(_STICKY_DIR) / "watch_points.json"
     _DB_DIR = tempfile.mkdtemp()
     bot.DB_PATH = pathlib.Path(_DB_DIR) / "journal.db"
     bot._init_db()
@@ -52,6 +56,7 @@ def setUpModule():
 def tearDownModule():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     bot.STICKY_PATH = pathlib.Path(root) / "data" / "levels_seen.json"
+    bot.WATCH_POINTS_PATH = pathlib.Path(root) / "data" / "watch_points.json"
     bot.DB_PATH = pathlib.Path(root) / "data" / "journal.db"
 
 
@@ -672,6 +677,88 @@ class WatchPointsTest(unittest.TestCase):
         # junk tokens are skipped, not fatal
         self.assertEqual(bot._parse_watch_points("3770:R,,bad,x"),
                          ((3770.0, "R"),))
+
+    # ---- the owner types it in the chat ----------------------------------
+    def test_parse_reads_the_arabic_commands(self):
+        self.assertEqual(bot.parse_watch_command("راقب 3800"), ("add", 3800.0, None))
+        self.assertEqual(bot.parse_watch_command("راقب 3,800"), ("add", 3800.0, None))
+        self.assertEqual(bot.parse_watch_command("شيل 3770"), ("drop", 3770.0, None))
+        self.assertEqual(bot.parse_watch_command("نقاطي"), ("list", 0.0, None))
+        # an explicit kind word is carried through
+        self.assertEqual(bot.parse_watch_command("راقب 3800 دعم"),
+                         ("add", 3800.0, "دعم"))
+        # a plain message is not a command
+        self.assertIsNone(bot.parse_watch_command("شو رايك بالسوق"))
+
+    def test_the_kind_is_inferred_from_the_live_price(self):
+        # above the price = resistance, below = support
+        self.assertEqual(bot._watch_kind_for(3800.0, 3772.0, None), "R")
+        self.assertEqual(bot._watch_kind_for(3757.0, 3772.0, None), "S")
+        # an explicit word overrides the inference
+        self.assertEqual(bot._watch_kind_for(3800.0, 3772.0, "دعم"), "S")
+
+    def test_adding_a_point_saves_it_and_it_survives_a_reload(self):
+        saved = bot.WATCH_POINTS
+        try:
+            bot.WATCH_POINTS = ((3770.0, "R"),)
+            out = bot._apply_watch_command("add", 3800.0, None, 3772.0)
+            self.assertIn("3800", out.replace(",", ""))
+            self.assertIn((3800.0, "R"), bot.WATCH_POINTS)
+            # a fresh load reads it back -- the point outlives the process
+            self.assertIn((3800.0, "R"), bot.load_watch_points())
+        finally:
+            bot.WATCH_POINTS = saved
+
+    def test_dropping_a_point_removes_it(self):
+        saved = bot.WATCH_POINTS
+        try:
+            bot.WATCH_POINTS = ((3757.0, "S"), (3770.0, "R"), (3780.0, "R"))
+            out = bot._apply_watch_command("drop", 3770.0, None, 3772.0)
+            self.assertIn("3770", out.replace(",", ""))
+            self.assertNotIn(3770.0, [p for p, _ in bot.WATCH_POINTS])
+            self.assertIn((3757.0, "S"), bot.WATCH_POINTS)
+        finally:
+            bot.WATCH_POINTS = saved
+
+    def test_dropping_an_unknown_point_says_so_and_changes_nothing(self):
+        saved = bot.WATCH_POINTS
+        try:
+            bot.WATCH_POINTS = ((3770.0, "R"),)
+            out = bot._apply_watch_command("drop", 3500.0, None, 3772.0)
+            self.assertIn("ما لقيت", out)
+            self.assertEqual(bot.WATCH_POINTS, ((3770.0, "R"),))
+        finally:
+            bot.WATCH_POINTS = saved
+
+
+class AyzrAudienceTest(unittest.TestCase):
+    """The AYZR engine goes to the owner and the people he named -- and only
+    to them. A guest gets the button hidden and the card refused."""
+
+    def test_the_named_friends_may_use_the_engine(self):
+        # Zein and Yousef, the two the owner named
+        self.assertTrue(bot.may_use_ayzr("997487756"))
+        self.assertTrue(bot.may_use_ayzr("7556758323"))
+
+    def test_the_owner_may_use_the_engine(self):
+        self.assertTrue(bot.may_use_ayzr(bot.SEED_CHATS[0]))
+
+    def test_a_plain_guest_may_not(self):
+        self.assertFalse(bot.may_use_ayzr("1027149110"))
+        self.assertFalse(bot.may_use_ayzr("000000"))
+
+    def test_a_named_friend_is_not_the_owner(self):
+        # the engine is shared; the panel, the roll and the private read are not
+        self.assertFalse(bot.is_owner("7556758323"))
+        self.assertFalse(bot.is_owner("997487756"))
+
+    def test_the_button_appears_only_for_the_audience(self):
+        kb = bot.menu_reply_kb("7556758323")
+        texts = [b["text"] for row in kb["keyboard"] for b in row]
+        self.assertIn(bot.AYZR_BUTTON_TEXT, texts)
+        guest = bot.menu_reply_kb("1027149110")
+        gtexts = [b["text"] for row in guest["keyboard"] for b in row]
+        self.assertNotIn(bot.AYZR_BUTTON_TEXT, gtexts)
 
 
 class WindowTest(unittest.TestCase):
@@ -3817,6 +3904,49 @@ class AyzrButtonTest(unittest.TestCase):
                                         return_value="REPORT"):
             bot.ayzr_plan_loop(tg, stop)
         self.assertEqual([t for _, t in sent][:2], ["PLAN", "REPORT"])
+
+    def test_the_first_plan_goes_out_at_boot(self):
+        # The loop's clock starts at boot, not at 0.0. A literal 0.0 measured
+        # elapsed against the HOST's uptime, so the first plan was "due" only
+        # once the container had been up a full window -- on Render, two hours
+        # of silence after every deploy. This pins the fix: one plan, now.
+        import threading
+
+        import ayzr as engine
+        sent: list[str] = []
+        stop = threading.Event()
+        ticks = {"n": 0}
+
+        def fake_quote():
+            ticks["n"] += 1
+            if ticks["n"] > 5:
+                stop.set()
+            return {"mid": 3900.0}
+
+        def fake_send(chat, text, markup=None):
+            sent.append(text)
+
+        tg = unittest.mock.Mock()
+        tg.send.side_effect = fake_send
+        with unittest.mock.patch.object(bot, "_ayzr_plan_chats",
+                                        return_value=[self.OWNER]), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_PUSH", True), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_MIN_MIN", 30), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_MAX_MIN", 120), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_STEP_S", 0.001), \
+             unittest.mock.patch.object(engine, "quote",
+                                        side_effect=fake_quote), \
+             unittest.mock.patch.object(engine, "snapshot",
+                                        return_value={"live": 3900.0,
+                                                      "a1h": 16.0,
+                                                      "bias": "short"}), \
+             unittest.mock.patch.object(engine, "plan_section",
+                                        return_value="PLAN"), \
+             unittest.mock.patch.object(engine, "report",
+                                        return_value="REPORT"):
+            bot.ayzr_plan_loop(tg, stop)
+        self.assertEqual(sent, ["PLAN"])     # exactly one, and it went out now
+
 
     def test_a_flat_tape_does_not_re_send(self):
         # The floor and the distance rule together: once sent, a tape that does
