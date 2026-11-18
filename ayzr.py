@@ -12,8 +12,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
+import urllib.parse
 import urllib.request
+from contextlib import suppress
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from html import unescape as _unescape
 from itertools import pairwise
 
 # ---------------------------------------------------------------- feed + cfg
@@ -487,6 +493,118 @@ def build_plan(live: float, direction: str, stop_level: float,
             "gain_usd": gain, "rr": rr, "pts": pts}
 
 
+# ---------------------------------------------------------------- news
+# My own news layer: keyless Google News RSS, Arabic, filtered to what actually
+# moves gold (the metal, the dollar, the Fed/rate/inflation path) and stripped
+# of retail noise (karat shop prices, other currencies). INFORMATION ONLY --
+# news never opens, blocks or sizes a trade here; it only colours the read.
+_NEWS_CACHE: dict = {"at": 0.0, "items": []}
+NEWS_CACHE_S = 600
+NEWS_QUERIES = tuple(
+    q.strip() for q in os.environ.get(
+        "AYZR_NEWS_QUERY",
+        "الذهب الفوري|مؤشر الدولار|الفيدرالي الفائدة|التضخم الأميركي").split("|")
+    if q.strip())
+NEWS_LANG = os.environ.get("AYZR_NEWS_LANG", "ar").strip()
+NEWS_REGION = os.environ.get("AYZR_NEWS_REGION", "SA").strip()
+_NEWS_KEEP = ("ذهب", "gold", "xau", "أونصة", "اونصة", "أوقية", "اوقية", "نفيسة",
+              "دولار", "dollar", "dxy", "فيدرالي", "فدرالي", "الاحتياطي",
+              "المركزي", "fomc", "باول", "تضخم", "inflation", "cpi",
+              "فائدة", "عائد", "yield")
+_NEWS_NOISE = ("عيار", "الكندي", "الأسترالي", "الاسترالي", "النيوزلندي",
+               "الجنيه", "محلات", "أسعار الذهب اليوم", "في مصر", "في السعودية",
+               "في الإمارات", "في الكويت", "في قطر", "في الأردن", "في سوريا",
+               "في لبنان", "في العراق", "في تركيا", "في المغرب")
+
+
+def _news_keep(title: str) -> bool:
+    low = title.lower()
+    if any(w in low for w in _NEWS_NOISE):
+        return False
+    return any(w in low for w in _NEWS_KEEP)
+
+
+def _news_tag(title: str) -> str:
+    low = title.lower()
+    if any(w in low for w in ("رفع", "تشديد", "فائدة", "yield", "hawk")):
+        return "🦅"
+    if any(w in low for w in ("خفض", "تيسير", "cut", "dove")):
+        return "🕊️"
+    if any(w in low for w in ("تضخم", "inflation", "cpi")):
+        return "🔥"
+    if any(w in low for w in ("دولار", "dollar", "dxy")):
+        return "📈"
+    return "▫️"
+
+
+def _news_one(query: str) -> list[tuple[datetime, str, str]]:
+    q = urllib.parse.quote(query)
+    url = (f"https://news.google.com/rss/search?q={q}"
+           f"&hl={NEWS_LANG}&gl={NEWS_REGION}&ceid={NEWS_REGION}:{NEWS_LANG}")
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        raw = r.read().decode("utf-8", "ignore")
+    out = []
+    for block in re.findall(r"<item>(.*?)</item>", raw, re.DOTALL)[:10]:
+        m = re.search(r"<title>(.*?)</title>", block, re.DOTALL)
+        if not m:
+            continue
+        title = _unescape(re.sub(r"<!\[CDATA\[|\]\]>", "", m.group(1)).strip())
+        stamp = datetime.min.replace(tzinfo=UTC)
+        when = ""
+        pm = re.search(r"<pubDate>(.*?)</pubDate>", block, re.DOTALL)
+        if pm:
+            with suppress(Exception):  # a bad date must not kill the feed
+                stamp = parsedate_to_datetime(pm.group(1).strip())
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=UTC)
+                when = stamp.astimezone(UTC).strftime("%d/%m %H:%M")
+        out.append((stamp, title, when))
+    return out
+
+
+def news_headlines(limit: int = 8) -> list[tuple[str, str, str]]:
+    """Fresh gold/dollar/Fed headlines, newest first, cached for ten minutes."""
+    now = time.monotonic()
+    if _NEWS_CACHE["items"] and now - _NEWS_CACHE["at"] < NEWS_CACHE_S:
+        return list(_NEWS_CACHE["items"])[:limit]
+    merged: list[tuple[datetime, str, str]] = []
+    for query in NEWS_QUERIES:
+        try:
+            merged += _news_one(query)
+        except Exception:  # noqa: BLE001,S112 - one dead query must not kill the rest
+            continue
+    merged.sort(key=lambda x: x[0], reverse=True)
+    out, seen = [], set()
+    for _stamp, title, when in merged:
+        if not _news_keep(title):
+            continue
+        key = title[:40].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((_news_tag(title), title, when))
+    _NEWS_CACHE["at"], _NEWS_CACHE["items"] = now, out
+    return out[:limit]
+
+
+def news_bias(items: list[tuple[str, str, str]]) -> tuple[str, str]:
+    """A crude tally: do the headlines lean against gold, with it, or neither?
+
+    Hawkish Fed / a strong dollar is bearish for gold; easing / a weak dollar is
+    bullish. This is a HINT from the tags, not a signal -- it never sizes or
+    opens a trade, it only tells the reader which way the wind blows.
+    """
+    hawk = sum(1 for t, _x, _w in items if t == "🦅")
+    dove = sum(1 for t, _x, _w in items if t == "🕊️")
+    dxy = sum(1 for t, _x, _w in items if t == "📈")
+    if hawk + dxy > dove:
+        return "ضد الذهب (قوة دولار/تشديد)", "🔻"
+    if dove > hawk + dxy:
+        return "مع الذهب (تيسير/ضعف دولار)", "🔺"
+    return "متوازن — لا ميل واضح", "➖"
+
+
 # ---------------------------------------------------------------- report
 def report() -> str:
     q = quote()
@@ -627,20 +745,32 @@ def report() -> str:
         L.append(f"• Stochastic(1س): %K {k:.0f} · %D {d:.0f}")
     L.append("")
 
-    # 7) the plan
-    L.append("<b>7️⃣ خطتي والاستراتيجية</b>")
+    # 7) news
+    L.append("<b>7️⃣ الأخبار (طبقة خاصة فيي)</b>")
+    news = news_headlines(8)
+    if news:
+        nb, nb_icon = news_bias(news)
+        L.append(f"• الميل الإخباري: {nb_icon} <b>{nb}</b>")
+        for tag, title, when in news[:6]:
+            L.append(f"• {tag} {title}" + (f" <i>({when})</i>" if when else ""))
+    else:
+        L.append("• ما في عناوين هلّق (الفييد ساكت أو محجوب).")
+    L.append("")
+
+    # 8) the plan
+    L.append("<b>8️⃣ خطتي والاستراتيجية</b>")
     bias = "short" if dn > up else ("long" if up > dn else None)
     plan_txt = _plan_block(live, bias, ups, dns, dem, sup_z, liq, a1h, st)
     L += plan_txt
     L.append("")
 
-    # 8) scenarios
-    L.append("<b>8️⃣ السيناريوهات</b>")
+    # 9) scenarios
+    L.append("<b>9️⃣ السيناريوهات</b>")
     L += _scenarios(live, ups, dns, liq, a1h)
     L.append("")
 
-    # 9) recommendation
-    L.append("<b>9️⃣ التوصية</b>")
+    # 10) recommendation
+    L.append("<b>🔟 التوصية</b>")
     L.append(_recommend(live, bias, st, fv["1h"]))
     L.append("")
     L.append("<i>📌 قراءة AYZR المستقلة — اجتهاد فني من شمعات حيّة، "

@@ -2940,6 +2940,7 @@ class CollapsibleMenuTest(unittest.TestCase):
             "journal_menu", "daily",
             "who", "howto", "alerts", "help", "collapse", "menu", "settings",
             "menu_back", "menu_analysis", "menu_map", "menu_journal", "myread",
+            "ayzr",
         }
         pairs = [p for row in bot.MENU for p in row]
         for rows in bot.SUBMENUS.values():
@@ -3573,6 +3574,57 @@ class MyReadCardTest(unittest.TestCase):
             out = bot.card_myread()
         self.assertIn("بلا ترند", out)
         self.assertNotIn("قوة اتجاه مقبولة", out)
+
+
+class AyzrButtonTest(unittest.TestCase):
+    OWNER, GUEST = "933571066", "555"
+
+    def _cb(self, chat, data, mid=99):
+        return {"callback_query": {"id": "c1", "data": data,
+                                   "message": {"message_id": mid,
+                                               "chat": {"id": chat}}}}
+
+    def test_the_button_is_in_the_menu(self):
+        actions = [a for row in bot.MENU for _t, a in row]
+        self.assertIn("ayzr", actions)
+
+    def test_the_button_is_its_own_row_below_myread(self):
+        # It must be a SEPARATE button, not folded into the myread row: the owner
+        # asked for the independent engine to stand alone.
+        self.assertEqual(bot.MENU[0][0], ("🔒 تحليل فريق AYZR", "myread"))
+        self.assertEqual(bot.MENU[1][0], ("🏛️ محرك AYZR المستقل", "ayzr"))
+
+    def test_the_owner_sees_it_and_a_guest_does_not(self):
+        owner = [a for r in bot._menu_rows(self.OWNER) for _, a in r]
+        guest = [a for r in bot._menu_rows(self.GUEST) for _, a in r]
+        self.assertIn("ayzr", owner)
+        self.assertNotIn("ayzr", guest)
+
+    def test_a_guest_tap_is_refused(self):
+        tg = unittest.mock.Mock()
+        bot.handle(tg, self._cb(self.GUEST, "ayzr"), {self.OWNER, self.GUEST})
+        sent = " ".join(str(c.args[1]) for c in tg.send.call_args_list)
+        self.assertIn("للمالك", sent)
+
+    def test_the_text_triggers_route_to_it(self):
+        for t in ("محرك AYZR", "المحرك المستقل", "/ayzr", "ayzr"):
+            self.assertEqual(bot.action_for(t), "ayzr")
+
+    def test_the_door_returns_the_engine_report_verbatim(self):
+        # card_ayzr is only a DOOR: whatever ayzr.report() returns is what the
+        # button shows. bot.py must compute nothing of its own here.
+        import ayzr as engine
+        with unittest.mock.patch.object(engine, "report",
+                                        return_value="MARKER-12345"):
+            self.assertEqual(bot.card_ayzr(), "MARKER-12345")
+
+    def test_a_broken_engine_says_so_instead_of_crashing(self):
+        import ayzr as engine
+        with unittest.mock.patch.object(engine, "report",
+                                        side_effect=RuntimeError("boom")):
+            out = bot.card_ayzr()
+        self.assertIn("AYZR", out)
+        self.assertIn("تعذّر", out)
 
 
 class DeskTickRestartTest(_DbCase):

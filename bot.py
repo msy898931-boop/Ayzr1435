@@ -570,6 +570,7 @@ NEWS_ITEMS: list[tuple[str, str]] = [
 
 MENU = [
     [("🔒 تحليل فريق AYZR", "myread")],
+    [("🏛️ محرك AYZR المستقل", "ayzr")],
     [("🧠 قراءتي للسوق", "full")],
     [("🥇 التحليل والتوصية", "menu_analysis")],
     [("🗺️ الخرائط والأخبار", "menu_map")],
@@ -609,7 +610,7 @@ SUBMENUS = {
 # control panel and the book of who is on the bot. `_menu_rows` drops them for a
 # guest, so a subscriber never sees the desk's switches, the subscriber roll, or
 # the owner's own read.
-GUEST_HIDDEN_ACTIONS = {"settings", "who", "myread"}
+GUEST_HIDDEN_ACTIONS = {"settings", "who", "myread", "ayzr"}
 
 
 def _menu_rows(chat: str | None = None) -> list:
@@ -647,9 +648,10 @@ TEXT_ACTIONS = {
     "كامل": "full", "شامل": "full", "كل شي": "full", "التحليل الكامل": "full",
     "تفصيلي": "report", "التحليل التفصيلي": "report", "تقرير": "report",
     "التقرير": "report", "تقرير كامل": "report", "تحليلي": "report",
-    "تحليل فريق AYZR": "myread", "فريق AYZR": "myread", "ayzr": "myread",
-    "تحليلي الخاص": "myread", "الخاص": "myread", "/myread": "myread",
-    "myread": "myread",
+    "تحليل فريق AYZR": "myread", "فريق AYZR": "myread",
+    "محرك AYZR": "ayzr", "المحرك المستقل": "ayzr", "/ayzr": "ayzr",
+    "ayzr": "ayzr", "تحليلي الخاص": "myread", "الخاص": "myread",
+    "/myread": "myread", "myread": "myread",
     "سيناريوهات": "scenarios", "مستويات": "levels", "مفتوحة": "open",
     "الصفقات": "open", "سجل": "journal_menu", "السجل": "journal_menu",
     "يومي": "j_day", "اليوم": "j_day", "أسبوعي": "j_week", "اسبوعي": "j_week",
@@ -6137,6 +6139,25 @@ def alerts_guide() -> str:
             "<i>قراءة تحليلية، مو وعد ربح.</i>")
 
 
+def card_ayzr() -> str:
+    """🏛️ AYZR's INDEPENDENT read -- a separate engine, not this bot's.
+
+    The owner asked for a reader of his own, and for it to live behind its own
+    menu button. This function is only the DOOR: it imports `ayzr` lazily (so
+    the two engines share no code at import time) and returns that module's own
+    report verbatim. bot.py never computes a single number here -- swap the
+    engine out and this button would still just print whatever ayzr says.
+    """
+    try:
+        import ayzr
+    except Exception as exc:  # noqa: BLE001 - a broken engine must say so
+        return f"⚠️ محرك AYZR مو متاح: {esc(str(exc))}"
+    try:
+        return ayzr.report()
+    except Exception as exc:  # noqa: BLE001 - a dead feed must not kill the bot
+        return f"⚠️ محرك AYZR تعذّر يقرا السوق: {esc(str(exc))}"
+
+
 def dispatch(action: str) -> str:
     return {
         "analysis": card_analysis,
@@ -6149,6 +6170,7 @@ def dispatch(action: str) -> str:
         "map": card_map,
         "report": card_report,
         "myread": card_myread,
+        "ayzr": card_ayzr,
         "news": card_news,
         "news_prep": card_news_prep,
         "open": card_open,
@@ -6459,6 +6481,12 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
         out = "⛔ هالتحليل للمالك بس."
         tg.send(chat, out, card_markup("menu", chat))
         return "myread"
+    if action == "ayzr" and not is_owner(chat):
+        # AYZR's independent engine is the owner's own reader too. Same two
+        # locks as `myread`: hidden from a guest's grid, and refused here.
+        out = "⛔ محرك AYZR للمالك بس."
+        tg.send(chat, out, card_markup("menu", chat))
+        return "ayzr"
     try:
         if action == "trade":
             out = record_trade(text)
@@ -7599,6 +7627,7 @@ def selftest() -> int:
     print("== map ==", card_map()[:120].replace("\n", " "))
     print("== report ==", card_report()[:120].replace("\n", " "))
     print("== myread ==", card_myread()[:120].replace("\n", " "))
+    print("== ayzr ==", card_ayzr()[:120].replace("\n", " "))
     print("== news ==", card_news()[:120].replace("\n", " "))
     print("== scenarios ==", card_scenarios()[:120].replace("\n", " "))
     print("== journal ==", journal_menu_text().replace("\n", " | "))
