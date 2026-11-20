@@ -2651,6 +2651,72 @@ class AnalystEyeTest(_DbCase):
         self.assertEqual(bot._break_levels([3923.31], []), (None, 3923.81))
 
 
+class ScenarioReachTest(unittest.TestCase):
+    """A break scenario must be reachable today.
+
+    The owner was sent a "buy above 3,759" plan while gold traded 3,554 -- a
+    trigger 205 points away, because after a one-way slide _levels falls back
+    to a swing extreme. A priced trade the market cannot reach before the
+    session ends is a wish, so a far trigger is named as a level to watch.
+    """
+
+    def test_a_near_trigger_is_reachable(self):
+        # 30 points away with a 28-point 1h ATR: about one bar's travel.
+        self.assertTrue(bot._scen_is_reachable(3554.0, 3584.0, 28.0))
+
+    def test_a_205_point_trigger_is_not_reachable(self):
+        self.assertFalse(bot._scen_is_reachable(3554.0, 3759.1, 28.0))
+
+    def test_the_limit_is_measured_in_atrs_not_points(self):
+        # Same 60-point gap: reachable in a wild tape, not in a dead one.
+        self.assertTrue(bot._scen_is_reachable(3554.0, 3614.0, 30.0))
+        self.assertFalse(bot._scen_is_reachable(3554.0, 3614.0, 10.0))
+
+    def test_a_missing_input_never_blocks_a_scenario(self):
+        # No ATR (a feed hiccup) must leave the card exactly as it was.
+        self.assertTrue(bot._scen_is_reachable(3554.0, 3759.1, None))
+        self.assertTrue(bot._scen_is_reachable(3554.0, None, 28.0))
+        self.assertTrue(bot._scen_is_reachable(0.0, 3759.1, 28.0))
+
+    def test_the_far_note_names_the_distance_and_calls_it_a_watch_level(self):
+        note = bot._scen_far_note(3554.0, 3759.1, 28.0)
+        self.assertIn("3,759.10", note)
+        self.assertIn("205", note)
+        self.assertIn("7.3×", note)          # 205.1 / 28.0
+        self.assertIn("مستوى للمراقبة", note)
+        self.assertNotIn("الهدف", note)      # never a priced trade
+
+    def test_the_prep_card_refuses_to_price_an_unreachable_break(self):
+        events = [{"title": "CPI m/m", "currency": "USD", "impact": "High",
+                   "when": datetime.now(UTC) + timedelta(minutes=40),
+                   "forecast": "3.1%", "previous": "3.0%"}]
+        with unittest.mock.patch.object(bot, "_cal_fetch", return_value=events), \
+             unittest.mock.patch.object(bot, "read_market",
+                                        return_value={"live": 3554.0,
+                                                      "atrs": {"1h": 28.0}}), \
+             unittest.mock.patch.object(bot, "_levels",
+                                        return_value=([3758.6], [3514.55])):
+            out = bot.card_news_prep()
+        # The far resistance is named, never priced.
+        self.assertIn("3,759.10", out)
+        self.assertIn("مستوى للمراقبة", out)
+        self.assertNotIn("لو كسر فوق", out)
+        # The near support (40 points) is still a real plan.
+        self.assertIn("لو كسر تحت", out)
+        self.assertIn("وقف", out)
+
+    def test_the_scenario_card_refuses_to_price_an_unreachable_break(self):
+        with unittest.mock.patch.object(bot, "read_market",
+                                        return_value={"live": 3554.0,
+                                                      "atrs": {"1h": 28.0}}), \
+             unittest.mock.patch.object(bot, "_levels",
+                                        return_value=([3758.6], [3514.55])):
+            out = bot.card_scenarios()
+        self.assertIn("مستوى للمراقبة", out)
+        self.assertNotIn("سيناريو صعود", out)
+        self.assertIn("سيناريو هبوط", out)
+
+
 class DailyAnalysisTest(unittest.TestCase):
     """daily_analysis: the full numbered Arabic report, and it always ends with
     the honesty note the owner asked for."""

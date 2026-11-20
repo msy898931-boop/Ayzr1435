@@ -348,6 +348,13 @@ ENTRY_NEAR_PTS = float(os.environ.get("DESK_ENTRY_NEAR_PTS", "6") or "6")
 # A break is confirmed a hair PAST the level, not at it -- a touch is not a
 # break. One constant so every card that names a break quotes the same price.
 BREAK_EPS = 0.5
+# A break scenario is only worth arming if the trigger is REACHABLE today. After
+# a one-way slide the 1h pivot list holds no level near the price, so _levels
+# falls back to a swing extreme that can sit 200 points away; quoting a trade
+# there is a plan the market cannot reach before the session ends. Measured in
+# 1h ATRs so it travels with volatility. A trigger further than this is named
+# as a level to watch, never priced as a trade.
+SCEN_MAX_ATR = float(os.environ.get("DESK_SCEN_MAX_ATR", "3") or "3")
 # THE ENTRY BASIS. The owner's rule, stated three times: the desk may NOT open
 # at market in the middle of the range. A trade is only taken when price has
 # EARNED it one of two ways --
@@ -1804,6 +1811,35 @@ def _break_levels(res: list[float],
     return down, up
 
 
+def _scen_reach(live: float, trig: float | None, atr_1h: float | None) -> float | None:
+    """How many 1h ATRs the trigger sits away from the price, or None.
+
+    None means "do not judge": a missing price, a missing trigger or a missing
+    ATR must leave the card behaving exactly as it did before this guard.
+    """
+    if not trig or not live or not atr_1h or atr_1h <= 0:
+        return None
+    return abs(trig - live) / atr_1h
+
+
+def _scen_is_reachable(live: float, trig: float | None,
+                       atr_1h: float | None) -> bool:
+    """True when a break trigger is close enough to be a plan, not a wish."""
+    reach = _scen_reach(live, trig, atr_1h)
+    return reach is None or reach <= SCEN_MAX_ATR
+
+
+def _scen_far_note(live: float, trig: float, atr_1h: float | None) -> str:
+    """The honest line for a level too far to trade off today."""
+    reach = _scen_reach(live, trig, atr_1h)
+    dist = abs(trig - live)
+    if reach is None:
+        return (f"  — <b>{num(trig)}</b> بعيد {dist:.0f} نقطة — "
+                "مستوى للمراقبة، مش صفقة اليوم.")
+    return (f"  — <b>{num(trig)}</b> بعيد {dist:.0f} نقطة "
+            f"({reach:.1f}× تقلّب الساعة) — مستوى للمراقبة، مش صفقة اليوم.")
+
+
 def card_scenarios() -> str:
     """The two conditional trades, priced by the desk's own rules.
 
@@ -1817,33 +1853,42 @@ def card_scenarios() -> str:
     live = m["live"]
     res, sup = _levels(live)
     dn_trig, up_trig = _break_levels(res, sup)
+    atr_1h = (m.get("atrs") or {}).get("1h")
     lines = [f"🎬 <b>السيناريوهات</b> — {SYMBOL}",
              f"السعر <b>{num(live)}</b>", ""]
     if not res and not sup:
         lines.append("ما قدرت أقرأ المستويات الآن.")
         return "\n".join(lines)
     if up_trig is not None:
-        p = _sized(up_trig, "long", res[0])
-        nxt = f" · المقاومة التالية {num(res[1])}" if len(res) > 1 else ""
-        lad = _ladder_line("long", up_trig, p["stop"], res, sup, p["gain_usd"])
-        lines += ["<b>🟢 سيناريو صعود</b>",
-                  f"  المشغّل: اختراق <b>{num(up_trig)}</b> "
-                  f"(+{up_trig - live:.1f} نقطة){nxt}",
-                  f"  الوقف: {num(p['stop'])} · الهدف: {num(p['target'])}",
-                  f"  R:R ≈ {p['rr']:.2f} (مخاطرة ${p['risk_usd']:.0f})", ""]
-        if lad:
-            lines.insert(len(lines) - 1, f"  🎯 سلّم الأهداف: {lad}")
+        if not _scen_is_reachable(live, up_trig, atr_1h):
+            lines.append(_scen_far_note(live, up_trig, atr_1h))
+            lines.append("")
+        else:
+            p = _sized(up_trig, "long", res[0])
+            nxt = f" · المقاومة التالية {num(res[1])}" if len(res) > 1 else ""
+            lad = _ladder_line("long", up_trig, p["stop"], res, sup, p["gain_usd"])
+            lines += ["<b>🟢 سيناريو صعود</b>",
+                      f"  المشغّل: اختراق <b>{num(up_trig)}</b> "
+                      f"(+{up_trig - live:.1f} نقطة){nxt}",
+                      f"  الوقف: {num(p['stop'])} · الهدف: {num(p['target'])}",
+                      f"  R:R ≈ {p['rr']:.2f} (مخاطرة ${p['risk_usd']:.0f})", ""]
+            if lad:
+                lines.insert(len(lines) - 1, f"  🎯 سلّم الأهداف: {lad}")
     if dn_trig is not None:
-        p = _sized(dn_trig, "short", sup[0])
-        nxt = f" · الدعم التالي {num(sup[1])}" if len(sup) > 1 else ""
-        lad = _ladder_line("short", dn_trig, p["stop"], res, sup, p["gain_usd"])
-        lines += ["<b>🔴 سيناريو هبوط</b>",
-                  f"  المشغّل: كسر <b>{num(dn_trig)}</b> "
-                  f"(−{live - dn_trig:.1f} نقطة){nxt}",
-                  f"  الوقف: {num(p['stop'])} · الهدف: {num(p['target'])}",
-                  f"  R:R ≈ {p['rr']:.2f} (مخاطرة ${p['risk_usd']:.0f})", ""]
-        if lad:
-            lines.insert(len(lines) - 1, f"  🎯 سلّم الأهداف: {lad}")
+        if not _scen_is_reachable(live, dn_trig, atr_1h):
+            lines.append(_scen_far_note(live, dn_trig, atr_1h))
+            lines.append("")
+        else:
+            p = _sized(dn_trig, "short", sup[0])
+            nxt = f" · الدعم التالي {num(sup[1])}" if len(sup) > 1 else ""
+            lad = _ladder_line("short", dn_trig, p["stop"], res, sup, p["gain_usd"])
+            lines += ["<b>🔴 سيناريو هبوط</b>",
+                      f"  المشغّل: كسر <b>{num(dn_trig)}</b> "
+                      f"(−{live - dn_trig:.1f} نقطة){nxt}",
+                      f"  الوقف: {num(p['stop'])} · الهدف: {num(p['target'])}",
+                      f"  R:R ≈ {p['rr']:.2f} (مخاطرة ${p['risk_usd']:.0f})", ""]
+            if lad:
+                lines.insert(len(lines) - 1, f"  🎯 سلّم الأهداف: {lad}")
     lines.append("<i>سيناريوهات مشروطة — ما تنفّذ إلا لما يتحقق المشغّل. "
                  f"الوقف والهدف من قواعدي (مخاطرة ${STOP_MIN_USD:.0f}-"
                  f"${STOP_MAX_USD:.0f}، R:R {TARGET_RR}).</i>")
@@ -3849,19 +3894,27 @@ def card_news_prep() -> str:
         live = m["live"]
         res, sup = _levels(live)
         dn_trig, up_trig = _break_levels(res, sup)
+        atr_1h = (m.get("atrs") or {}).get("1h")
     except Exception:  # noqa: BLE001 - the card must render without a feed
         live, res, sup, dn_trig, up_trig = 0.0, [], [], None, None
+        atr_1h = None
     L.append("<b>جهّز السيناريوهين (ما حد بيعرف الاتجاه قبل الرقم):</b>")
     if up_trig is not None:
-        p = _sized(up_trig, "long", res[0])
-        L.append(f"🟢 لو كسر فوق <b>{num(up_trig)}</b>")
-        L.append(f"   دخول {num(p['entry'])} · وقف {num(p['stop'])} · "
-                 f"هدف {num(p['target'])} · R:R {p['rr']:.1f}")
+        if not _scen_is_reachable(live, up_trig, atr_1h):
+            L.append(_scen_far_note(live, up_trig, atr_1h))
+        else:
+            p = _sized(up_trig, "long", res[0])
+            L.append(f"🟢 لو كسر فوق <b>{num(up_trig)}</b>")
+            L.append(f"   دخول {num(p['entry'])} · وقف {num(p['stop'])} · "
+                     f"هدف {num(p['target'])} · R:R {p['rr']:.1f}")
     if dn_trig is not None:
-        p = _sized(dn_trig, "short", sup[0])
-        L.append(f"🔴 لو كسر تحت <b>{num(dn_trig)}</b>")
-        L.append(f"   دخول {num(p['entry'])} · وقف {num(p['stop'])} · "
-                 f"هدف {num(p['target'])} · R:R {p['rr']:.1f}")
+        if not _scen_is_reachable(live, dn_trig, atr_1h):
+            L.append(_scen_far_note(live, dn_trig, atr_1h))
+        else:
+            p = _sized(dn_trig, "short", sup[0])
+            L.append(f"🔴 لو كسر تحت <b>{num(dn_trig)}</b>")
+            L.append(f"   دخول {num(p['entry'])} · وقف {num(p['stop'])} · "
+                     f"هدف {num(p['target'])} · R:R {p['rr']:.1f}")
     if up_trig is None and dn_trig is None:
         L.append("— ما قدرت أقرأ المستويات الآن؛ جهّز من عندك.")
     L.append("")
