@@ -2716,6 +2716,31 @@ class ScenarioReachTest(unittest.TestCase):
         self.assertNotIn("سيناريو صعود", out)
         self.assertIn("سيناريو هبوط", out)
 
+    def test_the_map_payload_marks_the_far_scenario_unpriced(self):
+        # The page is a VIEW: it must receive the same verdict the cards reach,
+        # and a far trigger must arrive with no stop/target to print. Otherwise
+        # the page would show a trade the Telegram card refuses to quote.
+        with unittest.mock.patch.object(bot, "read_market",
+                                        return_value={"live": 3554.0,
+                                                      "atrs": {"1h": 28.0},
+                                                      "q": {"mid": 3554.0},
+                                                      "rsis": {}, "trends": {}}), \
+             unittest.mock.patch.object(bot, "_levels",
+                                        return_value=([3758.6], [3514.55])), \
+             unittest.mock.patch.object(bot, "_zones", return_value=([], [])), \
+             unittest.mock.patch.object(bot, "_liquidity", return_value=([], [])), \
+             unittest.mock.patch.object(bot, "_sticky_map",
+                                        return_value={"res": [], "sup": [],
+                                                      "sell": [], "buy": [],
+                                                      "liq_above": [], "liq_below": []}), \
+             unittest.mock.patch.object(bot, "plan", return_value=None):
+            mp = bot.map_payload()
+        by_side = {s["side"]: s for s in mp["scenarios"]}
+        self.assertFalse(by_side["long"]["reachable"])
+        self.assertNotIn("stop", by_side["long"])     # never priced
+        self.assertTrue(by_side["short"]["reachable"])
+        self.assertIn("stop", by_side["short"])
+
 
 class DailyAnalysisTest(unittest.TestCase):
     """daily_analysis: the full numbered Arabic report, and it always ends with

@@ -3125,19 +3125,27 @@ def map_payload() -> dict:
     with suppress(Exception):
         p = plan(m)
 
-    # Scenario trades, priced by _sized() exactly as card_scenarios does.
+    # Scenario trades, priced by _sized() exactly as card_scenarios does. A
+    # trigger too far to reach is emitted UNPRICED (reachable=False, no stop or
+    # target) so the page names the level without quoting a trade the market
+    # cannot reach -- the same guard the Telegram cards read.
     scen: list[dict] = []
+    atr_1h = (m.get("atrs") or {}).get("1h")
     if live > 0:
         if res:
             trig = res[0] + BREAK_EPS
-            s = _sized(trig, "long", res[0])
+            reach = _scen_is_reachable(live, trig, atr_1h)
+            s = _sized(trig, "long", res[0]) if reach else {}
             scen.append({"side": "long", "trigger": trig, "level": res[0],
-                         "next": res[1] if len(res) > 1 else None, **s})
+                         "next": res[1] if len(res) > 1 else None,
+                         "reachable": reach, **s})
         if sup:
             trig = sup[0] - BREAK_EPS
-            s = _sized(trig, "short", sup[0])
+            reach = _scen_is_reachable(live, trig, atr_1h)
+            s = _sized(trig, "short", sup[0]) if reach else {}
             scen.append({"side": "short", "trigger": trig, "level": sup[0],
-                         "next": sup[1] if len(sup) > 1 else None, **s})
+                         "next": sup[1] if len(sup) > 1 else None,
+                         "reachable": reach, **s})
 
     # EMAs per frame -- the levels the owner reads against the price. The raw
     # bars are kept so the report below reuses them (ONE tape read per frame).

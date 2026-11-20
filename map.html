@@ -220,6 +220,14 @@ function render(d){
 
   document.getElementById("scen").innerHTML = (d.scenarios||[]).map(s=>{
     const isLong = s.side==="long";
+    // A trigger too far to reach is a LEVEL TO WATCH, never a priced trade:
+    // no stop/target is sent, so quoting them would print "undefined".
+    if (s.reachable === false){
+      return `<div class="sc ${isLong?'long':'short'}">
+      <h3>${isLong?"🟢 مستوى فوق":"🔴 مستوى تحت"}</h3>
+      <div class="kv"><b>${F(s.trigger)}</b> — بعيد ${F(Math.abs(s.trigger-(d.live||0)))} نقطة · مستوى للمراقبة، مش صفقة اليوم.</div>
+    </div>`;
+    }
     return `<div class="sc ${isLong?'long':'short'}">
       <h3>${isLong?"🟢 سيناريو صعود":"🔴 سيناريو هبوط"}</h3>
       <div class="kv"><b>المشغّل:</b> ${isLong?"اختراق":"كسر"} <b>${F(s.trigger)}</b> ${s.next?`· التالي ${F(s.next)}`:""}</div>
