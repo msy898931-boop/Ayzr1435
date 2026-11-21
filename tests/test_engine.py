@@ -4456,6 +4456,33 @@ class MultiAssetTest(unittest.TestCase):
         labels = [x for x, _ in s["st"]["labels"]]
         self.assertTrue(all(x in ("HH", "HL", "LH", "LL") for x in labels))
 
+    def test_a_level_never_prints_above_the_price_it_supports(self):
+        # A band sitting exactly ON the price was filed as SUPPORT with a
+        # POSITIVE distance (+0.000) -- a support printed above the price it is
+        # supposed to hold. The ref is set to the pivot's OWN price, which is
+        # the only case that distinguishes `>` from `>=`.
+        seq = [105, 104, 103, 102, 101, 100, 101, 102, 103, 104, 105, 106]
+        b = [_bar(_iso(i), c, c + 0.5, c - 0.5, c) for i, c in enumerate(seq)]
+        _highs, lows = self.mk.swings(b, 2, 2)
+        self.assertTrue(lows, "the fixture must produce a swing low")
+        pivot = min(p for _i, p in lows)
+        res, sup = self.mk.sr_bands(b, 0.1, pivot)
+        self.assertTrue(any(abs(x["price"] - pivot) < 1e-9 for x in res),
+                        "a pivot exactly ON the price must be resistance")
+        for band in sup:
+            self.assertLess(band["price"], pivot,
+                            "a support sat at/above the price it supports")
+
+    def test_no_atr_means_no_verdict_not_a_false_green(self):
+        # Without ATR there is no measurable noise, so "tradeable" would be a
+        # diagnostic that cannot fail. The card must say it cannot judge.
+        self.mk.quote = lambda sym: {"mid": 41.25, "high": None, "low": None}
+        self.mk.bars = lambda sym, tf, limit=300: []
+        text = self.mk.report("silver")
+        self.assertIn("ما في بيانات تقلّب", text)
+        self.assertNotIn("قابلة للتنفيذ", text)
+        self.assertNotIn("داخل حدّك", text)
+
     def test_both_cards_fit_in_one_telegram_message(self):
         # Telegram drops anything past 4096 and the sender truncates at 4000;
         # a card that overflows would lose its verdict and sizing silently.

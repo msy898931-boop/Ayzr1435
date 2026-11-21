@@ -274,7 +274,11 @@ def sr_bands(b: list[dict], tol: float, ref: float, top: int = 6,
         price = sum(c) / len(c)
         band = {"price": price, "lo": min(c), "hi": max(c),
                 "touches": len(c), "dist": abs(ref - price)}
-        (res if price > ref else sup).append(band)
+        # `>=` not `>`: a band sitting exactly ON the price is resistance the
+        # price is already at (+0.000), never support "below" it. The old `>`
+        # filed it under support with a POSITIVE distance -- a level printed
+        # above the price it was supposed to support.
+        (res if price >= ref else sup).append(band)
     res.sort(key=lambda x: x["price"])
     sup.sort(key=lambda x: -x["price"])
     return res[:top], sup[:top]
@@ -585,13 +589,21 @@ def _sizing_line(s: dict) -> list[str]:
     tradeable on the owner's account."""
     sp = s["spec"]
     per_point = sp["contract"] * sp["lot"]
-    a1h = s["a1h"] or sp["atr_floor"]
-    need = a1h * 1.5
-    cost = need * per_point
-    pct = cost / ACCOUNT_USD * 100
+    a1h = s["a1h"]
     out = ["<b>💵 الحساب والعقد (الجزء اللي بيقرر)</b>",
            (f"  العقد المفترض: 1 لوت = {sp['contract']:,.0f} · "
             f"اللوت الأدنى {sp['lot']} → ${per_point:,.2f} لكل نقطة")]
+    if not a1h:
+        # No ATR means no measurable noise, and a stop you cannot size against
+        # the noise is not a verdict -- it is a guess. Say so rather than print
+        # "tradeable" off a number nobody measured.
+        out.append("  ⚠️ ما في بيانات تقلّب كافية (ATR) — "
+                   "ما بقدر أحكم إذا الصفقة بتتحمّل حسابك.")
+        out.append("")
+        return out
+    need = a1h * 1.5
+    cost = need * per_point
+    pct = cost / ACCOUNT_USD * 100
     out.append(f"  وقف سليم (1.5× تقلّب الساعة) = {need:.{sp['digits']}f} "
                f"→ <b>${cost:,.2f}</b> = {pct:.1f}% من ${ACCOUNT_USD:,.0f}")
     if pct > 10:

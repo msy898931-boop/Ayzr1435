@@ -16,7 +16,10 @@ services:
     region: oregon
     branch: main
     autoDeploy: true
-    buildCommand: python3 -m compileall -q bot.py app.py keepalive.py
+    # Every module the running service can import must compile here: a syntax
+    # error in a lazily-imported engine (ayzr, markets) would otherwise pass
+    # the build and only explode when the owner taps its button.
+    buildCommand: python3 -m compileall -q bot.py app.py keepalive.py ayzr.py markets.py
     startCommand: python3 app.py
     healthCheckPath: /health
     envVars:
