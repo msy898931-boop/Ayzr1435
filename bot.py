@@ -713,6 +713,7 @@ NEWS_ITEMS: list[tuple[str, str]] = [
 MENU = [
     [("🔒 تحليل فريق AYZR", "myread")],
     [("🏛️ محرك AYZR المستقل", "ayzr")],
+    [("🥈 تحليل الفضة", "silver"), ("🟠 تحليل البتكوين", "bitcoin")],
     [("🧠 قراءتي للسوق", "full")],
     [("🥇 التحليل والتوصية", "menu_analysis")],
     [("🗺️ الخرائط والأخبار", "menu_map")],
@@ -839,6 +840,11 @@ TEXT_ACTIONS = {
     "قبل الخبر": "news_prep", "تحضير الخبر": "news_prep", "الخبر": "news_prep",
     "نتيجة الخبر": "news_result", "نتيجة": "news_result",
     "آخر خبر": "news_result", "اخر خبر": "news_result",
+    "فضة": "silver", "الفضة": "silver", "تحليل الفضة": "silver",
+    "/silver": "silver", "silver": "silver", "xagusd": "silver",
+    "بتكوين": "bitcoin", "البتكوين": "bitcoin", "تحليل البتكوين": "bitcoin",
+    "/bitcoin": "bitcoin", "bitcoin": "bitcoin", "btc": "bitcoin",
+    "بيتكوين": "bitcoin", "عملة": "bitcoin",
 }
 TRADE_VERBS = {"سجل", "سجّل", "صفقة", "/trade", "trade"}
 CLOSE_VERBS = {"سكر", "سكّر", "أغلق", "اغلق", "اقفل", "أقفل", "/close", "close"}
@@ -6603,6 +6609,37 @@ def card_ayzr() -> str:
         return f"⚠️ محرك AYZR تعذّر يقرا السوق: {esc(str(exc))}"
 
 
+def card_silver() -> str:
+    """🥈 Silver — an INDEPENDENT read, from `markets.py`.
+
+    Only the DOOR. The module is imported lazily so the gold engine and this one
+    share nothing at import time; bot.py computes no silver number here. The
+    symbol, the contract spec and every level live in that module, so the gold
+    desk (SYMBOL, POINT_VALUE, the $8-12 window, _sized) is not read or altered
+    by this path at all.
+    """
+    try:
+        import markets
+    except Exception as exc:  # noqa: BLE001 - a broken engine must say so
+        return f"⚠️ محرك الفضة مو متاح: {esc(str(exc))}"
+    try:
+        return markets.silver()
+    except Exception as exc:  # noqa: BLE001 - a dead feed must not kill the bot
+        return f"⚠️ محرك الفضة تعذّر يقرا السوق: {esc(str(exc))}"
+
+
+def card_bitcoin() -> str:
+    """🟠 Bitcoin — the same door to the same module, a different asset."""
+    try:
+        import markets
+    except Exception as exc:  # noqa: BLE001
+        return f"⚠️ محرك البتكوين مو متاح: {esc(str(exc))}"
+    try:
+        return markets.bitcoin()
+    except Exception as exc:  # noqa: BLE001
+        return f"⚠️ محرك البتكوين تعذّر يقرا السوق: {esc(str(exc))}"
+
+
 def dispatch(action: str) -> str:
     return {
         "analysis": card_analysis,
@@ -6616,6 +6653,8 @@ def dispatch(action: str) -> str:
         "report": card_report,
         "myread": card_myread,
         "ayzr": card_ayzr,
+        "silver": card_silver,
+        "bitcoin": card_bitcoin,
         "news": card_news,
         "news_prep": card_news_prep,
         "news_result": card_news_result_latest,

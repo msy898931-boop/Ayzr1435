@@ -3366,7 +3366,7 @@ class CollapsibleMenuTest(unittest.TestCase):
             "journal_menu", "daily",
             "who", "howto", "alerts", "help", "collapse", "menu", "settings",
             "menu_back", "menu_analysis", "menu_map", "menu_journal", "myread",
-            "ayzr",
+            "ayzr", "silver", "bitcoin",
         }
         pairs = [p for row in bot.MENU for p in row]
         for rows in bot.SUBMENUS.values():
@@ -4348,6 +4348,146 @@ class DeskTickRestartTest(_DbCase):
         tg = self._tg()
         self._tick(tg, seen)
         self.assertFalse(tg.send.called, "the loop re-sent a manual close")
+
+
+class MultiAssetTest(unittest.TestCase):
+    """`markets.py` — the silver and bitcoin engines, and the fact that adding
+    them changed nothing about the gold desk.
+
+    The owner asked for two buttons and got two INDEPENDENT reads: their own
+    symbol, their own contract spec, their own sizing. The tests below pin the
+    three things that could silently go wrong -- the gold constants getting
+    touched, the two assets sharing a number, and a card too long to send.
+    """
+
+    def setUp(self):
+        import markets
+        self.mk = markets
+        self._saved = (markets.quote, markets.bars)
+
+    def tearDown(self):
+        self.mk.quote, self.mk.bars = self._saved
+
+    def _feed(self, mid, atr_pts=1.0, trend=1):
+        """Install a deterministic feed: a trending series whose swings and
+        ATR are predictable, so levels/zones/scenarios are assertable."""
+        step = atr_pts * 0.25 * trend
+        closes = [mid - step * (60 - i) for i in range(60)]
+
+        def _quote(sym):
+            return {"mid": mid, "high": mid + atr_pts * 4,
+                    "low": mid - atr_pts * 4, "dayDiffPercent": -1.5,
+                    "bid": mid - 0.01, "ask": mid + 0.01}
+
+        def _bars(sym, tf, limit=300):
+            return [_bar(_iso(i), c, c + atr_pts * 0.5, c - atr_pts * 0.5, c)
+                    for i, c in enumerate(closes)]
+
+        self.mk.quote, self.mk.bars = _quote, _bars
+
+    def test_the_gold_desk_is_untouched_by_the_new_engines(self):
+        # The owner's hard condition: not one thing about gold may move. These
+        # are the constants that price every gold trade, and the symbol itself.
+        self.assertEqual(bot.SYMBOL, "XAUUSD")
+        self.assertEqual(bot.LOT, 0.01)
+        self.assertAlmostEqual(bot.POINT_VALUE, 1.0)
+        self.assertAlmostEqual(bot.STOP_MIN_USD, 8.0)
+        self.assertAlmostEqual(bot.STOP_MAX_USD, 12.0)
+        self.assertAlmostEqual(bot.TARGET_RR, 2.2)
+
+    def test_the_new_engine_never_imports_or_reads_the_gold_engine(self):
+        # Independence is structural, not a promise: markets.py must not touch
+        # bot.py at all, or the two desks would share a symbol and a spec.
+        src = pathlib.Path(self.mk.__file__).read_text()
+        self.assertNotIn("import bot", src)
+        self.assertNotIn("from bot", src)
+        self.assertNotIn("XAUUSD", src)
+        self.assertNotIn("POINT_VALUE", src)
+
+    def test_the_two_assets_have_their_own_symbols_and_contracts(self):
+        sil, btc = self.mk.ASSETS["silver"], self.mk.ASSETS["bitcoin"]
+        self.assertEqual(sil["symbol"], "XAGUSD")
+        self.assertEqual(btc["symbol"], "BTCUSD")
+        self.assertNotEqual(sil["symbol"], btc["symbol"])
+        # The contract is what decides money: silver's minimum lot is 50 oz, so
+        # a $1 move is $50; bitcoin's minimum lot is 0.01 coin, so it is $0.01.
+        self.assertAlmostEqual(sil["contract"] * sil["lot"], 50.0)
+        self.assertAlmostEqual(btc["contract"] * btc["lot"], 0.01)
+
+    def test_silver_is_reported_as_not_fitting_a_200_dollar_account(self):
+        # The honest verdict: a sane stop on silver costs more than the whole
+        # risk window. The card must SAY so rather than quote a stop inside the
+        # noise. This is the reason the engine exists -- to refuse, out loud.
+        self._feed(41.25, atr_pts=0.62)
+        s = self.mk.snapshot("silver")
+        t = self.mk.build_trade(41.25, "long", None, s["spec"], s["a1h"])
+        self.assertLessEqual(t["risk_usd"], self.mk.RISK_MAX + 1e-9)
+        self.assertFalse(t["fits"], "a 0.62-ATR silver stop must not 'fit' $200")
+        self.assertGreater(t["noise_ratio"], 0.0)
+
+    def test_bitcoin_sizes_inside_the_window_because_its_min_lot_is_tiny(self):
+        # The mirror image: 0.01 BTC per point is $0.01, so a 900-point stop is
+        # ~$9 -- inside the window. The engine must find that, not refuse it.
+        self._feed(56585.0, atr_pts=900.0)
+        s = self.mk.snapshot("bitcoin")
+        t = self.mk.build_trade(56585.0, "long", None, s["spec"], s["a1h"])
+        self.assertGreaterEqual(t["risk_usd"], self.mk.RISK_MIN - 1e-9)
+        self.assertLessEqual(t["risk_usd"], self.mk.RISK_MAX + 1e-9)
+
+    def test_zones_are_split_at_the_live_price(self):
+        self._feed(41.25, atr_pts=0.62)
+        s = self.mk.snapshot("silver")
+        for z in s["supply"]:
+            self.assertGreater(z["price"], s["live"])
+        for z in s["demand"]:
+            self.assertLess(z["price"], s["live"])
+
+    def test_every_zone_needs_at_least_two_touches(self):
+        # A price seen once is a dot, not a zone -- the rule that keeps the card
+        # from naming every pivot as an area.
+        self._feed(41.25, atr_pts=0.62)
+        s = self.mk.snapshot("silver")
+        for z in s["supply"] + s["demand"]:
+            self.assertGreaterEqual(z["touches"], 2)
+
+    def test_structure_labels_come_from_the_swings(self):
+        self._feed(41.25, atr_pts=0.62)
+        s = self.mk.snapshot("silver")
+        labels = [x for x, _ in s["st"]["labels"]]
+        self.assertTrue(all(x in ("HH", "HL", "LH", "LL") for x in labels))
+
+    def test_both_cards_fit_in_one_telegram_message(self):
+        # Telegram drops anything past 4096 and the sender truncates at 4000;
+        # a card that overflows would lose its verdict and sizing silently.
+        for key, atr in (("silver", 0.62), ("bitcoin", 900.0)):
+            self._feed(41.25 if key == "silver" else 56585.0, atr_pts=atr)
+            text = self.mk.report(key)
+            self.assertLessEqual(len(text), self.mk.MAX_CARD, key)
+            self.assertIn("متى أشتري", text, key)
+            self.assertIn("متى أبيع", text, key)
+
+    def test_a_dead_feed_returns_a_sentence_not_an_exception(self):
+        def _boom(sym, tf=None, limit=300):
+            raise OSError("feed down")
+        self.mk.quote, self.mk.bars = _boom, _boom
+        for key in ("silver", "bitcoin"):
+            text = self.mk.report(key)
+            self.assertIsInstance(text, str)
+            self.assertIn("⚠️", text)
+
+    def test_both_menu_buttons_reach_their_engine(self):
+        # The two buttons the owner asked for must be in the grid and route to
+        # the doors -- not to a generic card.
+        actions = [p[1] for row in bot.MENU for p in row]
+        self.assertIn("silver", actions)
+        self.assertIn("bitcoin", actions)
+        self.assertIs(bot.dispatch("silver").__class__, str)
+        self.assertIs(bot.dispatch("bitcoin").__class__, str)
+
+    def test_the_word_routes_to_the_button(self):
+        for word, action in (("فضة", "silver"), ("الفضة", "silver"),
+                             ("بتكوين", "bitcoin"), ("btc", "bitcoin")):
+            self.assertEqual(bot.action_for(word), action, word)
 
 
 if __name__ == "__main__":
