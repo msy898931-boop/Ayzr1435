@@ -4456,6 +4456,83 @@ class MultiAssetTest(unittest.TestCase):
         labels = [x for x, _ in s["st"]["labels"]]
         self.assertTrue(all(x in ("HH", "HL", "LH", "LL") for x in labels))
 
+    def test_no_chase_gate_refuses_the_bottom_sale(self):
+        # The gold desk refuses to short when daily RSI is under NOCHASE_RSI.
+        # A new asset does not get an exemption: without this gate a -6.5% day
+        # with daily RSI 17 read as "lean short", i.e. sell the washout.
+        self._feed(100.0, atr_pts=1.0)
+        real = self.mk.bars
+        seq = [130 - i for i in range(60)]      # a straight down day
+        self.mk.bars = lambda sym, tf, limit=300: [
+            _bar(_iso(i), c, c + 0.2, c - 0.2, c) for i, c in enumerate(seq)]
+        try:
+            s = self.mk.snapshot("silver")
+            s["rsis"]["1d"] = 16.6
+            bias, word, _mark = self.mk.gate(s)
+            self.assertEqual(bias, 0, "a washout must not carry a short bias")
+            self.assertIn("ممنوع البيع", word)
+            text = self.mk.report("silver")
+            self.assertIn("ممنوع البيع", text)
+            self.assertIn("ما في سبب بيع واضح", text)
+        finally:
+            self.mk.bars = real
+
+    def test_the_stop_is_never_tighter_than_the_noise(self):
+        # A stop inside 1.5xATR is a coin flip dressed as a plan. Either the
+        # trade fits and its stop clears the noise, or it does not fit and the
+        # card refuses to print a plan. It must never do neither.
+        spec = self.mk.ASSETS["bitcoin"]
+        atr = 999.0
+        t = self.mk.build_trade(58000.0, "long", 57666.0, spec, atr)
+        if t["fits"]:
+            self.assertGreaterEqual(t["risk_pts"], atr * self.mk.STOP_ATR - 1e-6,
+                                    "a fitting stop was sized inside the noise")
+        else:
+            self.assertLessEqual(t["risk_usd"], self.mk.RISK_MAX + 1e-9,
+                                 "an unfit trade must still respect the cap")
+            self.assertGreater(t["floor_pts"] * t["per_point"], self.mk.RISK_MAX,
+                               "fits=False must mean the proper stop is over the cap")
+
+    def test_an_unfit_scenario_withholds_the_plan(self):
+        # Printing stop/target/R:R right under "this is not a trade" is the card
+        # arguing with itself. The trigger is still named; the plan is not.
+        self._feed(58000.0, atr_pts=999.0)
+        text = self.mk.report("bitcoin")
+        block = text.split("<b>🎬 السيناريوهات</b>")[1].split("<b>🧭")[0]
+        if "مش صفقة على حسابك" in block:
+            self.assertNotIn("الهدف:", block, "a refused trade still printed a target")
+            self.assertNotIn("R:R", block, "a refused trade still printed R:R")
+
+    def test_sizing_verdict_agrees_with_the_scenario(self):
+        # $14.99 of stop against a $12 cap printed as "acceptable" because the
+        # old check compared a percentage of the account instead of RISK_MAX.
+        self._feed(58000.0, atr_pts=999.0)
+        text = self.mk.report("bitcoin")
+        self.assertNotIn("قابلة للتنفيذ", text)
+        self.assertNotIn("مقبول بس حدّي", text)
+
+    def test_the_range_ignores_levels_closer_than_one_atr(self):
+        # Nearest sup/res are the closest by construction, so a range built from
+        # them is always a hair wide and the price always "at an edge" -- a
+        # warning that cannot fail. Built on a synthetic snapshot so the case is
+        # exact: the close levels sit INSIDE one ATR and must be skipped.
+        s = {
+            "spec": self.mk.ASSETS["silver"], "live": 100.0, "a1h": 2.0,
+            "trends": {tf: 0 for tf in self.mk.FRAMES}, "rsis": {},
+            "res": [{"price": 100.5, "lo": 100.5, "hi": 100.5, "touches": 1},
+                    {"price": 103.0, "lo": 103.0, "hi": 103.0, "touches": 2}],
+            "sup": [{"price": 99.5, "lo": 99.5, "hi": 99.5, "touches": 1},
+                    {"price": 96.0, "lo": 96.0, "hi": 96.0, "touches": 2}],
+            "supply": [], "demand": [],
+        }
+        lines = "\n".join(self.mk._verdict(s))
+        band = [ln for ln in lines.split("\n") if "النطاق الآن" in ln]
+        self.assertTrue(band, "the range line must exist when far levels exist")
+        self.assertIn("103.00", band[0], "the far resistance should bound the range")
+        self.assertIn("96.00", band[0], "the far support should bound the range")
+        self.assertNotIn("100.50", band[0], "a level inside one ATR must not bound it")
+        self.assertNotIn("99.50", band[0], "a level inside one ATR must not bound it")
+
     def test_a_level_never_prints_above_the_price_it_supports(self):
         # A band sitting exactly ON the price was filed as SUPPORT with a
         # POSITIVE distance (+0.000) -- a support printed above the price it is

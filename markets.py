@@ -39,6 +39,8 @@ ACCOUNT_USD = float(os.environ.get("DESK_ACCOUNT", "200"))
 RISK_MIN, RISK_MAX = 8.0, 12.0
 RISK_TARGET = 10.0
 RR_TARGET = 2.0
+STOP_ATR = 1.5           # a stop tighter than this sits inside normal noise
+NOCHASE_RSI = 38.0       # same rule the gold desk uses: never sell a washout
 MAX_CARD = 3900          # Telegram's hard limit is 4096; the send truncates
 
 ASSETS: dict[str, dict] = {
@@ -339,21 +341,25 @@ def build_trade(entry: float, direction: str, stop_level: float | None,
                 spec: dict, atr_v: float | None) -> dict:
     """Size one trade for THIS asset from the desk's rules.
 
-    Risk lands in the $8-12 window when the contract allows it. When it cannot
-    -- silver's 0.01 lot is 50 oz, so one cent of stop already costs $0.50 --
-    the function returns the HONEST minimum it could do plus `fits=False`,
-    rather than quoting a stop inside the noise and calling it a plan.
+    The stop is the WIDER of the structural level and 1.5x ATR, never the
+    narrower: a stop inside the noise is a coin flip dressed as a plan, and the
+    card would then quote one stop in the scenario and another in the sizing
+    section. When even that minimum cannot fit RISK_MAX -- silver's 0.01 lot is
+    50 oz, so one cent of stop already costs $0.50 -- the function returns the
+    honest minimum plus `fits=False` instead of pretending it can be sized.
     """
     per_point = spec["contract"] * spec["lot"]
     d = 1 if direction == "long" else -1
-    pts = RISK_TARGET / per_point
+    noise = atr_v or spec["atr_floor"]
+    floor_pts = noise * STOP_ATR
+    pts = floor_pts
     if stop_level is not None:
         room = (entry - stop_level) * d
         if room > 0:
-            pts = min(room, RISK_MAX / per_point)
-    pts = max(RISK_MIN / per_point, min(pts, RISK_MAX / per_point))
-    noise = atr_v or spec["atr_floor"]
-    fits = pts >= noise * 0.75
+            pts = max(room, floor_pts)
+    capped = min(pts, RISK_MAX / per_point)
+    fits = capped >= floor_pts
+    pts = capped
     stop = entry - d * pts
     risk_usd = pts * per_point
     gain_usd = risk_usd * RR_TARGET
@@ -361,7 +367,8 @@ def build_trade(entry: float, direction: str, stop_level: float | None,
     return {"direction": direction, "entry": entry, "stop": stop,
             "target": target, "rr": RR_TARGET, "risk_usd": risk_usd,
             "risk_pts": pts, "gain_usd": gain_usd, "fits": fits,
-            "noise_ratio": pts / noise if noise else 0.0, "per_point": per_point}
+            "noise_ratio": pts / noise if noise else 0.0, "per_point": per_point,
+            "floor_pts": floor_pts}
 
 
 # ------------------------------------------------------------------ snapshot
@@ -405,6 +412,20 @@ def snapshot(key: str) -> dict:
             "res": res, "sup": sup, "supply": supply, "demand": demand,
             "liq_up": liq_up, "liq_dn": liq_dn, "st": st,
             "day_hi": float(day_hi), "day_lo": float(day_lo), "tol": tol}
+
+
+def gate(s: dict) -> tuple[int, str, str]:
+    """The bias, after the no-chase gate. ONE source for the header and the
+    verdict, so the top of the card can never say "lean short" while the bottom
+    says "selling here is selling the bottom"."""
+    bias, word, mark = bias_of(s["trends"])
+    r1d = s["rsis"].get("1d")
+    if isinstance(r1d, (int, float)):
+        if r1d < NOCHASE_RSI:
+            return 0, "ممنوع البيع (تشبّع بيعي)", "⛔"
+        if r1d > 100 - NOCHASE_RSI:
+            return 0, "ممنوع الشراء (تشبّع شرائي)", "⛔"
+    return bias, word, mark
 
 
 def bias_of(trends: dict) -> tuple[int, str, str]:
@@ -474,16 +495,25 @@ def _scenario(s: dict, direction: str) -> list[str]:
                  f"({reach:.1f}× تقلّب الساعة) — مستوى للمراقبة، مش صفقة اليوم."),
                 ""]
     t = build_trade(trig, direction, stop_level, sp, a1h)
+    if not t["fits"]:
+        # The stop the noise demands costs more than RISK_MAX. Printing a full
+        # plan (stop/target/R:R) under a "not a trade" warning is the card
+        # arguing with itself, so the plan is withheld and the reason is named.
+        return [f"<b>{head}</b>",
+                (f"  المشغّل: {word} <b>{num(trig, sp)}</b> "
+                 f"({dist:.{sp['digits']}f} من السعر)"),
+                (f"  ⛔ مش صفقة على حسابك: الوقف اللي بيحمو من الضجيج "
+                 f"({t['floor_pts']:.{sp['digits']}f} = {STOP_ATR}× تقلّب) "
+                 f"بيكلّف ${t['floor_pts'] * t['per_point']:,.2f}، "
+                 f"فوق سقفك ${RISK_MAX:.0f}."),
+                "  المستوى للمراقبة بس — ما رح أعطيك خطة وقفها جوّا الضجيج.",
+                ""]
     out = [f"<b>{head}</b>",
            (f"  المشغّل: {word} <b>{num(trig, sp)}</b> "
             f"({dist:.{sp['digits']}f} من السعر)"),
            f"  الوقف: {num(t['stop'], sp)} · الهدف: {num(t['target'], sp)}",
            (f"  R:R ≈ {t['rr']:.2f} · مخاطرة ${t['risk_usd']:.2f}"
             f" · مكسب ${t['gain_usd']:.2f}")]
-    if not t["fits"]:
-        out.append(f"  ⚠️ الوقف {t['risk_pts']:.{sp['digits']}f} = "
-                   f"{t['noise_ratio']:.2f}× تقلّب الساعة — داخل الضجيج، "
-                   "هاد مستوى للمراقبة مش صفقة.")
     out.append("")
     return out
 
@@ -520,9 +550,17 @@ def _verdict(s: dict) -> list[str]:
     """When to buy, when to sell, and WHY -- the honest core of the card."""
     sp = s["spec"]
     live = s["live"]
-    bias, word, mark = bias_of(s["trends"])
+    bias, word, mark = gate(s)
     r1h, r4h, r1d = s["rsis"].get("1h"), s["rsis"].get("4h"), s["rsis"].get("1d")
     out = ["<b>🧭 متى أشتري ومتى أبيع — وليش</b>"]
+
+    # The no-chase gate. Selling into a daily washout is the single most
+    # expensive habit a discretionary desk has, and the gold engine already
+    # refuses it (NOCHASE_RSI). An asset does not get an exemption from a risk
+    # rule because it is new: without this, a -6.4% day with daily RSI 17 read
+    # as "lean short".
+    washout = bias == 0 and isinstance(r1d, (int, float)) and r1d < NOCHASE_RSI
+    blowoff = bias == 0 and isinstance(r1d, (int, float)) and r1d > 100 - NOCHASE_RSI
 
     # --- the case for a BUY
     buy: list[str] = []
@@ -551,7 +589,19 @@ def _verdict(s: dict) -> list[str]:
     if isinstance(r4h, (int, float)) and r4h > 70:
         sell.append(f"RSI 4س {r4h:.1f} — تشبّع شرائي")
 
-    if bias == -1:
+    if washout:
+        # Keep the reasons as facts (the level is still above), but they are no
+        # longer an invitation: the gate is what the owner reads first.
+        sell = []
+        out.append(f"<b>الميل: {mark} {word}</b> — RSI اليومي {r1d:.1f} تحت "
+                   f"{NOCHASE_RSI:.0f}. البيع هون بيبيع القاع، والذهب بيرفض نفس "
+                   "الصفقة. استنى ارتداد أو كسر مؤكد، مش تشبّع.")
+    elif blowoff:
+        buy = []
+        out.append(f"<b>الميل: {mark} {word}</b> — RSI اليومي {r1d:.1f} فوق "
+                   f"{100 - NOCHASE_RSI:.0f}. الشراء هون بيشتري القمة؛ استنى "
+                   "تراجع، مش مطاردة.")
+    elif bias == -1:
         out.append(f"<b>الميل: {mark} {word}</b> — الوزن مع البيع، والشراء "
                    "مقابل التيار (يحتاج تأكيد عند دعم فقط).")
     elif bias == 1:
@@ -568,18 +618,30 @@ def _verdict(s: dict) -> list[str]:
 
     # --- the range, when there is no trend to ride
     if s["res"] and s["sup"]:
-        lo = s["sup"][0]["price"]
-        hi = s["res"][0]["price"]
-        width = hi - lo
-        pos = (live - lo) / width * 100 if width else 50
-        out.append(f"<b>⚪ النطاق الآن:</b> {num(lo, sp)} ↔ {num(hi, sp)} "
-                   f"— السعر عند <b>{pos:.0f}%</b> من النطاق")
-        if pos > 70:
-            out.append("  ⚠️ قريب من سقف النطاق — الشراء هون بيشتري القمة.")
-        elif pos < 30:
-            out.append("  ⚠️ قريب من أرضية النطاق — البيع هون بيبيع القاع.")
+        # The NEAREST sup/res are the closest levels by construction, so a range
+        # built from them is always a hair wide and the price is always "at an
+        # edge" -- a warning that cannot fail. Use the nearest level that is at
+        # least one ATR away on each side; that is a range the price has to
+        # travel to reach.
+        a1h = s["a1h"] or s["spec"]["atr_floor"]
+        far_res = [b["price"] for b in s["res"] if b["price"] - live >= a1h]
+        far_sup = [b["price"] for b in s["sup"] if live - b["price"] >= a1h]
+        if far_res and far_sup:
+            lo, hi = max(far_sup), min(far_res)
+            width = hi - lo
+            pos = (live - lo) / width * 100 if width else 50
+            out.append(f"<b>⚪ النطاق الآن:</b> {num(lo, sp)} ↔ {num(hi, sp)} "
+                       f"— السعر عند <b>{pos:.0f}%</b> من النطاق")
+            if pos > 70:
+                out.append("  ⚠️ قريب من سقف النطاق — الشراء هون بيشتري القمة.")
+            elif pos < 30:
+                out.append("  ⚠️ قريب من أرضية النطاق — البيع هون بيبيع القاع.")
+            else:
+                out.append("  ⚠️ في نص النطاق — ما في R:R بأي اتجاه. استنى طرف.")
         else:
-            out.append("  ⚠️ في نص النطاق — ما في R:R بأي اتجاه. استنى طرف.")
+            out.append("")
+            out.append("  ⚪ ما في مستويين بعيدين (≥ تقلّب ساعة) — "
+                       "السعر ماشي حر، ما في نطاق واضح.")
     out.append("")
     return out
 
@@ -601,19 +663,22 @@ def _sizing_line(s: dict) -> list[str]:
                    "ما بقدر أحكم إذا الصفقة بتتحمّل حسابك.")
         out.append("")
         return out
-    need = a1h * 1.5
+    need = a1h * STOP_ATR
     cost = need * per_point
     pct = cost / ACCOUNT_USD * 100
-    out.append(f"  وقف سليم (1.5× تقلّب الساعة) = {need:.{sp['digits']}f} "
+    out.append(f"  وقف سليم ({STOP_ATR}× تقلّب الساعة) = {need:.{sp['digits']}f} "
                f"→ <b>${cost:,.2f}</b> = {pct:.1f}% من ${ACCOUNT_USD:,.0f}")
-    if pct > 10:
+    # Judge against RISK_MAX, the same cap build_trade enforces. A percentage
+    # of the account is a different question, and using it here let a stop that
+    # the scenarios had already called "not a trade" print as acceptable.
+    if cost > RISK_MAX:
         out.append(f"  🔴 فوق حدّك (${RISK_MAX:.0f}) — "
                    "الوقف السليم أكبر من اللي بيحملو حسابك.")
         small = RISK_MAX / per_point
         out.append(f"  لو صغّرت الوقف لـ${RISK_MAX:.0f} = "
                    f"{small:.{sp['digits']}f} نقطة = "
                    f"{small / a1h:.2f}× تقلّب الساعة — داخل الضجيج ⚠️")
-    elif pct >= 4:
+    elif cost >= RISK_MAX * 0.85:
         out.append("  🟡 مقبول بس حدّي — صفقة وحدة بس، ووقف صارم.")
     else:
         out.append("  🟢 داخل حدّك — الصفقة قابلة للتنفيذ.")
@@ -634,7 +699,7 @@ def report(key: str) -> str:
     if not live:
         return f"⚠️ ما في تسعيرة {sp['name']} هلّق — جرّب بعد شوي."
     dd = q.get("dayDiffPercent")
-    _bias, word, mark = bias_of(s["trends"])
+    _bias, word, mark = gate(s)
     L: list[str] = []
     L.append(f"{sp['tag']} <b>تحليل {sp['name']} — قراءة مستقلة</b>")
     L.append(f"<b>{s['sym']}</b> · السعر <b>{num(live, sp)}</b>")
