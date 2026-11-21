@@ -51,6 +51,11 @@ def setUpModule():
     _DB_DIR = tempfile.mkdtemp()
     bot.DB_PATH = pathlib.Path(_DB_DIR) / "journal.db"
     bot._init_db()
+    # The daily state (close report / open bell / daily analysis slots) is
+    # WRITTEN every cycle by maybe_daily_report and maybe_open_bell. Without
+    # this, a test run stamps the real data/daily.json and the live bot would
+    # think Monday's bell had already rung.
+    bot.DAILY_PATH = pathlib.Path(_STICKY_DIR) / "daily.json"
 
 
 def tearDownModule():
@@ -58,6 +63,7 @@ def tearDownModule():
     bot.STICKY_PATH = pathlib.Path(root) / "data" / "levels_seen.json"
     bot.WATCH_POINTS_PATH = pathlib.Path(root) / "data" / "watch_points.json"
     bot.DB_PATH = pathlib.Path(root) / "data" / "journal.db"
+    bot.DAILY_PATH = pathlib.Path(root) / "data" / "daily.json"
 
 
 def _bar(open_time, o, h, lo, c):
@@ -2443,6 +2449,114 @@ class DailyScheduleTest(_DbCase):
         # not delivered a second time.
         self._tick("closed")
         self.assertEqual(len(self.sent), 1)
+
+
+class OpenBellTest(_DbCase):
+    """The bell rings once on the closed->open edge, and never twice a day.
+
+    It is the mirror of the close report, so the same restart hazards apply --
+    plus one of its own: the close report sets `was_open` on every open cycle,
+    so a bell that shared that flag would never fire at all. That bug is what
+    `test_rings_even_after_the_close_report_ran` exists to catch.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._saved_daily = bot.DAILY_PATH
+        bot.DAILY_PATH = bot.Path(os.path.join(self.tmp, "daily.json"))
+        self.sent = []
+
+    def tearDown(self):
+        bot.DAILY_PATH = self._saved_daily
+        super().tearDown()
+
+    class _Tg:
+        def __init__(self, sink):
+            self.sink = sink
+
+        def send(self, chat, text, *a, **k):
+            self.sink.append(text)
+            return {"ok": True}
+
+    def _tick(self, market):
+        with FakeFeed(market=market):
+            bot.maybe_open_bell(self._Tg(self.sent), {"1"})
+
+    def test_the_rule_is_pure_and_once_per_day(self):
+        # closed -> open, never announced today: owed.
+        self.assertTrue(bot.open_bell_due(False, True, "2026-11-23", None))
+        # already open: no transition, so nothing.
+        self.assertFalse(bot.open_bell_due(True, True, "2026-11-23", None))
+        # still closed: nothing.
+        self.assertFalse(bot.open_bell_due(False, False, "2026-11-23", None))
+        # already rang today: a restart must not replay it.
+        self.assertFalse(bot.open_bell_due(False, True, "2026-11-23", "2026-11-23"))
+        # This bot never saw a closed market (a fresh container, market already
+        # open): it witnessed no transition, so it must not announce one.
+        self.assertFalse(bot.open_bell_due(False, True, "2026-11-23", None,
+                                           saw_closed=False))
+
+    def test_a_lost_daily_file_does_not_ring_again(self):
+        # Render has no disk: a redeploy starts with an empty daily.json while
+        # the market is OPEN. The bell must not fire a second time -- the whole
+        # reason `saw_closed` exists.
+        self._tick("closed")            # this process sees the weekend
+        self._tick("open")              # the bell
+        self.assertEqual(len(self.sent), 1)
+        self.sent.clear()
+        bot.DAILY_PATH.unlink()         # the redeploy wipes the disk
+        self._tick("open")              # market already open, nothing witnessed
+        self.assertEqual(self.sent, [])
+
+    def test_rings_on_the_open_transition_only(self):
+        self._tick("closed")
+        self.assertEqual(self.sent, [])          # a standing close is silent
+        self._tick("open")
+        self.assertEqual(len(self.sent), 1)      # the bell, once
+        self._tick("open")
+        self.assertEqual(len(self.sent), 1)      # a standing open is silent
+
+    def test_rings_even_after_the_close_report_ran(self):
+        # The close report sets its own `was_open` on every open cycle. If the
+        # bell shared that flag it would never ring -- this pins the separation.
+        with FakeFeed(market="open"):
+            bot.maybe_daily_report(self._Tg([]), {"1"})
+        self._tick("closed")   # the close report's transition; the bell sees it
+        self._tick("open")
+        self.assertEqual(len(self.sent), 1)
+
+    def test_a_restart_mid_session_does_not_ring(self):
+        # A session the bot witnessed: closed, then open (one bell).
+        self._tick("closed")
+        self._tick("open")
+        self.assertEqual(len(self.sent), 1)
+        self.sent.clear()
+        self._tick("open")   # "rebooted" and still open: no transition
+        self.assertEqual(self.sent, [])
+
+    def test_the_card_carries_the_price_and_the_levels(self):
+        with FakeFeed(mid=3539.138, market="open"):
+            text = bot.open_bell_text()
+        self.assertIn("السوق فتح", text)
+        self.assertIn("3,539.14", text)
+        # It is a MAP, not an order: it must not pretend to be a trade.
+        self.assertIn("مو أمر دخول", text)
+
+    def test_the_bell_goes_to_the_owner_alone(self):
+        # The bell is the close report's mirror, so it follows the same
+        # audience rule: the desk's chats (owner-only under OWNER_ONLY), never
+        # the wider alert list.
+        seen_chats = []
+
+        class _Rec:
+            def send(self, chat, text, *a, **k):
+                seen_chats.append(chat)
+                return {"ok": True}
+
+        self._tick("closed")
+        with FakeFeed(market="open"):
+            bot.maybe_open_bell(_Rec(), {"933571066", "8545528489"})
+        self.assertEqual(seen_chats, [bot._backup_chat()])
 
 
 class AtrCeilingTest(unittest.TestCase):

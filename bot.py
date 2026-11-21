@@ -7382,6 +7382,125 @@ def maybe_daily_report(tg: Telegram, allow: set[str]) -> None:
         _save_daily(st)
 
 
+def open_bell_due(was_open: bool, is_open: bool, today: str,
+                  last_sent: str | None, saw_closed: bool = True) -> bool:
+    """Is the open bell owed? Pure, so a test pins the rule with no clock.
+
+    The bell rings on the OBSERVED closed->open transition, once per calendar
+    day. Three things must all hold:
+
+      * the market is open now,
+      * it was closed the last time this bot looked,
+      * and this bot actually SAW it closed (`saw_closed`).
+
+    That last one is the Render case. A free container has no disk, so every
+    restart begins with an empty daily.json -- and if the market happens to be
+    open at that moment, "was closed" is unknowable. Without `saw_closed` the
+    bell would ring again on every deploy, which is a weekend announcement
+    arriving four times. A bell announces a transition the bot witnessed; a
+    bot that just booted witnessed nothing.
+    """
+    return (is_open and not was_open and saw_closed
+            and last_sent != today)
+
+
+def open_bell_text(m: dict | None = None) -> str:
+    """The message the bell rings with: where the market resumes, and the two
+    levels that decide it.
+
+    Deliberately a FACT card, not a plan: the desk's own gates decide trades,
+    and a bell that also shouted "buy" would be a second decision engine. It
+    names the price, the gap from Friday's close, and the nearest wall each
+    way -- the same levels the map showed on Saturday, so the first thing the
+    owner reads on Monday is a continuation, not a new story.
+    """
+    m = m or read_market()
+    live = m["live"]
+    q = m.get("q") or {}
+    res, sup = _levels(live)
+    lines = [f"🔔 <b>السوق فتح</b> — {SYMBOL}", ""]
+    lines.append(f"السعر <b>{num(live)}</b>")
+    prev = q.get("prevClose")
+    if prev:
+        try:
+            d = live - float(prev)
+            lines.append(f"عن إغلاق الجمعة: <b>{d:+,.2f}</b> "
+                         f"({d / float(prev) * 100:+.2f}%)")
+        except (TypeError, ValueError):
+            pass
+    state = "مفتوح ✅" if market_open(q) else "مسكّر ⛔"
+    lines.append(f"الحالة: {state} · 🕒 "
+                 f"{datetime.now(timezone(timedelta(hours=TZ_OFFSET_H))):%H:%M}")
+    if res or sup:
+        lines += ["", "<b>أقرب المستويات:</b>"]
+        if res:
+            lines.append(f"  🔺 مقاومة {num(res[0])} "
+                         f"(+{num(res[0] - live)} نقطة)")
+        if sup:
+            lines.append(f"  🔻 دعم {num(sup[0])} "
+                         f"(-{num(live - sup[0])} نقطة)")
+    lines += ["", "<i>جرس الفتح: خريطة السوق، مو أمر دخول. "
+                  "القرار للمحرّك وبواباته.</i>"]
+    return "\n".join(lines)
+
+
+def maybe_open_bell(tg: Telegram, allow: set[str]) -> None:
+    """Ring the bell ONCE when the market resumes, then stay quiet.
+
+    A weekend is 48 hours of silence, and the first thing the owner asked for
+    after it was to know the moment the tape came back. The state rides
+    `_load_daily` (the same persisted blob the close report uses), so a Render
+    restart cannot replay the bell.
+
+    `bell_was_open` is a SEPARATE flag from the close report's `was_open`, and
+    deliberately so: maybe_daily_report sets `was_open` true every open cycle,
+    so sharing it would leave the bell permanently thinking the market had been
+    open and it would never ring. Two transitions, two flags, one file.
+
+    `bell_saw_closed` is the honesty flag: it is set only when this bot has
+    actually observed a CLOSED market. A freshly deployed container that finds
+    the market already open has seen no transition, so it stays silent -- see
+    open_bell_due for why that matters on a diskless host.
+
+    It speaks to `_desk_chats`, not `_alert_chats`: the bell is the other end
+    of the close report, and the owner asked for one rule at both ends of the
+    session. Under OWNER_ONLY that means the owner alone.
+    """
+    st = _load_daily()
+    try:
+        is_open = market_open(quote())
+    except Exception:  # noqa: BLE001 - a feed hiccup must not kill the tick
+        return
+    today = datetime.now(timezone(timedelta(hours=TZ_OFFSET_H))).date().isoformat()
+    was_open = bool(st.get("bell_was_open"))
+    if not is_open:
+        if not st.get("bell_saw_closed"):
+            st["bell_saw_closed"] = True
+            _save_daily(st)
+        if was_open:
+            st["bell_was_open"] = False
+            _save_daily(st)
+        return
+    if open_bell_due(was_open, is_open, today, st.get("bell_sent"),
+                     bool(st.get("bell_saw_closed"))):
+        try:
+            text = open_bell_text()
+        except Exception:  # noqa: BLE001 - the bell must not kill the tick
+            text = None
+        if text:
+            ok = False
+            for c in _desk_chats(allow):
+                try:
+                    tg.send(c, text, menu_reply_kb(c))
+                    ok = True
+                except Exception:  # noqa: BLE001
+                    continue
+            if ok:
+                st["bell_sent"] = today
+    st["bell_was_open"] = True
+    _save_daily(st)
+
+
 def maybe_daily_analysis(tg: Telegram, allow: set[str]) -> None:
     """Send the full daily read TWICE a day -- morning and evening -- each once.
 
@@ -8071,6 +8190,9 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     # switch: it is a fact about the day, not a trade decision, so the owner
     # still gets it when auto-trading is off.
     maybe_daily_report(tg, allow)
+    # The open bell: the mirror of the close report. Same reasoning -- a fact
+    # about the market, so it speaks before the silence switch.
+    maybe_open_bell(tg, allow)
     # The full daily read, morning and evening. Same reasoning: a fact about the
     # market, so it speaks before the silence switch.
     maybe_daily_analysis(tg, allow)
@@ -8431,6 +8553,7 @@ def selftest() -> int:
     print("== trend ==", (tw or "silent").replace("\n", " ")[:120])
     ew = entry_watch({})
     print("== entry ==", (ew or "silent").replace("\n", " ")[:120])
+    print("== open_bell ==", open_bell_text().replace("\n", " | ")[:140])
     print("== news live ==", len(_news_fetch()) if NEWS_LIVE else "off")
     print("== trade parse ==", str(parse_trade("سجل شراء 4075 وقف 4069 هدف 4085"))
           .replace("\n", " ")[:120])
