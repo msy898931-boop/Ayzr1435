@@ -6885,9 +6885,16 @@ def backup_loop(tg: Telegram, poll_s: int = 60,
             # gate the owner flipped must reach the durable copy even if no
             # trade has happened since -- otherwise the pinned snapshot quietly
             # lags behind who gets the messages and how the desk is set.
+            #
+            # daily.json is watched for the same reason: it carries the open
+            # bell's `bell_saw_closed` latch, and a latch that never reaches the
+            # pinned copy is a bell that goes silent after the next restart --
+            # the one scenario it exists for. `_save_daily` writes only on a
+            # real change, so watching it does not upload every tick.
             stamp = (DB_PATH.stat().st_mtime if DB_PATH.exists() else 0.0,
                      ALLOW_PATH.stat().st_mtime if ALLOW_PATH.exists() else 0.0,
-                     SETTINGS_PATH.stat().st_mtime if SETTINGS_PATH.exists() else 0.0)
+                     SETTINGS_PATH.stat().st_mtime if SETTINGS_PATH.exists() else 0.0,
+                     DAILY_PATH.stat().st_mtime if DAILY_PATH.exists() else 0.0)
             if stamp != last:
                 if backup_journal(tg):
                     last = stamp
@@ -7349,8 +7356,24 @@ def _load_daily() -> dict:
 
 
 def _save_daily(st: dict) -> None:
+    """Persist the daily state, but only when it actually CHANGED.
+
+    `maybe_open_bell` and `maybe_daily_report` both run every desk tick and both
+    re-save this file, so writing unconditionally bumped the mtime every couple
+    of minutes while the content sat still. That made the file useless as a
+    change signal: `backup_loop` watches mtimes, and adding this one would have
+    uploaded a Telegram document every minute. Writing only on a real change
+    keeps the mtime honest, so the backup can watch it (see backup_loop) and the
+    bell's `bell_saw_closed` latch survives a container restart.
+    """
+    text = json.dumps(st)
     try:
-        DAILY_PATH.write_text(json.dumps(st))
+        if DAILY_PATH.exists() and DAILY_PATH.read_text() == text:
+            return
+    except OSError:
+        pass
+    try:
+        DAILY_PATH.write_text(text)
     except OSError:
         pass
 

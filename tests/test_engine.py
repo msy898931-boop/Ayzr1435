@@ -2558,6 +2558,32 @@ class OpenBellTest(_DbCase):
             bot.maybe_open_bell(_Rec(), {"933571066", "8545528489"})
         self.assertEqual(seen_chats, [bot._backup_chat()])
 
+    def test_the_daily_file_only_touches_disk_on_a_real_change(self):
+        # backup_loop decides to upload by comparing mtimes, so a file that
+        # rewrites itself with identical content every tick would either upload
+        # every minute (once watched) or -- unwatched -- never carry the latch.
+        self._tick("closed")
+        first = bot.DAILY_PATH.stat().st_mtime_ns
+        for _ in range(3):
+            self._tick("closed")
+        self.assertEqual(bot.DAILY_PATH.stat().st_mtime_ns, first)
+
+    def test_the_latch_survives_a_restart_via_the_pinned_backup(self):
+        # The whole point of the latch: the weekend is observed, the container
+        # is evicted before Monday, and the bell still rings when the tape
+        # comes back. That only works if the latch reaches _dump_journal --
+        # otherwise restore_journal writes back a daily with no saw_closed and
+        # the bell stays silent, which is the exact failure it exists to fix.
+        self._tick("closed")
+        blob = bot._dump_journal()
+        self.assertTrue((blob.get("daily") or {}).get("bell_saw_closed"))
+
+        bot.DAILY_PATH.unlink()          # the disk is wiped
+        bot._save_daily(blob["daily"])   # what restore_journal would do
+        self.sent.clear()
+        self._tick("open")
+        self.assertEqual(len(self.sent), 1)
+
 
 class AtrCeilingTest(unittest.TestCase):
     """The ATR ceiling is 0.30%, and that is a MEASURED choice, not the old one.
