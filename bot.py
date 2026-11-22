@@ -8456,8 +8456,9 @@ def ayzr_plan_loop(tg: Telegram, stop: threading.Event | None = None) -> None:
     plan plus the reason in one message, never the plan twice. The first send
     after boot seeds the direction, so a restart does not replay a report.
 
-    Recipients are the OWNER plus the people he named (Zein) -- never `allow`,
-    so a subscriber he did not name never sees his private plan. A dead feed or
+    Recipients are everyone on the bot (see `_ayzr_plan_chats`): the plan and
+    the strategy are shared, and only the ENGINE -- the button, the panel, the
+    private reads -- stays behind `may_use_ayzr`. A dead feed or
     a broken engine is swallowed so the loop cannot die on one bad tick.
     """
     if not AYZR_PLAN_PUSH:
