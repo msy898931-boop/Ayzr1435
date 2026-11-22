@@ -2421,7 +2421,7 @@ class DailyScheduleTest(_DbCase):
             self.sink = sink
 
         def send(self, chat, text, *a, **k):
-            self.sink.append(text)
+            self.sink.append((str(chat), text))
             return {"ok": True}
 
     def _tick(self, market):
@@ -2429,12 +2429,14 @@ class DailyScheduleTest(_DbCase):
             bot.maybe_daily_report(self._Tg(self.sent), {"1"})
 
     def test_sends_once_on_the_close_transition(self):
+        # One message per recipient: the owner and the roll both follow the
+        # day's record (see _public_chats). The EVENT is once, not the sends.
         self._tick("open")
         self.assertEqual(self.sent, [])           # nothing while open
         self._tick("closed")
-        self.assertEqual(len(self.sent), 1)       # the day's record, once
+        self.assertEqual({c for c, _ in self.sent}, {"1", bot._backup_chat()})
         self._tick("closed")
-        self.assertEqual(len(self.sent), 1)       # a standing close is silent
+        self.assertEqual(len(self.sent), 2)       # a standing close is silent
 
     def test_a_weekend_close_never_sends(self):
         # The market was never seen open: no close to report, no message.
@@ -2444,11 +2446,11 @@ class DailyScheduleTest(_DbCase):
     def test_a_restart_mid_evening_does_not_resend(self):
         self._tick("open")
         self._tick("closed")
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.sent), 2)
         # Simulate a reboot: the persisted state survives, so the same day is
         # not delivered a second time.
         self._tick("closed")
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.sent), 2)
 
 
 class OpenBellTest(_DbCase):
@@ -2915,9 +2917,17 @@ class DailyAnalysisTest(unittest.TestCase):
             self.assertLess(len(bot.daily_analysis()), 4096)
 
 
-class DailyScheduleTest(unittest.TestCase):
+class DailyAnalysisScheduleTest(unittest.TestCase):
     """maybe_daily_analysis: fires once per slot per day, only inside the slot's
-    hour, and a reboot that already sent a slot must not repeat it."""
+    hour, and a reboot that already sent a slot must not repeat it.
+
+    Named apart from `DailyScheduleTest` above, which pins the END-OF-DAY
+    record. They shared a name until now, and Python silently kept the later
+    class -- so the record's three tests never ran.
+
+    The daily read is one of the few things the owner shares, so a send reaches
+    the owner AND every allowed chat -- the count below is per recipient, not
+    per event."""
 
     def setUp(self):
         self.sent = []
@@ -2925,7 +2935,7 @@ class DailyScheduleTest(unittest.TestCase):
 
         class TG:
             def send(self, chat, text, markup=None):
-                outer.sent.append(chat)
+                outer.sent.append(str(chat))
                 return True
         self.tg = TG()
 
@@ -2938,17 +2948,18 @@ class DailyScheduleTest(unittest.TestCase):
             dt.now.return_value = real_dt(2026, 11, 12, hour, 5,
                                           tzinfo=timezone(timedelta(hours=3)))
             bot.maybe_daily_analysis(self.tg, {"1"})
-        return len(self.sent)
+        return self.sent
 
     def test_the_morning_hour_sends_once(self):
-        self.assertEqual(self._run(bot.DAILY_AM_HOUR, {}), 1)
+        self.assertEqual(self._run(bot.DAILY_AM_HOUR, {}),
+                         ["1", bot._backup_chat()])
 
     def test_an_off_hour_sends_nothing(self):
-        self.assertEqual(self._run((bot.DAILY_AM_HOUR + 2) % 24, {}), 0)
+        self.assertEqual(self._run((bot.DAILY_AM_HOUR + 2) % 24, {}), [])
 
     def test_a_slot_already_sent_today_does_not_repeat(self):
         self.assertEqual(self._run(bot.DAILY_AM_HOUR,
-                                   {"analysis_sent": {"am": "2026-11-12"}}), 0)
+                                   {"analysis_sent": {"am": "2026-11-12"}}), [])
 
 
 class PlanCheckTest(unittest.TestCase):
@@ -3812,11 +3823,13 @@ class StickyLevelsTest(unittest.TestCase):
 
 
 class ChatSplitTest(unittest.TestCase):
-    """The owner's own messages stay private; the market alerts stay public.
+    """The owner keeps the market chatter; the world follows the trades.
 
-    `_desk_chats` carries the money (a trade, the day's record, the account) and
-    goes to the owner alone; `_alert_chats` carries facts about the market and
-    goes to everyone allowed."""
+    The rule changed (owner's call): `_alert_chats` used to be public and
+    `_desk_chats` private. Now BOTH are the owner alone under OWNER_ONLY, and
+    the shared surface is `_public_chats` -- a trade opening, that trade
+    winning or losing, the plan and strategy, the daily read, and the day's
+    record. Everything else is his."""
 
     def setUp(self):
         self._own, self._backup = bot.OWNER_ONLY, bot.BACKUP_CHAT
@@ -3831,14 +3844,46 @@ class ChatSplitTest(unittest.TestCase):
         self.assertEqual(bot._desk_chats(allow), [bot._backup_chat()])
         self.assertNotIn("100", bot._desk_chats(allow))
 
-    def test_alerts_go_to_everyone_allowed(self):
+    def test_market_alerts_are_private_too(self):
+        # The change the owner asked for: the level/gate/trend/news stream is
+        # no longer the public half of the bot.
+        bot.OWNER_ONLY = True
         allow = {"100", "200"}
-        self.assertEqual(bot._alert_chats(allow), ["100", "200"])
+        self.assertEqual(bot._alert_chats(allow), [bot._backup_chat()])
+        self.assertNotIn("100", bot._alert_chats(allow))
+
+    def test_the_shared_surface_is_everyone_allowed(self):
+        bot.OWNER_ONLY = True
+        allow = {"100", "200"}
+        self.assertEqual(bot._public_chats(allow), ["100", "200", bot._backup_chat()])
+
+    def test_the_shared_surface_always_includes_the_owner(self):
+        # A hand-edited allow file that dropped the owner must not make him
+        # miss his own trades.
+        bot.OWNER_ONLY = True
+        self.assertIn(bot._backup_chat(), bot._public_chats({"100"}))
 
     def test_owner_only_off_restores_the_old_behaviour(self):
         bot.OWNER_ONLY = False
         allow = {"100", "200"}
         self.assertEqual(bot._desk_chats(allow), ["100", "200"])
+        self.assertEqual(bot._alert_chats(allow), ["100", "200"])
+
+    def test_a_guest_cannot_close_the_owners_trade(self):
+        # Sharing the trade cards hands every guest a trade id. Without a lock
+        # on `close`, a guest typing "سكر 4" would close the owner's position --
+        # and `trade` would let him file a fake one in the journal.
+        tg = unittest.mock.Mock()
+        with unittest.mock.patch.object(bot, "close_trade") as closing, \
+             unittest.mock.patch.object(bot, "record_trade") as filing:
+            bot.handle(tg, {"message": {"chat": {"id": "100"},
+                                        "text": "سكر 4"}}, {"100"})
+            bot.handle(tg, {"message": {"chat": {"id": "100"},
+                                        "text": "شراء 3900 وقف 3890"}}, {"100"})
+        closing.assert_not_called()
+        filing.assert_not_called()
+        said = " ".join(str(c.args[1]) for c in tg.send.call_args_list)
+        self.assertIn("للمالك بس", said)
 
 
 class PullbackEntryTest(unittest.TestCase):
@@ -4241,9 +4286,10 @@ class AyzrButtonTest(unittest.TestCase):
         self.assertNotIn(bot.AYZR_BUTTON_TEXT, [b["text"] for b in row])
 
     def test_the_plan_push_sends_to_the_named_audience_alone(self):
-        # The scheduled plan is the owner's private read, shared only with the
-        # people he named: the loop sends to _ayzr_plan_chats() and never to
-        # `allow`, so a subscriber he did not name never receives it.
+        # The loop must send to exactly the audience `_ayzr_plan_chats()` names
+        # -- not to some other list it computed itself. The audience has since
+        # widened to the whole roll (see test_the_plan_push_reaches_the_roll),
+        # but the loop still owes its list the only say.
         import threading
 
         import ayzr as engine
@@ -4394,6 +4440,29 @@ class AyzrButtonTest(unittest.TestCase):
                                         return_value="REPORT"):
             bot.ayzr_plan_loop(tg, stop)
         self.assertEqual(sent, ["PLAN"])     # exactly one, the first
+
+    def test_the_plan_push_reaches_the_roll(self):
+        # The owner changed the rule: the plan and strategy are shared with
+        # everyone on the bot, not just the friends he named. The named friends
+        # still get it even if they are not on the roll, and the owner is
+        # always first so a hand-edited allow file cannot drop him.
+        old_allow, old_extra = bot.load_allow, bot.AYZR_EXTRA_CHATS
+        try:
+            bot.AYZR_EXTRA_CHATS = ["777"]
+            with unittest.mock.patch.object(bot, "load_allow",
+                                            return_value={"100", "200"}):
+                chats = bot._ayzr_plan_chats()
+        finally:
+            bot.load_allow, bot.AYZR_EXTRA_CHATS = old_allow, old_extra
+        self.assertEqual(chats[0], bot._backup_chat())
+        self.assertEqual(set(chats), {bot._backup_chat(), "100", "200", "777"})
+
+    def test_sharing_the_plan_does_not_open_the_engine(self):
+        # The push widened; the BUTTON did not. A subscriber who receives the
+        # plan must still be refused the engine, the panel and the private
+        # reads, or sharing a read would hand over the whole desk.
+        self.assertFalse(bot.may_use_ayzr(self.GUEST))
+        self.assertFalse(bot.is_owner(self.GUEST))
 
     def test_the_distance_rule_bounds_the_cadence(self):
         # The cadence is DISTANCE, not ADX strength: a plan goes stale when

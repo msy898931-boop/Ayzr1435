@@ -6723,15 +6723,19 @@ def _backup_chat() -> str:
 
 
 def _ayzr_plan_chats() -> list[str]:
-    """Who receives the AYZR plan and holds the AYZR button: the owner, plus the
-    people he explicitly named (AYZR_EXTRA_CHATS).
+    """Who receives the pushed AYZR plan and strategy.
 
-    Deliberately NOT `load_allow()`: the owner asked to give the engine to one
-    named friend without opening it to every subscriber. The owner is always
-    first, and the list is de-duplicated so an id named twice is not sent twice.
+    It USED to be the owner plus the people he named (AYZR_EXTRA_CHATS) and
+    deliberately not `allow`. The owner changed that rule: the plan and the
+    strategy are one of the few things he shares with everyone on the bot (see
+    `_public_chats`), so it now reaches every allowed chat, plus the named
+    friends even if they are not on the roll, plus the owner himself.
+
+    The AYZR BUTTON is still gated by `may_use_ayzr`, so sharing the pushed
+    plan does not open the engine, the control panel or the private reads.
     """
     out: list[str] = []
-    for c in (_backup_chat(), *AYZR_EXTRA_CHATS):
+    for c in (_backup_chat(), *sorted(load_allow()), *AYZR_EXTRA_CHATS):
         if c and c not in out:
             out.append(str(c))
     return out
@@ -6750,13 +6754,34 @@ def _desk_chats(allow: set[str]) -> list[str]:
     return sorted(allow)
 
 
+def _public_chats(allow: set[str]) -> list[str]:
+    """Who hears the handful of things the owner shares with everyone: a trade
+    opening, that trade winning or losing, the plan and strategy, the daily
+    read, and the day's record.
+
+    Everything else -- the level alerts, the gate and trend flips, the news, the
+    in-trade warnings, the refusals, the rest gap, the bell -- is the owner's
+    alone (see `_alert_chats`). The owner was explicit: the market chatter is
+    his, and the rest of the world follows the trades.
+
+    The owner is always included, even if the allow file was hand-edited
+    without him, so he never loses his own notifications.
+    """
+    out = sorted(set(allow) | {_backup_chat()})
+    return out
+
+
 def _alert_chats(allow: set[str]) -> list[str]:
     """Who hears the market ALERTS: a level breaking, the direction flipping, a
-    gate opening, price reaching a zone.
+    gate opening, price reaching a zone, a headline.
 
-    These are facts about the market, not about the owner's account, so they
-    stay for everyone allowed -- that is the half of the bot a guest is here for.
+    These USED to go to everyone allowed. The owner changed that rule: he wants
+    the whole stream for himself and shares only the trades, the plan, the daily
+    read and the day's record (see `_public_chats`). Without OWNER_ONLY the old
+    behaviour comes back, so the switch still means what it says.
     """
+    if OWNER_ONLY:
+        return [_backup_chat()]
     return sorted(allow)
 
 
@@ -7018,6 +7043,16 @@ def handle(tg: Telegram, upd: dict, allow: set[str]) -> str | None:
         out = "⛔ محرك AYZR للمالك بس."
         tg.send(chat, out, card_markup("menu", chat))
         return "ayzr"
+    if action in ("trade", "close") and not is_owner(chat):
+        # Writing to the book -- recording a trade or closing one -- is the
+        # owner's alone. Every guest now receives the trade cards (a trade
+        # opening, and its result), so they all can read a trade id; without
+        # this lock a guest could type "سكر 4" and close the owner's position,
+        # or file a fake trade in his journal. The card they receive is a
+        # read-only view of a book they do not own.
+        out = "⛔ سجل الصفقات للمالك بس."
+        tg.send(chat, out, card_markup("menu", chat))
+        return action
     try:
         if action == "trade":
             out = record_trade(text)
@@ -7398,7 +7433,7 @@ def maybe_daily_report(tg: Telegram, allow: set[str]) -> None:
         return
     if st.get("was_open") and st.get("last_sent") != today:
         text = daily_report()
-        for c in _desk_chats(allow):
+        for c in _public_chats(allow):
             tg.send(c, text, menu_reply_kb(c))
         st["was_open"] = False
         st["last_sent"] = today
@@ -7549,7 +7584,7 @@ def maybe_daily_analysis(tg: Telegram, allow: set[str]) -> None:
         except Exception:  # noqa: BLE001 - a hiccup must not kill the tick
             continue
         ok = False
-        for c in _alert_chats(allow):
+        for c in _public_chats(allow):
             try:
                 tg.send(c, text, menu_reply_kb(c))
                 ok = True
@@ -8163,7 +8198,7 @@ def _desk_pullback(tg: Telegram, allow: set[str], seen: dict, pc: dict) -> bool:
             row = next(x for x in all_trades() if x["id"] == tid)
             seen[tid] = "open"
             _pending_clear()
-            for c in _desk_chats(allow):
+            for c in _public_chats(allow):
                 tg.send(c, _open_card(p, row))
             return True
         at = _parse(pend.get("at"))
@@ -8284,7 +8319,7 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
             # A manual close already sent its card from the button handler;
             # announcing it here too would deliver the same closure twice.
             if st != "open" and t["result"] != "manual":
-                for c in _desk_chats(allow):
+                for c in _public_chats(allow):
                     tg.send(c, _close_card(t))
     # In-trade monitoring runs AFTER settle, so it never narrates a trade that
     # this same cycle just closed.
@@ -8363,7 +8398,7 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
         tid = _write_plan(p)
         row = next(x for x in all_trades() if x["id"] == tid)
         seen[tid] = "open"
-        for c in _desk_chats(allow):
+        for c in _public_chats(allow):
             tg.send(c, _open_card(p, row))
 
 
