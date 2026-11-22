@@ -203,7 +203,7 @@ MAX_TRADES_DAY = int(os.environ.get("DESK_MAX_TRADES_DAY", "20") or "20")
 # minutes before it may open the next one. The owner asked for it -- a fresh
 # signal one second after a stop is usually the SAME move taken again, and he
 # would rather the next trade be right than immediate. 0 disables the gap.
-REST_MINUTES = int(os.environ.get("DESK_REST_MINUTES", "30") or "30")
+REST_MINUTES = int(os.environ.get("DESK_REST_MINUTES", "15") or "15")
 # The no-chase filter: do not SELL into deep oversold (or BUY into deep
 # overbought) on the filter frame -- that is entering after the move, at the
 # edge of the range, where the retrace is most likely. Measured on 2026 with the

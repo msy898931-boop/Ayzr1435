@@ -62,9 +62,10 @@ services:
         value: "20"
       # The rest gap: after a trade CLOSES (win or loss), wait this many minutes
       # before the next entry. A fresh signal one second after a stop is usually
-      # the same move taken again. Set 0 to disable.
+      # the same move taken again. Set 0 to disable. 30 -> 15 (owner's call,
+      # 2026-11-22): the half-hour gap cost him entries he wanted back.
       - key: DESK_REST_MINUTES
-        value: "30"
+        value: "15"
       # The entry basis: how close to a level counts as "at the level" for a
       # sell-the-bounce / buy-the-dip entry. Widened 6 -> 12 (2026-11-16): at 6
       # the desk missed the 3,887.79 wall by 0.79 pts and could only chase the
