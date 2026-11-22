@@ -3,6 +3,28 @@
 Three projects live in this workspace. This file is the durable index; the full
 detail for each is in the archive beside it.
 
+## MarketDesk — the two-layer notification rule (2026-11-17)
+
+- ⭐ **Everything to the owner; guests get exactly SIX things:** trade entry,
+  trade win/loss, the plan, the strategy, the daily analysis, the end-of-day
+  record. Everything else (levels, gates, trend flips, news, in-trade warnings,
+  refusals, rest gap, bell) is the owner's alone. The helpers ARE the design:
+  `_public_chats` = the six, `_alert_chats` = owner-only chatter,
+  `_desk_chats` = the roll. `OWNER_ONLY=0` restores the old behaviour.
+- ⚠⚠ **Sharing a card that carries an IDENTIFIER is a write-surface change.**
+  Making the trade cards public gave every guest a trade id, and `handle()`'s
+  `trade`/`close` branches had NO permission check — a guest could type
+  "سكر 4" and close a real position. Both are `is_owner`-gated now. Whenever a
+  view is widened, ask what the fields in it unlock.
+- ⚠ **A duplicate class name silently deletes tests.** Two classes were named
+  `DailyScheduleTest`; Python kept the later one and the end-of-day record's
+  three tests never ran. Only ruff F811 (redefinition) shows it — the suite
+  count does not. Renamed to `DailyAnalysisScheduleTest`.
+- ⚠ **Send-count tests now count RECIPIENTS, not events.** Assert on the set of
+  chats, not `len(...) == 1`.
+- Baselines on the fresh box: bot.py ruff **43**, tests ruff **4**, mypy **3**.
+  Suite **408**. Deployed `a3ea418`; `/health` commit is the only oracle.
+
 ## MarketDesk — FX-AI Quant teardown (2026-11-18)
 
 - ⭐ **The owner asked for a full, read-only teardown of a COMPETITOR site**,
