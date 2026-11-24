@@ -180,7 +180,13 @@ class Health(BaseHTTPRequestHandler):
                              # cannot prove it landed.
                              "confirm_only": ("on" if desk.CONFIRM_ONLY
                                               else "off"),
-                             "levels": len(desk.WATCH_LEVELS)})
+                             "levels": len(desk.WATCH_LEVELS),
+                             # The armed plans, live. Without this the owner
+                             # has no way to prove from outside that a plan he
+                             # set actually reached the running bot -- the same
+                             # reason `levels` is here.
+                             "plans": len(desk.PLANS),
+                             "plan_ids": [p["id"] for p in desk.PLANS]})
         else:
             self._send(404, {"error": "not found"})
 
