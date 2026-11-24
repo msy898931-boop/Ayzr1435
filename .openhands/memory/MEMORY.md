@@ -1389,3 +1389,29 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
 - ⚠ **`ruff`/`mypy` are not installed on a fresh box** — `pip install ruff mypy`
   before checking the baselines (bot.py 41, tests 5, mypy 3).
 - `--selftest` must build EVERY card (AGENTS.md); add the new card to it.
+
+## MarketDesk — the master alert switch (2026-11-17)
+
+- ⭐ **`DESK_AUTO=0` never silenced the bot, by design.** Every watch in
+  `desk_tick` runs ABOVE `desk_is_silenced()` on purpose — a level breaking is a
+  fact, not a trade decision — so the owner hunting six switches still got level
+  alerts, trend flips, news, prep and a plan card every 1-2h. Silence needed one
+  switch that means "say nothing", not six that mean "trade less".
+- `ALERTS_ON` / `alerts_are_off()` is that switch. Guards: top of `desk_tick`
+  (returns before ANY watch, so no trade is opened silently either) and
+  `ayzr_plan_loop` **re-read on every wake** — a panel tap must take effect now,
+  not at the next restart. Deliberately NOT a `GATE_KEY`, so `open_all`/
+  `close_all` keep meaning the entry filters.
+- ⭐ **An explicit env value must survive the pinned restore.** Render has no
+  disk, so `restore_journal` rewrites `settings` from the Telegram backup on every
+  boot — a `DESK_ALERTS=0` set in the dashboard was overridden every restart.
+  `restore_journal` now lets `DESK_ALERTS` win over the blob.
+- `/health` reports `alerts: on|off` — the only outside proof a deploy took the
+  silence. (200 alone proves nothing; the `commit` field is the real oracle.)
+- ⚠ **A test that passes an unset `stop` event to `ayzr_plan_loop` hangs the
+  whole suite** — the loop only leaves on that event. Drive it with
+  `threading.Timer`. Same class of bug: an assertion placed AFTER the `with
+  patch(...)` block reads the restored global, not the patched one.
+- ⚠ A test calling `restore_journal` must redirect `bot.SETTINGS_PATH` — it
+  WRITES settings, and the real file would silence the owner's own bot.
+- Deployed `3c71e18`, live `/health` shows `alerts: on`. 415 tests green.
