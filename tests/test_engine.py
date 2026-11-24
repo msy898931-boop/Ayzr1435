@@ -525,20 +525,42 @@ class EntryPointTest(unittest.TestCase):
     def test_start_desk_starts_the_desk_and_backup_but_not_the_poller(self):
         import threading
         started = []
-        saved = (bot.desk_loop, bot.backup_loop, bot.ayzr_plan_loop)
+        saved = (bot.desk_loop, bot.backup_loop, bot.ayzr_plan_loop,
+                 bot.AYZR_PLAN_PUSH)
         bot.desk_loop = lambda *a, **k: started.append("desk")
         bot.backup_loop = lambda *a, **k: started.append("backup")
         bot.ayzr_plan_loop = lambda *a, **k: started.append("ayzr_plan")
+        bot.AYZR_PLAN_PUSH = False
         try:
             threads = bot.start_desk("FAKE", threading.Event())
             names = sorted(t.name for t in threads)
         finally:
-            (bot.desk_loop, bot.backup_loop, bot.ayzr_plan_loop) = saved
-        # The AYZR plan push is one of the desk's loops, so it must be started
-        # here with the others -- adding it to one entry point only is the exact
-        # bug start_desk() exists to prevent.
-        self.assertEqual(sorted(started), ["ayzr_plan", "backup", "desk"])
+            (bot.desk_loop, bot.backup_loop, bot.ayzr_plan_loop,
+             bot.AYZR_PLAN_PUSH) = saved
+        # The recurring plan/strategy push is OFF by default (the owner asked
+        # for it to stop), so the desk starts without it.
+        self.assertEqual(sorted(started), ["backup", "desk"])
         self.assertNotIn("poller", names)
+        self.assertNotIn("ayzr_plan", names)
+
+    def test_start_desk_runs_the_plan_push_when_it_is_switched_on(self):
+        """...but the loop must still be wired in start_desk(), not lost. A
+        feature that is off by default and ALSO unregistered is a feature that
+        can never be turned back on."""
+        import threading
+        started = []
+        saved = (bot.desk_loop, bot.backup_loop, bot.ayzr_plan_loop,
+                 bot.AYZR_PLAN_PUSH)
+        bot.desk_loop = lambda *a, **k: started.append("desk")
+        bot.backup_loop = lambda *a, **k: started.append("backup")
+        bot.ayzr_plan_loop = lambda *a, **k: started.append("ayzr_plan")
+        bot.AYZR_PLAN_PUSH = True
+        try:
+            bot.start_desk("FAKE", threading.Event())
+        finally:
+            (bot.desk_loop, bot.backup_loop, bot.ayzr_plan_loop,
+             bot.AYZR_PLAN_PUSH) = saved
+        self.assertEqual(sorted(started), ["ayzr_plan", "backup", "desk"])
 
 
 class LevelsWatchTest(unittest.TestCase):
@@ -4848,7 +4870,7 @@ class ConfirmWatchTest(unittest.TestCase):
             bot.OWNER_ONLY = saved
 
 
-class ArmedPlansTest(unittest.TestCase):
+class ArmedPlansTest(_DbCase):
     """The owner's scenarios, armed. He asked the bot to WATCH them for him:
     "فيك تخلي البوت ينبها بهـدول السيناريوهات مشان نفوت فيهن بس يتحققو".
 
@@ -4873,7 +4895,7 @@ class ArmedPlansTest(unittest.TestCase):
     )
 
     def _run(self, plans, close, high=None, low=None, seen=None, live=None):
-        """One `plans_watch` over a single closed bar. Returns (note, seen)."""
+        """One `plans_watch` over a single closed bar. Returns (fired, seen)."""
         seen = {} if seen is None else seen
         bar = {"open": close, "high": high if high is not None else close + 1,
                "low": low if low is not None else close - 1, "close": close}
@@ -4890,115 +4912,222 @@ class ArmedPlansTest(unittest.TestCase):
                                         return_value={"ok": True, "vol": 3000.0,
                                                       "mult": 1.5,
                                                       "median": 2000.0}):
-            note = bot.plans_watch(seen)
-        return note, seen
+            fired = bot.plans_watch(seen)
+        return fired, seen
 
     def test_a_break_fires_on_a_close_through_the_level(self):
         """Scenario 1: a 15m bar CLOSES under 3,540.33 = the sell is live."""
-        note, _ = self._run(self.PLANS[:1], close=3535.0)
-        self.assertIsNotNone(note, "the armed break did not fire")
-        self.assertIn("سيناريو مسلّح انطلق", note)
-        self.assertIn("كسر بإغلاق", note)
-        self.assertIn("3,540.33", note)
+        fired, _ = self._run(self.PLANS[:1], close=3535.0)
+        self.assertIsNotNone(fired, "the armed break did not fire")
+        self.assertEqual(fired["plan"]["id"], "1")
+        self.assertEqual(float(fired["bar"]["close"]), 3535.0)
 
     def test_a_break_does_not_fire_on_a_wick_through(self):
         """The whole point of 'بإغلاق': a bar that trades below and closes back
         above is NOT the scenario. This is the exact mistake the confirmed card
         exists to avoid, so the armed plan must inherit it."""
-        note, _ = self._run(self.PLANS[:1], close=3545.0, low=3530.0)
-        self.assertIsNone(note, "a wick through the level fired a break")
+        fired, _ = self._run(self.PLANS[:1], close=3545.0, low=3530.0)
+        self.assertIsNone(fired, "a wick through the level fired a break")
 
     def test_a_break_does_not_fire_in_the_wrong_direction(self):
         """Scenario 1 is a SHORT below 3,540.33. A close ABOVE the level is the
         opposite event and must never be reported as this plan firing."""
-        note, _ = self._run(self.PLANS[:1], close=3550.0)
-        self.assertIsNone(note)
+        fired, _ = self._run(self.PLANS[:1], close=3550.0)
+        self.assertIsNone(fired)
 
     def test_a_reject_fires_on_a_wick_and_a_close_back(self):
         """Scenario 2: 'فيتل تحت 3,540 وارتجاع' -- a wick below, a close above."""
-        note, _ = self._run(self.PLANS[1:2], close=3546.0, low=3532.0)
-        self.assertIsNotNone(note, "the armed rejection did not fire")
-        self.assertIn("فيتل وارتجاع", note)
+        fired, _ = self._run(self.PLANS[1:2], close=3546.0, low=3532.0)
+        self.assertIsNotNone(fired, "the armed rejection did not fire")
+        self.assertEqual(fired["plan"]["id"], "2")
 
     def test_a_reject_does_not_fire_without_the_wick(self):
         """No wick past the level = no rejection happened. A close above the
         floor alone is just price sitting above a floor."""
-        note, _ = self._run(self.PLANS[1:2], close=3546.0, low=3542.0)
-        self.assertIsNone(note)
+        fired, _ = self._run(self.PLANS[1:2], close=3546.0, low=3542.0)
+        self.assertIsNone(fired)
 
     def test_a_reject_does_not_fire_when_it_closes_through(self):
         """A wick below that CLOSES below is a break, not a rejection -- and it
         belongs to plan 1, not plan 2. They must never both claim one bar."""
-        note, _ = self._run(self.PLANS[:2], close=3534.0, low=3530.0)
-        self.assertIsNotNone(note)
-        self.assertIn("كسر بإغلاق", note)
-        self.assertNotIn("فيتل وارتجاع", note)
+        fired, _ = self._run(self.PLANS[:2], close=3534.0, low=3530.0)
+        self.assertIsNotNone(fired)
+        # Plan 1 (the break) must claim the bar, never plan 2 (the reject).
+        self.assertEqual(fired["plan"]["id"], "1")
 
     def test_a_plan_fires_once_per_approach(self):
         """Two ticks on the same side of the level = ONE message. Without the
         latch the desk would repeat itself every cycle, which is the noise the
         owner asked to stop."""
-        note1, seen = self._run(self.PLANS[:1], close=3535.0)
-        note2, seen = self._run(self.PLANS[:1], close=3534.0, seen=seen)
-        self.assertIsNotNone(note1)
-        self.assertIsNone(note2, "the plan repeated on the next tick")
+        fired1, seen = self._run(self.PLANS[:1], close=3535.0)
+        fired2, seen = self._run(self.PLANS[:1], close=3534.0, seen=seen)
+        self.assertIsNotNone(fired1)
+        self.assertIsNone(fired2, "the plan repeated on the next tick")
 
     def test_a_plan_rearms_after_price_returns(self):
         """Price back above the level means the level can be broken again
         later; a latch that never cleared would go silent forever."""
-        note1, seen = self._run(self.PLANS[:1], close=3535.0)
+        fired1, seen = self._run(self.PLANS[:1], close=3535.0)
         self._run(self.PLANS[:1], close=3550.0, seen=seen)   # back above
-        note3, seen = self._run(self.PLANS[:1], close=3535.0, seen=seen)
-        self.assertIsNotNone(note1)
-        self.assertIsNotNone(note3, "the plan did not re-arm")
+        fired3, seen = self._run(self.PLANS[:1], close=3535.0, seen=seen)
+        self.assertIsNotNone(fired1)
+        self.assertIsNotNone(fired3, "the plan did not re-arm")
 
     def test_a_restart_never_replays_a_trigger(self):
         """A fresh `seen` (the boot case) must SEED, not fire: the trigger may
         have happened while the bot was down, and the owner must not be told to
         enter a trade the market has left."""
-        note, _ = self._run(self.PLANS[:1], close=3535.0)
-        self.assertIsNotNone(note)
-        note2, _ = self._run(self.PLANS[:1], close=3534.0, seen={})
+        fired, _ = self._run(self.PLANS[:1], close=3535.0)
+        self.assertIsNotNone(fired)
+        fired2, _ = self._run(self.PLANS[:1], close=3534.0, seen={})
         # A brand-new latch on a level already broken DOES speak: that is a
         # fresh observation of a break in progress, and the card says so. What
         # must never happen is a replay of a CLOSED trade -- that rule lives in
         # the trade book, not here. Pin the behaviour we actually want:
-        self.assertIsNotNone(note2)
+        self.assertIsNotNone(fired2)
 
     def test_the_card_quotes_the_owners_own_targets(self):
         """The levels are HIS. The card must show them back, or he cannot tell
         whether the bot is watching his plan or its own."""
-        note, _ = self._run(self.PLANS[:1], close=3535.0)
-        self.assertIn("أهدافك", note)
-        self.assertIn("3,529.00", note)
+        p = bot._sized(3535.0, "short", 3540.33)
+        card = bot._plan_open_card(self.PLANS[0], p, {"id": 7})
+        self.assertIn("أهدافك", card)
+        self.assertIn("3,529.00", card)
 
     def test_the_card_prices_with_the_desk_sizing(self):
         """One engine: the entry/stop/target come from `_sized`, so an armed
-        plan can never quote a trade the desk would refuse."""
-        note, _ = self._run(self.PLANS[:1], close=3535.0)
+        plan can never quote a trade the desk would refuse to size."""
         p = bot._sized(3535.0, "short", 3540.33)
-        self.assertIn(bot.num(p["stop"]), note)
-        self.assertIn(f"{p['rr']:.1f}", note)
+        card = bot._plan_open_card(self.PLANS[0], p, {"id": 7})
+        self.assertIn(bot.num(p["stop"]), card)
+        self.assertIn(f"{p['rr']:.1f}", card)
 
     def test_the_card_warns_when_the_volume_is_thin(self):
         """A break on thin volume is the trap the owner was warned about; the
         card must say it rather than dress it up."""
-        bar = {"open": 3535.0, "high": 3536.0, "low": 3534.0, "close": 3535.0}
-        with unittest.mock.patch.object(bot, "PLANS", tuple(self.PLANS[:1])), \
-             unittest.mock.patch.object(bot, "read_market",
-                                        return_value={"live": 3535.0, "q": {}}), \
-             unittest.mock.patch.object(bot, "market_open", return_value=True), \
-             unittest.mock.patch.object(bot, "bars",
-                                        return_value=[bar, bar, bar]), \
-             unittest.mock.patch.object(bot, "closed",
-                                        return_value=[bar, bar, bar]), \
-             unittest.mock.patch.object(bot, "_vol_verdict",
-                                        return_value={"ok": False, "vol": 800.0,
-                                                      "mult": 0.4,
-                                                      "median": 2000.0}):
-            note = bot.plans_watch({})
-        self.assertIn("الحجم: ضعيف", note)
-        self.assertIn("فخ", note)
+        p = bot._sized(3535.0, "short", 3540.33)
+        card = bot._plan_open_card(self.PLANS[0], p, {"id": 7},
+                                   {"ok": False, "vol": 800.0, "mult": 0.4,
+                                    "median": 2000.0})
+        self.assertIn("الحجم: ضعيف", card)
+        self.assertIn("فخ", card)
+
+    # ── the take: a fired plan becomes a real trade ──────────────────────
+
+    def test_a_fired_plan_opens_a_real_trade(self):
+        """The whole request: "بياخد صفقة منو وبسجلها وبراقبها". A triggered
+        plan must leave a row in the book, not just a message."""
+        before = len(bot.all_trades())
+        fired = {"plan": dict(self.PLANS[0]),
+                 "bar": {"close": 3535.0, "high": 3536.0, "low": 3534.0,
+                         "open": 3535.0},
+                 "live": 3535.0, "vol": {"ok": True, "vol": 3000.0,
+                                         "mult": 1.5, "median": 2000.0}}
+        tg = unittest.mock.Mock()
+        bot._take_plan(tg, {bot.SEED_CHATS[0]}, fired)
+        self.assertEqual(len(bot.all_trades()), before + 1)
+        t = bot.all_trades()[-1]
+        self.assertEqual(t["direction"], "short")
+        self.assertEqual(t["status"], "open")
+        self.assertEqual(t["note"], "plan:1")
+        # Priced by the one sizing function, not by the plan's own numbers.
+        p = bot._sized(3535.0, "short", 3540.33)
+        self.assertAlmostEqual(t["entry"], p["entry"], places=2)
+        self.assertAlmostEqual(t["stop"], p["stop"], places=2)
+        self.assertAlmostEqual(t["target"], p["target"], places=2)
+
+    def test_an_opened_plan_trade_is_graded_and_watched_like_any_other(self):
+        """It must be a FIRST-CLASS trade: `grade()` settles it and
+        `trade_watch` narrates it. A note-only side channel would never close."""
+        fired = {"plan": dict(self.PLANS[0]),
+                 "bar": {"close": 3535.0, "high": 3536.0, "low": 3534.0,
+                         "open": 3535.0},
+                 "live": 3535.0, "vol": None}
+        bot._take_plan(unittest.mock.Mock(), {bot.SEED_CHATS[0]}, fired)
+        open_now = bot.open_trades()
+        self.assertTrue(any(t["note"] == "plan:1" for t in open_now))
+
+    def test_the_desk_still_holds_one_position(self):
+        """An armed plan is a decision about WHEN to enter, not a licence to
+        hold four at once. With a trade already open the plan is REFUSED and
+        the owner is told, not silently dropped."""
+        bot.add_trade("short", 3545.0, 3554.0, 3530.0, bot.LOT, note="desk")
+        before = len(bot.all_trades())
+        fired = {"plan": dict(self.PLANS[0]),
+                 "bar": {"close": 3535.0, "high": 3536.0, "low": 3534.0,
+                         "open": 3535.0},
+                 "live": 3535.0, "vol": None}
+        sent = []
+        tg = unittest.mock.Mock()
+        tg.send.side_effect = lambda c, text, *a, **k: sent.append(text)
+        bot._take_plan(tg, {bot.SEED_CHATS[0]}, fired)
+        self.assertEqual(len(bot.all_trades()), before, "a second position opened")
+        self.assertTrue(sent, "the refusal was silent")
+        self.assertIn("ما خدت الصفقة", sent[0])
+
+    def test_a_plan_trade_is_opened_through_desk_tick(self):
+        """The wiring, end to end: `desk_tick` must both detect and take.
+
+        The desk must be LIVE here (not silenced) -- the take sits below the
+        kill switch, so a silenced desk is a different test.
+        """
+        fired = {"plan": dict(self.PLANS[0]),
+                 "bar": {"close": 3535.0, "high": 3536.0, "low": 3534.0,
+                         "open": 3535.0},
+                 "live": 3535.0, "vol": None}
+        before = len(bot.all_trades())
+        tg = unittest.mock.Mock()
+        with unittest.mock.patch.object(bot, "plans_watch",
+                                        return_value=fired), \
+             unittest.mock.patch.object(bot, "confirm_watch",
+                                        return_value=None), \
+             unittest.mock.patch.object(bot, "grade", return_value=0), \
+             unittest.mock.patch.object(bot, "maybe_daily_report"), \
+             unittest.mock.patch.object(bot, "maybe_daily_analysis"), \
+             unittest.mock.patch.object(bot, "maybe_open_bell"), \
+             unittest.mock.patch.object(bot, "desk_is_silenced",
+                                        return_value=False), \
+             unittest.mock.patch.object(bot, "plan_check",
+                                        return_value={"plan": None,
+                                                      "reason": "no_signal",
+                                                      "detail": ""}):
+            bot.desk_tick(tg, {bot.SEED_CHATS[0]}, {})
+        self.assertEqual(len(bot.all_trades()), before + 1)
+
+    def test_a_silenced_desk_opens_no_plan_trade(self):
+        """`DESK_AUTO=0` is the switch the owner reaches for to stop trading.
+        It must stop ALL trading -- an armed plan that opened a position while
+        the desk was silenced would be the one thing that switch can never
+        allow. The level watches sit above the switch because they report
+        facts; this opens a position, so it sits below."""
+        bot.add_trade("long", 3000.0, 2990.0, 3030.0, bot.LOT, note="desk")
+        before = len(bot.all_trades())
+        tg = unittest.mock.Mock()
+        with unittest.mock.patch.object(bot, "desk_is_silenced",
+                                        return_value=True), \
+             unittest.mock.patch.object(bot, "grade", return_value=0), \
+             unittest.mock.patch.object(bot, "maybe_daily_report"), \
+             unittest.mock.patch.object(bot, "maybe_daily_analysis"), \
+             unittest.mock.patch.object(bot, "maybe_open_bell"), \
+             unittest.mock.patch.object(bot, "plans_watch") as pw:
+            bot.desk_tick(tg, {bot.SEED_CHATS[0]}, {})
+            pw.assert_not_called()
+        self.assertEqual(len(bot.all_trades()), before)
+
+    def test_the_plan_trade_card_goes_to_everyone_allowed(self):
+        """A plan trade is a real trade, so its card is shared like any other
+        open card -- not an owner-only whisper."""
+        allow = {"100", "200"}
+        sent = []
+        tg = unittest.mock.Mock()
+        tg.send.side_effect = lambda c, *a, **k: sent.append(str(c))
+        fired = {"plan": dict(self.PLANS[0]),
+                 "bar": {"close": 3535.0, "high": 3536.0, "low": 3534.0,
+                         "open": 3535.0},
+                 "live": 3535.0, "vol": None}
+        bot._take_plan(tg, allow, fired)
+        self.assertIn("100", sent)
+        self.assertIn("200", sent)
 
     def test_no_plans_means_silence_and_no_market_read(self):
         """With nothing armed the watch must cost nothing -- not even a quote."""
@@ -5012,6 +5141,14 @@ class ArmedPlansTest(unittest.TestCase):
              unittest.mock.patch.object(bot, "read_market",
                                         side_effect=RuntimeError):
             self.assertIsNone(bot.plans_watch({}))
+
+    def test_the_plan_and_strategy_push_is_off_by_default(self):
+        """The owner asked for the recurring "خطتي والاستراتيجية" push to STOP.
+        He replaced it with trades, not with a quieter version of the same nag.
+        A default of "1" would bring it back on the next deploy, silently --
+        so the default is pinned here, not left to a dashboard value."""
+        src = (pathlib.Path(bot.__file__).parent / "bot.py").read_text()
+        self.assertIn('os.environ.get("DESK_AYZR_PLAN_PUSH", "0")', src)
 
     def test_the_listing_shows_every_armed_plan(self):
         with unittest.mock.patch.object(bot, "PLANS", tuple(self.PLANS)):
@@ -5045,27 +5182,6 @@ class ArmedPlansTest(unittest.TestCase):
         self.assertEqual(bot._parse_plans('[{"level": 1, "direction": "up"}]'), ())
         self.assertEqual(bot._parse_plans('[{"level": 1, "direction": "long",'
                                           ' "kind": "sideways"}]'), ())
-
-    def test_the_plan_card_goes_to_everyone_allowed(self):
-        """A fired plan is a trade the whole roll may take, like the confirmed
-        card -- not an owner-only whisper."""
-        allow = {"100", "200"}
-        sent = []
-        tg = unittest.mock.Mock()
-        tg.send.side_effect = lambda c, *a, **k: sent.append(str(c))
-        with unittest.mock.patch.object(bot, "plans_watch",
-                                        return_value="PLAN"), \
-             unittest.mock.patch.object(bot, "confirm_watch",
-                                        return_value=None), \
-             unittest.mock.patch.object(bot, "grade", return_value=0), \
-             unittest.mock.patch.object(bot, "maybe_daily_report"), \
-             unittest.mock.patch.object(bot, "maybe_daily_analysis"), \
-             unittest.mock.patch.object(bot, "maybe_open_bell"), \
-             unittest.mock.patch.object(bot, "desk_is_silenced",
-                                        return_value=True):
-            bot.desk_tick(tg, allow, {})
-        self.assertIn("100", sent)
-        self.assertIn("200", sent)
 
 
 class AlertsMasterSwitchTest(_DbCase):

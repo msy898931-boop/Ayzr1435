@@ -822,7 +822,15 @@ TREND_ALERT_COOLDOWN_S = 20 * 60  # at most one direction alert per 20 minutes
 # reversion. ADX does not predict where price goes next; DISTANCE does, because
 # distance is what invalidates a level. 0 turns the push off. It is sent to the
 # owner plus the AYZR audience he named (_ayzr_plan_chats), never to `allow`.
-AYZR_PLAN_PUSH = os.environ.get("DESK_AYZR_PLAN_PUSH", "1").strip().lower() in (
+#
+# DEFAULT IS OFF. The owner asked for it to stop -- "بدي ياك تلغيلي اشعار الخطة
+# والاستراتيجية يلي عم يجيني كل شوي" -- and he replaced it with something that
+# acts instead of narrating: the armed plans now OPEN a trade (`_take_plan`)
+# and the trade card is the only message. A default of "1" would bring the
+# every-1-to-2-hours nag back on the next deploy without anyone noticing, which
+# is exactly the kind of silent return he asked to be rid of. `DESK_AYZR_PLAN_PUSH=1`
+# restores it if he ever wants the plain plan back.
+AYZR_PLAN_PUSH = os.environ.get("DESK_AYZR_PLAN_PUSH", "0").strip().lower() in (
     "1", "true", "yes", "on")
 AYZR_PLAN_MIN_MIN = int(os.environ.get("DESK_AYZR_PLAN_MIN_MIN", "30") or "30")
 AYZR_PLAN_MAX_MIN = int(os.environ.get("DESK_AYZR_PLAN_MAX_MIN", "120") or "120")
@@ -7326,9 +7334,9 @@ def _pending_plan(p: dict, limit: float) -> dict:
     return q
 
 
-def _write_plan(p: dict) -> int:
+def _write_plan(p: dict, note: str = "desk") -> int:
     return add_trade(p["direction"], p["entry"], p["stop"], p["target"],
-                     LOT, note="desk")
+                     LOT, note=note)
 
 
 def _in_profit(t) -> bool:
@@ -8228,7 +8236,66 @@ def _plan_msg(plan: dict, bar: dict, live: float, vol: dict) -> str:
     return "\n".join(lines)
 
 
-def plans_watch(seen: dict) -> str | None:
+def _plan_open_card(plan: dict, p: dict, row, vol: dict | None = None) -> str:
+    """The card for an armed plan that was TAKEN, not merely triggered.
+
+    It has to say the three things the owner asked to be true: which scenario
+    fired, that the trade is in the book, and that the desk is now watching it.
+    """
+    d = plan["direction"]
+    arrow = "🟢 شراء" if d == "long" else "🔴 بيع"
+    kind_txt = "كسر بإغلاق" if plan["kind"] == "break" else "فيتل وارتجاع"
+    head = (f"🎯 <b>سيناريوك انطلق — خدت الصفقة</b>"
+            f"  ·  #{row['id']}")
+    lines = [head]
+    if plan["label"]:
+        lines.append(f"<b>{esc(plan['label'])}</b>")
+    lines += [
+        f"<b>الحدث:</b> {kind_txt} عند <b>{num(plan['level'])}</b>",
+        "",
+        f"{arrow}",
+        f"  الدخول: <b>{num(p['entry'])}</b>",
+        (f"  الوقف: <b>{num(p['stop'])}</b> "
+         f"({p['risk_pts']:.0f} نقطة · −${p['risk_usd']:.0f})"),
+        (f"  الهدف: <b>{num(p['target'])}</b> "
+         f"({abs(p['target'] - p['entry']):.0f} نقطة · "
+         f"+${p['gain_usd']:.0f})"),
+        f"  R:R = <b>{p['rr']:.1f}</b>",
+    ]
+    if plan["targets"]:
+        lines.append("  🎯 أهدافك: <b>"
+                     + " → ".join(num(t) for t in plan["targets"]) + "</b>")
+    if vol:
+        if vol.get("ok") is True:
+            lines.append(f"📊 <b>الحجم: مؤكّد</b> — {vol['vol']:,.0f} = "
+                         f"{vol['mult']:.1f}× المعدّل.")
+        elif vol.get("ok") is False:
+            lines.append(f"⚠️ <b>الحجم: ضعيف</b> — {vol['vol']:,.0f} = "
+                         f"{vol['mult']:.1f}× المعدّل. <b>ممكن يكون فخ.</b>")
+    lines += ["", ("<i>سجّلتها بالقاعدة ورح تابعها لحالي — "
+                    "بوصلك أول ما تنحسم.</i>")]
+    return "\n".join(lines)
+
+
+def _plan_blocked_card(plan: dict, why: str, t=None) -> str:
+    """The plan fired but the desk's own gate refused the trade.
+
+    Said once, so the owner knows the scenario was SEEN and not silently
+    dropped -- the failure mode that makes an armed plan untrustworthy.
+    """
+    d = "شراء" if plan["direction"] == "long" else "بيع"
+    if why == "full":
+        body = (f"في صفقة مفتوحة #{t['id']} — بحمل <b>صفقة وحدة</b> بأي وقت. "
+                "سيناريو " + d + f" عند {num(plan['level'])} انطلق وما خدته.")
+    else:
+        body = (f"بعد صفقة سابقة لسا بستنّى — سيناريو {d} عند "
+                f"{num(plan['level'])} انطلق وما خدته.")
+    return (f"🎯 <b>سيناريوك انطلق — بس ما خدت الصفقة</b>\n{body}\n\n"
+            "<i>القاعدة: صفقة وحدة بأي وقت. إذا بدك تاخدها، "
+            "سكّر المفتوحة أول.</i>")
+
+
+def plans_watch(seen: dict) -> dict | None:
     """Speak when one of the owner's ARMED PLANS actually triggers.
 
     The owner's ask: he wrote four scenarios in the chat and did not want to sit
@@ -8244,6 +8311,11 @@ def plans_watch(seen: dict) -> str | None:
     the origin side, so a level re-tested later speaks again -- and a restart
     never replays a trigger that happened before boot (first look seeds the
     latch, it does not fire).
+
+    Returns the fired plan with the bar that proved it, or None. The CALLER
+    decides whether to take the trade: detection and execution are separate so
+    the desk's gates (one position, day cap, rest) can refuse without the latch
+    having already been spent.
 
     Returns None on any read error: a watch must never kill the loop.
     """
@@ -8297,8 +8369,41 @@ def plans_watch(seen: dict) -> str | None:
         if fired.get(key):
             continue                     # already spoken for this approach
         fired[key] = True
-        return _plan_msg(plan, last, live, _vol_verdict(b, len(b) - 1))
+        return {"plan": plan, "bar": last, "live": live,
+                "vol": _vol_verdict(b, len(b) - 1)}
     return None
+
+
+def _take_plan(tg: Telegram, allow: set[str], fired: dict) -> None:
+    """Take the trade for a triggered armed plan, through the desk's own gates.
+
+    The owner asked for the scenario to BECOME a trade: "بياخد صفقة منو
+    وبسجلها وبراقبها". It is written with `add_trade` (so `grade()` settles it
+    and `trade_watch` narrates it like any other) and priced by `_sized`.
+
+    The gates are the SAME ones the engine obeys -- one position at a time and
+    the day cap -- because an armed plan is a decision about WHEN to enter, not
+    a licence to hold four positions at once. It does NOT pass the engine's
+    trend/chase filters: scenario 2 is a counter-trend reversal on purpose, and
+    running it through a filter built to reject exactly that would silently
+    disarm the owner's own plan.
+    """
+    plan = fired["plan"]
+    close = float(fired["bar"]["close"])
+    p = _sized(close, plan["direction"], plan["level"])
+    p["up"], p["dn"] = 0, 0
+    p["strong"] = False
+    p["r15"] = None
+    op = open_trades()
+    if len(op) >= MAX_OPEN:
+        for c in _desk_chats(allow):
+            tg.send(c, _plan_blocked_card(plan, "full", op[0]),
+                    menu_reply_kb(c))
+        return
+    tid = _write_plan(p, note=f"plan:{plan['id']}")
+    row = next(x for x in all_trades() if x["id"] == tid)
+    for c in _public_chats(allow):
+        tg.send(c, _plan_open_card(plan, p, row, fired.get("vol")), menu_reply_kb(c))
 
 
 def plans_listing() -> str:
@@ -8842,14 +8947,6 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     if note:
         for c in _public_chats(allow):
             tg.send(c, note, menu_reply_kb(c))
-    # THE ARMED PLANS. The owner's own scenarios, watched so he does not have to
-    # sit and wait for them. They run after the confirmed card and go to the
-    # SAME audience: a plan that fires is a trade the whole roll may take, and
-    # its dollars are `_sized()`'s windows, not his balance.
-    note = plans_watch(seen)
-    if note:
-        for c in _public_chats(allow):
-            tg.send(c, note, menu_reply_kb(c))
     # In confirm-only mode the chatter stands down: an approach (`entry_watch`)
     # and an intrabar crossing (`levels_watch`) are exactly the "not confirmed"
     # messages the owner asked to stop receiving. `support_watch` stays because
@@ -8937,6 +9034,17 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
             tg.send(c, note, menu_reply_kb(c))
     if desk_is_silenced():
         return
+    # THE ARMED PLANS. The owner's own scenarios, taken as TRADES: "بياخد صفقة
+    # منو وبسجلها وبراقبها". BELOW the kill switch, unlike the level watches
+    # above it: those report facts, this OPENS A POSITION. A silenced desk that
+    # still armed a trade would be the one thing `DESK_AUTO=0` must never do --
+    # the switch he reaches for to stop trading has to stop ALL trading.
+    # Detection (`plans_watch`) and execution (`_take_plan`) are separate so the
+    # gates can refuse without the latch being spent on a trade that never
+    # happened.
+    fired = plans_watch(seen)
+    if fired:
+        _take_plan(tg, allow, fired)
     # The daily cap first: if the session already opened MAX_TRADES_DAY trades,
     # nothing more is taken today whatever the signal says. Announced once.
     if MAX_TRADES_DAY and trades_opened_today() >= MAX_TRADES_DAY:
