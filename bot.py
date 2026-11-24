@@ -9215,6 +9215,7 @@ def selftest() -> int:
     print("== news_prep ==", card_news_prep()[:120].replace("\n", " "))
     print("== news_result ==", card_news_result_latest()[:120].replace("\n", " "))
     print("== scenarios ==", card_scenarios()[:120].replace("\n", " "))
+    print("== plans ==", plans_listing()[:120].replace("\n", " "))
     print("== journal ==", journal_menu_text().replace("\n", " | "))
     print("== open ==", card_open()[:80].replace("\n", " "))
     print("== action ==", card_action().replace("\n", " | ")[:160])
