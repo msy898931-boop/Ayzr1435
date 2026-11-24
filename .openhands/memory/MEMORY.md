@@ -1448,3 +1448,31 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
 - 434 tests green; ruff 43 / tests 4 / mypy 3 — all == HEAD baseline.
   ⚠ Compare ruff against `git show HEAD:bot.py`, NOT the 16 in AGENTS.md: a
   fresh ruff 0.17.6 reports 43 on HEAD. Rule that bit: **ISC004**.
+
+## MarketDesk — deployed + the Render env-var trap (2026-11-24)
+
+- ⭐ **Live is now `49d1647`: `alerts: on`, `confirm_only: on`.** Verified from
+  outside, three times: `/health` is the only oracle that a deploy took the
+  promise. `commit` changed AND both flags flipped in the same payload.
+- ⭐ **`confirm_only` needed the SAME env-over-blob guard as `alerts`.** The
+  pinned settings blob wins on every boot (Render has no disk), and it still
+  said `confirm_only: false` from before the feature existed — so
+  `DESK_CONFIRM_ONLY=1` would have survived exactly one container lifetime.
+  Generalised to a `(settings key, env var)` table; both directions tested
+  (env 1 beats pinned false, env 0 beats pinned true).
+- ⚠⚠ **`PUT /v1/services/{id}/env-vars` REPLACES the whole list.** Sending two
+  keys wiped `TG_TOKEN`, `DESK_SYMBOL` and four gate vars. 200 + a body echoing
+  my keys looked like success; the live container kept serving from memory, so
+  `/health` stayed green and the damage would only appear on the NEXT restart
+  (`app.py` → "no token", exit 2). **A green `/health` after an env change
+  proves nothing about the env.** Read the full list, append, PUT all of it
+  back, then GET and compare the count.
+- ⚠ **A test that writes `settings.json` must use its OWN temp dir.** Two new
+  restore tests shared `_STICKY_DIR`, so the first left a file behind and the
+  second's `not SETTINGS_PATH.exists()` guard skipped the restore — the
+  assertion went vacuous (and broke a sibling test). Fresh `mkdtemp` per test +
+  `shutil.rmtree` in `finally`.
+- 436 tests green; ruff 43 / tests 4 / mypy 3 — all == HEAD baseline.
+  ⚠ mypy caught a real one the suite did not: reusing the name `raw` (already
+  `bytes | None` in `restore_journal`) for an env string → `str | None`
+  assignment error. Renamed to `env_raw`.
