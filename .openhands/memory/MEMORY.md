@@ -1483,3 +1483,15 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   contradiction. ⚠ Never leave `DESK_ALERTS` in Render: an env value beats the
   blob every boot and would undo his silence. ⚠ Telegram `getChat` needs a
   FORM body, not JSON (`400: chat_id is empty`).
+
+## MarketDesk — the confirmed card is SHARED (2026-11-24)
+
+- ⭐ Owner asked for the confirmed-break card to reach EVERY subscriber, not
+  him. `confirm_watch` now sends via `_public_chats` (every allowed chat); all
+  other level watches stay `_alert_chats` (owner alone). It is the third shared
+  surface beside trade cards and the daily read.
+- ⭐ Its `$` numbers are `_sized`'s windows (risk $8-12, target $15-20), NOT the
+  owner's balance — safe to share. Balance only appears on the close card.
+- ⚠ **"المؤكّد بس" alone is SILENT.** The master switch (`alerts_are_off()`)
+  returns before `confirm_watch` is ever called. Both must be ON. Probe:
+  ALERTS_ON=False → watch not called, 0 sends.
