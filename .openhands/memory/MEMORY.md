@@ -1495,3 +1495,38 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
 - ⚠ **"المؤكّد بس" alone is SILENT.** The master switch (`alerts_are_off()`)
   returns before `confirm_watch` is ever called. Both must be ON. Probe:
   ALERTS_ON=False → watch not called, 0 sends.
+
+## MarketDesk — how the owner wants MARKET ANALYSIS (2026-11-24) ⭐⭐⭐
+
+- ⭐ **THE APPROVED FORMAT. He said it explicitly: "كل ما بقلك حللي هيك
+  بتحللي عجبني شغلك لاتنسى".** When he asks for a market analysis, deliver
+  THIS, unprompted, every time:
+  1. **Same feed as the bot — `biquote.io` / MetaTrader 5 (`/api/XAUUSD`,
+     `/api/XAUUSD/ohlc?interval=&limit=`).** NEVER swap the source. I once
+     switched to Yahoo `GC=F` to be "independent"; that is the wrong reading of
+     "independent". It is off by **~7 points** (a whole stop) and its weekly
+     gap differs (55.10 vs 30.66) because COMEX futures open/close on a
+     different clock than spot FX. He caught it and asked "ليش غيرت مصدر
+     البيانات ليييش".
+  2. **Independence = I compute every indicator MYSELF from the raw bars**
+     (EMA20/50/200, RSI14, ATR14, ADX/+DI/−DI, MACD, Bollinger %B, Stochastic)
+     — not that I fetch a different provider. Scripts live in `/tmp/bq/`
+     (`ind.py`, `struct.py`, `last.py`).
+  3. **Structure + gaps, always:** swing highs/lows per frame, unfilled daily
+     gaps AND fair-value gaps on 5 frames (15m/30m/1h/4h/1d), each marked
+     OPEN/FILLED and ABOVE/BELOW/INSIDE the price.
+  4. **Confluence buckets** — group every level into 10-point bins with a
+     weight, so the report names the strongest wall and the strongest floor
+     instead of listing levels.
+  5. **ATR-normalised distances** (`pts / 15m ATR`) — never raw points alone.
+  6. **Strict divergence test**: require RSI delta ≥ 2.5 AND ≥ 3 bars apart,
+     else say "no divergence". Weak 1.0-point deltas are noise; I once called
+     one a bullish divergence and had to retract it 15 minutes later.
+  7. Scenarios with entry/stop/targets/R:R, ranked, plus an explicit
+     "what I would NOT take and why", the invalidation levels, and a
+     "where I could be wrong" section. Say plainly where I disagree with
+     the engine and why.
+- ⚠ **The engine does NOT compute price gaps or FVGs** (`grep gap bot.py` =
+  only "rest gap" and distance-from-EMA). So the gap work is my own value-add —
+  it is not a second copy of the engine, and it must not be presented as if
+  the bot agrees.
