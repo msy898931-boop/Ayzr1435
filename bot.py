@@ -443,11 +443,43 @@ NEWS_PREP_ON = os.environ.get("DESK_NEWS_PREP", "1").strip().lower() not in \
 # like the others so a saved panel choice is not clobbered at import.
 CAL_RESULT_ON = os.environ.get("DESK_CAL_RESULT", "1").strip().lower() not in \
     ("0", "off", "no", "false")
+# THE CONFIRMED-BREAK ONLY mode. The owner's ask: "خليك تخبرني بس بالإشعارات
+# المهمة والمؤكدة" -- he does not want to hear that price came NEAR a level, or
+# that a level was pierced intrabar and recovered. He wants the one event that
+# survives a bar close: a 15m candle that CLOSED past the level, with the volume
+# verdict attached and the trade priced.
+#
+# This is a MODE, not another filter: it changes what the desk says, never what
+# it trades. With it on, the chatter watches (approach, intrabar crossing,
+# trend flip, gate) stand down and `confirm_watch` is the only voice on levels.
+# Defined HERE, before `apply_settings(load_settings())`, or a saved panel choice
+# would be clobbered at import.
+CONFIRM_ONLY = os.environ.get("DESK_CONFIRM_ONLY", "0").strip().lower() in \
+    ("1", "on", "yes", "true")
+# The frame whose CLOSE is the confirmation. 15m is the desk's own filter frame
+# (TREND_FILTER_TF) -- the bar it already refuses to trade against -- so a close
+# past a level on this frame is the same evidence the plan gate reads. A slower
+# frame would be late; a faster one (5m) produced 4x the alerts in the 2026
+# replay and half of them re-crossed within the hour.
+CONFIRM_TF = os.environ.get("DESK_CONFIRM_TF", "15m").strip()
+# How far past the level a close must land to count as a break and not a graze.
+# Matches SUPPORT_BREAK_PTS so the confirmed alert and the support watch agree on
+# what "broken" means -- two answers to one question is how a bot contradicts
+# itself.
+CONFIRM_EPS_PTS = float(os.environ.get("DESK_CONFIRM_EPS", "3") or "3")
+# The volume verdict: the closing bar's tick volume against the median of the
+# last CONFIRM_VOL_LOOKBACK bars on the same frame. >= this multiple is "real",
+# below is "suspect" -- the owner's own caveat ("إذا كسر بلا حجم، رح يكون فخ").
+# 1.0 = "at or above the typical bar". Deliberately NOT 1.5: gold's volume is
+# bursty, and a 1.5x bar is rare enough that the verdict would almost always
+# read "suspect" and stop meaning anything.
+CONFIRM_VOL_MULT = float(os.environ.get("DESK_CONFIRM_VOL", "1.0") or "1.0")
+CONFIRM_VOL_LOOKBACK = int(os.environ.get("DESK_CONFIRM_VOL_LOOKBACK", "20") or "20")
 _GATE_VAR = {"entry_basis": "ENTRY_BASIS_ON", "nochase": "NOCHASE_ON",
              "filters": "FILTERS_ON", "trend_filter": "TREND_FILTER_ON",
              "bounce_entry": "BOUNCE_ENTRY",
              "fast_basis": "FAST_BASIS",
-             "alerts": "ALERTS_ON",
+             "alerts": "ALERTS_ON", "confirm_only": "CONFIRM_ONLY",
              "news_alerts": "NEWS_ALERTS_ON", "news_prep": "NEWS_PREP_ON",
              "news_result": "CAL_RESULT_ON"}
 GATE_LABELS = {"entry_basis": "أساس الدخول (عند مستوى)",
@@ -457,14 +489,15 @@ GATE_LABELS = {"entry_basis": "أساس الدخول (عند مستوى)",
                "bounce_entry": "بيع الارتداد (من المستوى)",
                "fast_basis": "باسيس سريع (فريم 15د)",
                "alerts": "🔔 كل الإشعارات (المفتاح الرئيسي)",
+               "confirm_only": "✅ المؤكّد بس (إغلاق شمعة)",
                "news_alerts": "تنبيه الأخبار المهمة",
                "news_prep": "تنبيه التحضير قبل الخبر",
                "news_result": "تنبيه نزول الخبر (النتيجة)"}
 # Everything the panel shows and persists. `gate_state` stays GATE_KEYS only so
 # `open_all`/`close_all` keep meaning "the entry filters"; the news switches and
 # the bounce-entry behaviour are carried alongside but flipped on their own.
-PANEL_KEYS = GATE_KEYS + ("alerts", "news_alerts", "news_prep", "news_result",
-                           "bounce_entry", "fast_basis")
+PANEL_KEYS = GATE_KEYS + ("alerts", "confirm_only", "news_alerts", "news_prep",
+                          "news_result", "bounce_entry", "fast_basis")
 
 
 def load_settings() -> dict:
@@ -5372,6 +5405,13 @@ def card_settings() -> str:
     lines.append("<i>مطفّية = البوت ما بيبعت ولا رسالة من حالو — "
                  "لا تنبيهات، لا مستوى انكسر، لا خبر، لا خطة.</i>")
     lines.append("")
+    cmark = "🟢" if st["confirm_only"] else "🔴"
+    lines.append(f"{cmark} <b>{GATE_LABELS['confirm_only']}</b>: "
+                 f"<b>{'مشغّل' if st['confirm_only'] else 'مطفّي'}</b>")
+    lines.append("<i>مشغّل = ما بيوصلك تنبيه مستوى إلا لما شمعة "
+                 f"{CONFIRM_TF} تسكّر ورا المستوى — مع الحكم على الحجم "
+                 "والخطة كاملة. مطفّي = بتسمع كمان الاقتراب والكسر اللحظي.</i>")
+    lines.append("")
     for k in GATE_KEYS:
         mark = "🟢" if st[k] else "🔴"
         lines.append(f"{mark} {GATE_LABELS[k]}: "
@@ -5409,6 +5449,8 @@ def settings_keyboard() -> dict:
     st = panel_state()
     rows = [[(f"{'🟢' if st['alerts'] else '🔴'} {GATE_LABELS['alerts']}",
               "cfg:alerts")]]
+    clabel = f"{'🟢' if st['confirm_only'] else '🔴'} {GATE_LABELS['confirm_only']}"
+    rows.append([(clabel, "cfg:confirm_only")])
     rows += [[(f"{'🟢' if st[k] else '🔴'} {GATE_LABELS[k]}", f"cfg:{k}")]
              for k in GATE_KEYS]
     rows.append([("🔵 افتح كل الفلاتر", "cfg:open_all"),
@@ -7813,6 +7855,210 @@ def _level_cross_msg(level: float, side: str, live: float) -> str:
             "<i>مستوى انكسر — راقب التأكيد قبل الدخول (الصفقة تحت عتبة R:R).</i>")
 
 
+def _vol_verdict(b: list[dict], i: int) -> dict:
+    """Was the bar that broke the level carried by real volume?
+
+    The owner's own caveat, in his words: "إذا كسر بلا حجم، رح يكون فخ — بيكسر
+    ويرتد فوراً لأنه ما في بائع وراه." So the alert must judge the volume, not
+    just report it: a break on thin volume is named as suspect, with the reason
+    (a break with no seller behind it has nothing to hold it).
+
+    Measured against the MEDIAN of the preceding bars, not the mean: one news
+    spike drags a mean far enough that every ordinary bar afterwards reads
+    "thin", and the verdict would then be a constant.
+    """
+    vols = [float(x.get("tickVolume") or 0) for x in b[max(0, i - CONFIRM_VOL_LOOKBACK):i]]
+    vols = [v for v in vols if v > 0]
+    if not vols:
+        return {"ok": None, "vol": None, "median": None, "mult": None}
+    med = sorted(vols)[len(vols) // 2]
+    vol = float(b[i].get("tickVolume") or 0)
+    if med <= 0 or vol <= 0:
+        return {"ok": None, "vol": vol or None, "median": med or None,
+                "mult": None}
+    mult = vol / med
+    return {"ok": mult >= CONFIRM_VOL_MULT, "vol": vol, "median": med,
+            "mult": mult}
+
+
+def _confirm_msg(level: float, side: str, bar: dict, live: float,
+                 vol: dict, air: float | None) -> str:
+    """The confirmed-break card: the trade, the volume verdict, and the reason.
+
+    Shape is the owner's own -- he sent the format he wants back: the condition
+    that fired, entry, stop, target(s), R:R, then WHY the trade is worth taking
+    and the caveat that would void it. Every number comes from `_sized()`, the
+    same function the desk trades on, so the alert can never quote a trade the
+    engine would refuse to size.
+    """
+    direction = "long" if side == "above" else "short"
+    close = float(bar["close"])
+    arrow = "🟢 شراء" if direction == "long" else "🔴 بيع"
+    verb = "فوق" if side == "above" else "تحت"
+    # Size from the CLOSE that confirmed the break -- that is the price the
+    # evidence happened at, not a market print that has since drifted.
+    try:
+        p = _sized(close, direction, level)
+    except Exception:  # noqa: BLE001 - the alert must fire even unsized
+        p = None
+
+    head = ("🟢 <b>شراء مؤكّد</b> — XAUUSD" if direction == "long"
+            else "🔴 <b>بيع مؤكّد</b> — XAUUSD")
+    lines = [
+        head,
+        (f"<b>الشرط تحقّق:</b> شمعة {CONFIRM_TF} سكّرت "
+         f"<b>{num(close)}</b> {verb} <b>{num(level)}</b> "
+         f"(الفرق {abs(close - level):.2f})"),
+        "",
+    ]
+    if p is not None:
+        lines += [
+            f"{arrow}",
+            f"  الدخول: <b>{num(p['entry'])}</b>",
+            (f"  الوقف: <b>{num(p['stop'])}</b> "
+             f"({p['risk_pts']:.0f} نقطة · −${p['risk_usd']:.0f})"),
+            (f"  الهدف: <b>{num(p['target'])}</b> "
+             f"({abs(p['target'] - p['entry']):.0f} نقطة · "
+             f"+${p['gain_usd']:.0f})"),
+            f"  R:R = <b>{p['rr']:.1f}</b>",
+        ]
+        # The ladder, when the market's own levels allow more than one rung --
+        # the same `_target_ladder` every card reads, never a second copy.
+        try:
+            rungs = _target_ladder(direction, p["entry"], p["stop"],
+                                   *_levels(live), p["gain_usd"])
+        except Exception:  # noqa: BLE001
+            rungs = []
+        if rungs:
+            extra = " · ".join(num(r["level"]) for r in rungs[1:])
+            if extra:
+                lines.append(f"  ثم: {extra}")
+        if p["rr"] < MIN_RR:
+            lines.append("  <i>⚠️ R:R تحت الحد — مو صفقة، بس تنبيه.</i>")
+    lines.append("")
+
+    # THE VOLUME VERDICT -- the owner's own caveat, answered.
+    if vol.get("ok") is True:
+        lines.append(f"📊 <b>الحجم: مؤكّد</b> — {vol['vol']:,.0f} "
+                     f"= {vol['mult']:.1f}× المعدّل ({vol['median']:,.0f}). "
+                     "في بائع/شاري ورا الحركة.")
+    elif vol.get("ok") is False:
+        lines.append(f"⚠️ <b>الحجم: ضعيف</b> — {vol['vol']:,.0f} "
+                     f"= {vol['mult']:.1f}× المعدّل ({vol['median']:,.0f}). "
+                     "<b>هاد الكسر ممكن يكون فخ</b> — كسر بلا حجم بيرتد "
+                     "فوراً لأنه ما في حدا يمسكه.")
+    else:
+        lines.append("📊 <b>الحجم:</b> ما في قراءة — الكسر بلا تأكيد حجم.")
+
+    # THE AIR POCKET: why this break can run. Only claimed when it is TRUE --
+    # no level between here and the target means nothing to slow it.
+    if air is not None and air >= 10:
+        lines.append(f"💨 <b>فراغ هوائي:</b> ما في مستوى لـ<b>{air:.0f} نقطة</b> "
+                     f"بعد الكسر — إذا كمّل، بيمشي بسرعة.")
+
+    # The divergence tell, from the ONE producer the map also reads.
+    div = _divergence_note("short" if direction == "short" else "long")
+    if div:
+        lines.append(div)
+
+    lines.append("")
+    lines.append("<i>هاد تنبيه إغلاق — مو أمر دخول. "
+                 "الوقف إلزامي، والقرار إلك.</i>")
+    return "\n".join(lines)
+
+
+def confirm_watch(seen: dict) -> str | None:
+    """Speak ONLY when a bar CLOSED past a level -- the owner's "المؤكّد بس".
+
+    Why this exists: every other level watch speaks on an INTRABAR crossing
+    (`levels_watch`) or on an APPROACH (`entry_watch`). Both are honest, and both
+    are noise: price pierces a level, recovers, and the owner has been told to
+    sell something that never happened. The one event that survives is a bar
+    that CLOSED on the other side -- the same evidence `plan_check` reads, which
+    is why this card and the plan can never disagree.
+
+    State machine per level, in `seen['confirm']`:
+      * the side is seeded on the first look and after every fire, so a restart
+        (or a fresh level) never announces a break that happened before boot;
+      * a level fires at most once per side per crossing -- price must return to
+        the other side before it can speak again, so a chop cannot repeat;
+      * levels are LATCHED from `_live_levels` and the sticky pool, so a level
+        that the break itself moved to "the other side" is still watched.
+
+    Returns None on any read error: a watch must never kill the loop.
+    """
+    if not CONFIRM_ONLY:
+        return None
+    try:
+        m = read_market()
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return None
+    if not market_open(m["q"]):
+        return None
+    live = m["live"]
+    if live <= 0:
+        return None
+    try:
+        b = closed(bars(CONFIRM_TF, 300), CONFIRM_TF)
+    except Exception:  # noqa: BLE001
+        return None
+    if len(b) < 3:
+        return None
+    last = b[-1]
+    close = float(last["close"])
+
+    # The levels worth watching: the desk's own live pivots (they travel with
+    # price) plus the sticky pool it has already named, so a level the page
+    # shows is never a level the alert has forgotten.
+    try:
+        levels = set(_live_levels(live))
+    except Exception:  # noqa: BLE001
+        levels = set()
+    with suppress(Exception):
+        pool = _sticky_load()
+        levels |= {float(x) for k in ("lvls", "zones", "liq")
+                   for x in (pool.get(k) or [])}
+    if not levels:
+        return None
+
+    state: dict = seen.setdefault("confirm", {})
+    fired: str | None = None
+    for lvl in sorted(levels):
+        k = f"{lvl:.2f}"
+        prev = state.get(k)
+        if close >= lvl + CONFIRM_EPS_PTS:
+            now = "above"
+        elif close <= lvl - CONFIRM_EPS_PTS:
+            now = "below"
+        else:
+            continue                     # a graze is not a break: leave as-is
+        if prev is None:
+            state[k] = now               # first look: an observation, not news
+            continue
+        if now == prev:
+            continue                     # same side: already spoken
+        state[k] = now
+        if fired is None:                # one card per cycle, the nearest break
+            fired = k
+            best = (lvl, now)
+    if fired is None:
+        return None
+    level, side = best
+    vol = _vol_verdict(b, len(b) - 1)
+    # The air pocket ahead of the trade: the distance to the NEXT level in the
+    # break's direction, from the same fresh levels the plan uses.
+    air = None
+    with suppress(Exception):
+        res, sup = _levels(live)
+        ahead = ([x for x in res if x > close] if side == "above"
+                 else [x for x in sup if x < close])
+        if ahead:
+            air = abs(min(ahead, key=lambda x: abs(x - close)) - close)
+        else:
+            air = abs(live - close) + 40.0   # nothing named ahead: wide open
+    return _confirm_msg(level, side, last, live, vol, air)
+
+
 def _watch_point_chats(allow: set[str]) -> list[str]:
     """Who hears a watch-point hit: the OWNER only.
 
@@ -8304,17 +8550,32 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     # The full daily read, morning and evening. Same reasoning: a fact about the
     # market, so it speaks before the silence switch.
     maybe_daily_analysis(tg, allow)
-    # The support watch runs before the silence switch: a level breaking is a
-    # fact about the market, not a trade decision, so the owner still hears it
-    # when auto-trading is off.
-    note = support_watch(seen)
+    # THE CONFIRMED-BREAK CARD. Runs FIRST among the level watches and, in
+    # confirm-only mode, is the ONLY one that speaks about levels: the owner
+    # asked to hear the event that survives a bar close, not the approach or the
+    # intrabar pierce. `confirm_watch` returns None when the mode is off, so this
+    # costs one branch when it is not in use.
+    note = confirm_watch(seen)
     if note:
         for c in _alert_chats(allow):
             tg.send(c, note, menu_reply_kb(c))
-    note = levels_watch(seen)
-    if note:
-        for c in _alert_chats(allow):
-            tg.send(c, note, menu_reply_kb(c))
+    # In confirm-only mode the chatter stands down: an approach (`entry_watch`)
+    # and an intrabar crossing (`levels_watch`) are exactly the "not confirmed"
+    # messages the owner asked to stop receiving. `support_watch` stays because
+    # its break IS a 15m close -- the same evidence, from the desk's own latched
+    # support, and it names a level the confirm set may not carry.
+    if not CONFIRM_ONLY:
+        # The support watch runs before the silence switch: a level breaking is a
+        # fact about the market, not a trade decision, so the owner still hears it
+        # when auto-trading is off.
+        note = support_watch(seen)
+        if note:
+            for c in _alert_chats(allow):
+                tg.send(c, note, menu_reply_kb(c))
+        note = levels_watch(seen)
+        if note:
+            for c in _alert_chats(allow):
+                tg.send(c, note, menu_reply_kb(c))
     note = watch_points_watch(seen)
     if note:
         for c in _watch_point_chats(allow):
@@ -8327,10 +8588,16 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     if note:
         for c in _alert_chats(allow):
             tg.send(c, note, menu_reply_kb(c))
-    note = entry_watch(seen)
-    if note:
-        for c in _alert_chats(allow):
-            tg.send(c, note, menu_reply_kb(c))
+    # `entry_watch` is the APPROACH alert ("price is near a sell zone") -- the
+    # clearest example of what the owner does not want in confirm-only mode: it
+    # fires before anything happened. `gate_watch` (a 15m EMA close) and
+    # `trend_watch` (a direction flip, rate-limited) are bar-close / structural
+    # facts with their own cooldowns, so they stay.
+    if not CONFIRM_ONLY:
+        note = entry_watch(seen)
+        if note:
+            for c in _alert_chats(allow):
+                tg.send(c, note, menu_reply_kb(c))
     # The news alert runs before the silence switch too: an important headline
     # is a fact about the market, not a trade decision, so the owner still
     # hears it when auto-trading is off.
@@ -8668,6 +8935,8 @@ def selftest() -> int:
     print("== trend ==", (tw or "silent").replace("\n", " ")[:120])
     ew = entry_watch({})
     print("== entry ==", (ew or "silent").replace("\n", " ")[:120])
+    cw = confirm_watch({})
+    print("== confirm ==", (cw or "silent").replace("\n", " ")[:120])
     print("== open_bell ==", open_bell_text().replace("\n", " | ")[:140])
     print("== news live ==", len(_news_fetch()) if NEWS_LIVE else "off")
     print("== trade parse ==", str(parse_trade("سجل شراء 4075 وقف 4069 هدف 4085"))

@@ -1415,3 +1415,36 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
 - ⚠ A test calling `restore_journal` must redirect `bot.SETTINGS_PATH` — it
   WRITES settings, and the real file would silence the owner's own bot.
 - Deployed `3c71e18`, live `/health` shows `alerts: on`. 415 tests green.
+
+## MarketDesk — "المؤكّد بس": confirmed-close alerts (2026-11-24)
+
+- Owner's ask: speak ONLY on important + confirmed events. His own model:
+  "15m candle **closes** above 3572.43 → buy" and "15m candle **closes**
+  below 3552.67 **with volume > 3000** → sell", each with entry/stop/target/R:R.
+  The shape is CONDITION → trade, never "price near a level".
+- ⭐ **`confirm_watch()` + `_confirm_msg()`** (bot.py), gated by `CONFIRM_ONLY`
+  (env `DESK_CONFIRM_ONLY`, panel key `confirm_only`, default OFF). Reads only
+  CLOSED 15m bars (`CONFIRM_TF`) and speaks when a close lands past a live or
+  sticky level by > `CONFIRM_EPS_PTS` (3.0 — same clearance as
+  `SUPPORT_BREAK_PTS`, so the two alerts agree on "broken").
+- ⭐ **It is a SPEAKING mode, not a filter** — it never changes what the desk
+  trades. Kept OUT of `GATE_KEYS` on purpose: `open_all`/`close_all` must not
+  silently change how much the owner hears. There is a test pinning this.
+- ⭐ **In confirm mode three watches are never CALLED**: `entry_watch`
+  (approach), `levels_watch` (intrabar pierce), `support_watch` (its 15m break
+  is the same evidence → would double-speak). `gate_watch`, `trend_watch`,
+  `news_*`, `trade_watch` stay (already bar-close/structural).
+- **Volume verdict**: closing bar's `tickVolume` vs the **median** of the prior
+  20 bars; ≥1.0× = confirmed, below = "ممكن يكون فخ". Median not mean, or one
+  news spike makes every later bar read "thin" forever.
+- ⚠ Our stop is the engine's 12-pt/$12 window, NOT the 8-pt stop in the owner's
+  buy example. The card quotes `_sized()`, the engine's own numbers — one
+  engine, many views. Say this out loud instead of hardcoding his figures.
+- ⚠ **`closed()` drops the newest bar** — a short test feed tests the
+  `len(b) < 3` guard, not the rule. Pad the feed.
+- ⚠ **`mock.patch.object()` returns a `_patch`; the mock is `p.start()`'s
+  return.** A helper must hand its own handles back, or the test's assertion
+  hits `_patch` (no `assert_called`) or a later inner patch shadows it.
+- 434 tests green; ruff 43 / tests 4 / mypy 3 — all == HEAD baseline.
+  ⚠ Compare ruff against `git show HEAD:bot.py`, NOT the 16 in AGENTS.md: a
+  fresh ruff 0.17.6 reports 43 on HEAD. Rule that bit: **ISC004**.

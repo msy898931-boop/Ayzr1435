@@ -4512,6 +4512,301 @@ class AyzrButtonTest(unittest.TestCase):
             self.assertTrue(bot.alerts_are_off())
 
 
+class ConfirmWatchTest(unittest.TestCase):
+    """The owner's "المؤكّد بس": speak only when a 15m bar CLOSED past a level.
+
+    The distinction under test is the whole point of the feature -- an intrabar
+    pierce that recovers is NOT news, and a close that holds IS. Each test pins
+    one of those, plus the volume verdict and the never-repeat rule.
+    """
+
+    LEVEL = 3552.67
+
+    def _feed(self, closes, vols=None, mid=None):
+        """A feed whose 15m bars close at `closes`, with tick volumes.
+
+        The series is padded at the FRONT to a realistic length: the desk needs
+        history to judge volume, and `closed()` drops the newest bar, so a
+        two-bar feed would test the length guard instead of the rule.
+        """
+        closes = list(closes)
+        if len(closes) < 25:
+            closes = [closes[0]] * (25 - len(closes)) + closes
+        vols = list(vols) if vols else [3000] * len(closes)
+        if len(vols) < len(closes):
+            vols = [3000] * (len(closes) - len(vols)) + vols
+        bars = []
+        for i, c in enumerate(closes):
+            bars.append({"openTime": _iso(i), "open": c, "high": c + 1.0,
+                         "low": c - 1.0, "close": c, "tickVolume": vols[i],
+                         "isOpen": False})
+        mkt = mid if mid is not None else closes[-1]
+
+        class Feed:
+            def __init__(self):
+                self._saved = (bot.quote, bot.bars, bot.read_market,
+                               bot._live_levels, bot._sticky_load, bot._levels)
+
+            def _bars(self, tf, limit=300):
+                return bars if tf == bot.CONFIRM_TF else [
+                    _bar(_iso(i), c, c + 1, c - 1, c) for i, c in
+                    enumerate(closes)]
+
+            def _quote(self):
+                return {"mid": mkt, "marketState": "open", "stale": False,
+                        "high": mkt + 20, "low": mkt - 20}
+
+            def __enter__(self):
+                bot.quote, bot.bars = self._quote, self._bars
+                bot._live_levels = lambda live, n=3: (self.level,)
+                bot._sticky_load = dict
+                bot._levels = lambda live: ([], [self.level])
+                return self
+
+            def __exit__(self, *exc):
+                (bot.quote, bot.bars, bot.read_market, bot._live_levels,
+                 bot._sticky_load, bot._levels) = self._saved
+
+        f = Feed()
+        f.level = self.LEVEL
+        return f
+
+    def _run(self, seen, closes, vols=None):
+        saved = bot.CONFIRM_ONLY
+        bot.CONFIRM_ONLY = True
+        try:
+            with self._feed(closes, vols):
+                return bot.confirm_watch(seen)
+        finally:
+            bot.CONFIRM_ONLY = saved
+
+    def test_the_mode_is_off_by_default(self):
+        self.assertFalse(bot.CONFIRM_ONLY)
+        self.assertIn("confirm_only", bot.PANEL_KEYS)
+        # It is a SPEAKING mode, not an entry gate: open_all/close_all must not
+        # touch it, or flipping the filters would silently change the alerts.
+        self.assertNotIn("confirm_only", bot.GATE_KEYS)
+        self.assertNotIn("confirm_only", bot.gate_state())
+
+    def test_off_means_silent_even_on_a_perfect_break(self):
+        seen: dict = {}
+        # Two calls with the mode OFF: the state must not even be seeded.
+        with self._feed([3600.0, 3500.0]):
+            self.assertIsNone(bot.confirm_watch(seen))
+        self.assertNotIn("confirm", seen)
+
+    def test_an_intrabar_pierce_that_recovers_is_not_news(self):
+        """The exact noise the owner asked to stop: price trades under the level
+        and closes back above it. Only closes are read, so this is silence."""
+        seen: dict = {}
+        self.assertIsNone(self._run(seen, [3600.0]))          # seed: above
+        self.assertIsNone(self._run(seen, [3600.0, 3560.0]))  # still above
+
+    def test_a_close_past_the_level_speaks_with_the_trade(self):
+        seen: dict = {}
+        self.assertIsNone(self._run(seen, [3600.0]))          # seed: above
+        msg = self._run(seen, [3600.0, 3500.0])               # closed below
+        self.assertIsNotNone(msg)
+        self.assertIn("بيع مؤكّد", msg)
+        self.assertIn("الشرط تحقّق", msg)
+        for part in ("الدخول", "الوقف", "الهدف", "R:R"):
+            self.assertIn(part, msg)
+        # The numbers come from _sized, the same engine the desk trades on.
+        p = bot._sized(3500.0, "short", self.LEVEL)
+        self.assertIn(f"{p['rr']:.1f}", msg)
+
+    def test_a_close_above_a_level_is_a_buy(self):
+        seen: dict = {}
+        self.assertIsNone(self._run(seen, [3400.0]))          # seed: below
+        msg = self._run(seen, [3400.0, 3600.0])
+        self.assertIsNotNone(msg)
+        self.assertIn("شراء مؤكّد", msg)
+
+    def test_it_never_repeats_the_same_side(self):
+        """A level that keeps closing on the same side speaks ONCE. Without this
+        every 15m close while price sits under the level is a fresh alert."""
+        seen: dict = {}
+        self._run(seen, [3600.0])
+        self.assertIsNotNone(self._run(seen, [3600.0, 3500.0]))
+        self.assertIsNone(self._run(seen, [3600.0, 3500.0, 3495.0]))
+        self.assertIsNone(self._run(seen, [3600.0, 3500.0, 3495.0, 3490.0]))
+
+    def test_a_return_across_the_level_speaks_as_the_opposite_side(self):
+        """A close back across the level is a NEW confirmed event, and the owner
+        must hear it: it invalidates the call he was just given. Silence here
+        would leave him holding a sell the market already closed back above."""
+        seen: dict = {}
+        self._run(seen, [3600.0])
+        sell = self._run(seen, [3600.0, 3500.0])
+        self.assertIn("بيع مؤكّد", sell)
+        back = self._run(seen, [3600.0, 3500.0, 3600.0])
+        self.assertIsNotNone(back)
+        self.assertIn("شراء مؤكّد", back)
+        again = self._run(seen, [3600.0, 3500.0, 3600.0, 3500.0])
+        self.assertIn("بيع مؤكّد", again)
+
+    def test_a_graze_inside_the_epsilon_is_not_a_break(self):
+        """A close a dollar past the level is noise, not a break -- the same
+        clearance SUPPORT_BREAK_PTS demands, so the two alerts agree."""
+        seen: dict = {}
+        self._run(seen, [3600.0])
+        self.assertIsNone(self._run(seen, [3600.0, self.LEVEL - 1.0]))
+
+    def test_thin_volume_is_named_as_a_trap(self):
+        seen: dict = {}
+        self._run(seen, [3600.0] * 22, [3000] * 22)
+        # 22 bars, then a break on 500 against a 3000 median.
+        closes = [3600.0] * 22 + [3500.0]
+        vols = [3000] * 22 + [500]
+        msg = self._run(seen, closes, vols)
+        self.assertIsNotNone(msg)
+        self.assertIn("الحجم: ضعيف", msg)
+        self.assertIn("فخ", msg)
+
+    def test_heavy_volume_is_named_as_confirmed(self):
+        seen: dict = {}
+        self._run(seen, [3600.0] * 22, [3000] * 22)
+        msg = self._run(seen, [3600.0] * 22 + [3500.0],
+                        [3000] * 22 + [6000])
+        self.assertIsNotNone(msg)
+        self.assertIn("الحجم: مؤكّد", msg)
+        self.assertIn("2.0×", msg)
+
+    def test_the_volume_is_judged_against_the_median_not_the_mean(self):
+        """One news spike must not make every later bar read 'thin'."""
+        vols = [3000] * 10 + [90000] + [3000] * 10 + [3200]
+        v = bot._vol_verdict([{"tickVolume": x} for x in vols], len(vols) - 1)
+        self.assertTrue(v["ok"])
+        self.assertLess(v["median"], 10000)
+
+    def test_a_missing_volume_reading_says_so_and_still_fires(self):
+        seen: dict = {}
+        self._run(seen, [3600.0] * 3, [0, 0, 0])
+        msg = self._run(seen, [3600.0] * 3 + [3500.0], [0, 0, 0, 0])
+        self.assertIsNotNone(msg)
+        self.assertIn("ما في قراءة", msg)
+
+    def test_a_closed_market_is_silent(self):
+        seen: dict = {}
+        saved = bot.CONFIRM_ONLY
+        bot.CONFIRM_ONLY = True
+        try:
+            with self._feed([3600.0, 3500.0]):
+                bot.quote = lambda: {"mid": 3500.0, "marketState": "closed",
+                                     "stale": False}
+                self.assertIsNone(bot.confirm_watch(seen))
+        finally:
+            bot.CONFIRM_ONLY = saved
+
+    def test_a_broken_feed_never_kills_the_loop(self):
+        seen: dict = {}
+        saved = bot.CONFIRM_ONLY
+        bot.CONFIRM_ONLY = True
+        saved_bars = bot.bars
+        try:
+            bot.bars = lambda tf, limit=300: (_ for _ in ()).throw(RuntimeError)
+            self.assertIsNone(bot.confirm_watch(seen))
+        finally:
+            bot.bars = saved_bars
+            bot.CONFIRM_ONLY = saved
+
+    def test_it_round_trips_through_the_panel(self):
+        saved = bot.CONFIRM_ONLY
+        saved_path = bot.SETTINGS_PATH
+        bot.SETTINGS_PATH = pathlib.Path(_STICKY_DIR) / "settings_cf.json"
+        try:
+            d = bot.toggle_gate("confirm_only")
+            self.assertTrue(d["confirm_only"])
+            self.assertTrue(bot.CONFIRM_ONLY)
+            d = bot.toggle_gate("confirm_only")
+            self.assertFalse(d["confirm_only"])
+            self.assertFalse(bot.CONFIRM_ONLY)
+        finally:
+            bot.SETTINGS_PATH = saved_path
+            bot.CONFIRM_ONLY = saved
+
+    def test_the_card_is_on_the_panel(self):
+        self.assertIn("confirm_only", bot.GATE_LABELS)
+        text = bot.card_settings()
+        self.assertIn(bot.GATE_LABELS["confirm_only"], text)
+        kb = bot.settings_keyboard()
+        actions = [b.get("callback_data") for row in kb["inline_keyboard"]
+                   for b in row]
+        self.assertIn("cfg:confirm_only", actions)
+
+    def _tick(self, seen):
+        """Run one `desk_tick` with every watch stubbed, and hand the mocks back.
+
+        The mocks ARE the observation: the question is which watches were even
+        consulted, not what they returned. Patching them here (rather than in
+        each test) keeps the helper and the assertion on the same objects.
+        """
+        tg = unittest.mock.Mock()
+        names = ("support_watch", "levels_watch", "gate_watch", "trend_watch",
+                 "entry_watch", "news_watch", "news_prep_watch",
+                 "news_result_watch", "watch_points_watch", "trade_watch")
+        mocks = {n: unittest.mock.patch.object(bot, n, return_value="NOTE")
+                 for n in names}
+        extras = [unittest.mock.patch.object(bot, "grade", return_value=0),
+                  unittest.mock.patch.object(bot, "maybe_daily_report"),
+                  unittest.mock.patch.object(bot, "maybe_daily_analysis"),
+                  unittest.mock.patch.object(bot, "maybe_open_bell"),
+                  unittest.mock.patch.object(bot, "desk_is_silenced",
+                                             return_value=True),
+                  unittest.mock.patch.object(bot, "confirm_watch",
+                                             return_value=None)]
+        started = list(mocks.values()) + extras
+        handles = {n: p.start() for n, p in mocks.items()}
+        for p in extras:
+            p.start()
+        try:
+            bot.desk_tick(tg, {bot.SEED_CHATS[0]}, seen)
+        finally:
+            for p in started:
+                p.stop()
+        return handles
+
+    def test_confirm_mode_silences_the_approach_and_the_pierce(self):
+        """The whole request in one assertion: with the mode on, `entry_watch`
+        (price came NEAR a zone) and `levels_watch` (an intrabar pierce) must
+        not be CALLED at all -- not merely muted, never consulted. A level watch
+        that runs and returns None still reads the tape and can still speak on
+        the next cycle; standing it down is the point."""
+        saved = bot.CONFIRM_ONLY
+        bot.CONFIRM_ONLY = True
+        try:
+            m = self._tick({})
+        finally:
+            bot.CONFIRM_ONLY = saved
+        m["entry_watch"].assert_not_called()
+        m["levels_watch"].assert_not_called()
+
+    def test_confirm_mode_keeps_the_bar_close_watches(self):
+        """The mode is about LEVEL chatter. A gate close, a trend flip and a
+        headline are already bar-close/structural facts, so they must keep
+        speaking -- otherwise the switch would silence the bot's genuinely
+        confirmed output too."""
+        saved = bot.CONFIRM_ONLY
+        bot.CONFIRM_ONLY = True
+        try:
+            m = self._tick({})
+        finally:
+            bot.CONFIRM_ONLY = saved
+        m["gate_watch"].assert_called()
+        m["trend_watch"].assert_called()
+        m["news_watch"].assert_called()
+
+    def test_confirm_mode_off_restores_the_old_watches(self):
+        saved = bot.CONFIRM_ONLY
+        bot.CONFIRM_ONLY = False
+        try:
+            m = self._tick({})
+        finally:
+            bot.CONFIRM_ONLY = saved
+        m["entry_watch"].assert_called()
+        m["levels_watch"].assert_called()
+
+
 class AlertsMasterSwitchTest(_DbCase):
     """One switch must stop EVERY unprompted message.
 
