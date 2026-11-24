@@ -1476,3 +1476,10 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   ⚠ mypy caught a real one the suite did not: reusing the name `raw` (already
   `bytes | None` in `restore_journal`) for an env string → `str | None`
   assignment error. Renamed to `env_raw`.
+- ⭐ **The owner's panel choice is durable; the pinned blob is the proof.**
+  Read it: `getChat(owner)` → `pinned_message.document` →
+  `getFile` → download → `blob["settings"]`. It said `alerts: false` — his own
+  mute — while `confirm_only` was on from the env. Two sources, two values, no
+  contradiction. ⚠ Never leave `DESK_ALERTS` in Render: an env value beats the
+  blob every boot and would undo his silence. ⚠ Telegram `getChat` needs a
+  FORM body, not JSON (`400: chat_id is empty`).
