@@ -8558,9 +8558,16 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     # asked to hear the event that survives a bar close, not the approach or the
     # intrabar pierce. `confirm_watch` returns None when the mode is off, so this
     # costs one branch when it is not in use.
+    #
+    # It goes to EVERYONE allowed (`_public_chats`), not to `_alert_chats`: the
+    # owner asked for the confirmed break to be the one thing the whole bot
+    # hears, alongside the trades and the daily read. Every other level watch
+    # stays his alone -- this card is the shared surface. Its dollar figures are
+    # the engine's own windows ($8-12 risk, $15-20 target), not his balance, so
+    # sharing it does not leak his account.
     note = confirm_watch(seen)
     if note:
-        for c in _alert_chats(allow):
+        for c in _public_chats(allow):
             tg.send(c, note, menu_reply_kb(c))
     # In confirm-only mode the chatter stands down: an approach (`entry_watch`)
     # and an intrabar crossing (`levels_watch`) are exactly the "not confirmed"

@@ -4806,6 +4806,45 @@ class ConfirmWatchTest(unittest.TestCase):
         m["entry_watch"].assert_called()
         m["levels_watch"].assert_called()
 
+    def test_the_confirmed_card_goes_to_everyone_allowed(self):
+        """The owner's ask: the confirmed break is for the WHOLE bot, not him.
+
+        Every other level watch stays owner-only (`_alert_chats`); this one is
+        the shared surface, so a guest must receive it. Asserting on the chat
+        list rather than on `tg.send` keeps the test about the audience rule and
+        not about message formatting.
+        """
+        seen: dict = {}
+        allow = {"100", "200", bot.SEED_CHATS[0]}
+        sent: list[str] = []
+        tg = unittest.mock.Mock()
+        tg.send.side_effect = lambda c, *a, **k: sent.append(str(c))
+        saved = bot.CONFIRM_ONLY
+        bot.CONFIRM_ONLY = True
+        try:
+            with unittest.mock.patch.object(bot, "confirm_watch",
+                                            return_value="CARD"), \
+                 unittest.mock.patch.object(bot, "grade", return_value=0), \
+                 unittest.mock.patch.object(bot, "desk_is_silenced",
+                                            return_value=True):
+                bot.desk_tick(tg, allow, seen)
+        finally:
+            bot.CONFIRM_ONLY = saved
+        self.assertIn("100", sent, "a guest did not get the confirmed card")
+        self.assertIn("200", sent)
+        self.assertIn(bot.SEED_CHATS[0], sent, "the owner missed his own card")
+
+    def test_the_other_level_watches_stay_owner_only(self):
+        """Sharing the confirmed card must not open the rest of the stream:
+        an approach alert is still the owner's alone."""
+        allow = {"100", "200"}
+        saved = bot.OWNER_ONLY
+        bot.OWNER_ONLY = True
+        try:
+            self.assertEqual(bot._alert_chats(allow), [bot._backup_chat()])
+        finally:
+            bot.OWNER_ONLY = saved
+
 
 class AlertsMasterSwitchTest(_DbCase):
     """One switch must stop EVERY unprompted message.
