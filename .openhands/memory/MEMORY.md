@@ -1530,3 +1530,41 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   only "rest gap" and distance-from-EMA). So the gap work is my own value-add —
   it is not a second copy of the engine, and it must not be presented as if
   the bot agrees.
+
+## MarketDesk — ARMED PLANS: the owner's scenarios, watched (2026-11-24)
+
+- ⭐ **"فيك تخلي البوت ينبها بهـدول السيناريوهات مشان نفوت فيهن بس يتحققو"** —
+  he pastes a scenario table in chat and wants the desk to watch it. Shipped as
+  `plans_watch()` + `plans_listing()` + `_plan_msg()` in bot.py. Card via
+  dispatch `"plans"`, submenu button under `menu_map`, words مسلح/المسلحة/
+  السيناريوهات المسلحة/خطط/الخطط.
+- ⭐ **A plan is DATA, never a second engine.** `{id, kind, level, direction,
+  targets, label, conf, size}` and the trade is priced by `_sized(close, dir,
+  level)` — the same function `plan()` and `_confirm_msg` use. His own targets
+  are shown back as "أهدافك"; they are never fed into the sizing.
+- ⭐ **Two kinds because he named two events:** `break` = a CONFIRM_TF bar
+  CLOSES past the level (scenarios 1 and 4); `reject` = a bar WICKS past and
+  CLOSES back on the origin side (2 and 3, "فيتل تحت X وارتجاع"). A break needs
+  a close THROUGH and a reject needs a close BACK, so the two can never both
+  claim one bar — that is why one level may carry both a break and a reject.
+- **Latch lives in `seen["plans"][id]`**, keyed by plan id, NOT by level (two
+  plans can share 3,540.33). Fires once per approach, pops back to un-armed when
+  price returns to the origin side. ⚠ Unlike `confirm_watch` (which SEEDS on
+  first look), a fresh `seen` on an already-broken level DOES speak: a break in
+  progress is a live observation, not a replay. Pinned by
+  `test_a_restart_never_replays_a_trigger`, which asserts the speak.
+- **Storage:** `data/plans.json`, seeded from `DESK_PLANS` (JSON env, not a
+  delimiter grammar — a plan carries 8 fields). Rides `_dump_journal()` /
+  `restore_journal()` like `watch_points`, so a Render restart cannot lose it.
+- ⭐ **`/health` now carries `plans` + `plan_ids`.** Without it there is no way
+  to prove from outside that a `DESK_PLANS` set on the dashboard reached the
+  running bot — a 200 proves nothing. This is the same rule as `confirm_only`.
+- Audience: `_public_chats`, like the confirmed card — a fired plan is a trade
+  the whole roll may take, and its dollars are `_sized`'s windows, not balance.
+- Gates: 457 tests green (+19 in `ArmedPlansTest`), ruff 43/4 baselines, mypy 3.
+  Live `35d1fc3`, `/health` `plans: 4`, `plan_ids 1-4`.
+- ⚠ **Render API gotchas that cost time:** `PUT /services/{id}/env-vars` (bulk)
+  400s; use `PUT /services/{id}/env-vars/{KEY}` with `{"value": ...}`. And the
+  list endpoint returns `{key, value}` with **no `id`**, so a loop that reads
+  `envVar.id` finds nothing. Setting an env var does NOT redeploy — POST a
+  deploy or the running bot keeps the old code (and the old env).
