@@ -191,7 +191,14 @@ class Health(BaseHTTPRequestHandler):
                              # stop. "off" here is the proof a deploy took it,
                              # the same way `confirm_only` proves its promise.
                              "plan_push": ("on" if desk.AYZR_PLAN_PUSH
-                                           else "off")})
+                                           else "off"),
+                             # The rest of the owner's last brief, checkable
+                             # from outside: scenarios are the only door into
+                             # the book, there is no rest gap, and a trade is
+                             # secured and laddered.
+                             "plans_only": ("on" if desk.PLANS_ONLY else "off"),
+                             "rest_min": desk.REST_MINUTES,
+                             "secure": ("on" if desk.SECURE_ON else "off")})
         else:
             self._send(404, {"error": "not found"})
 

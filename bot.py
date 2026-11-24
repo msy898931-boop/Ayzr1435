@@ -115,6 +115,12 @@ TARGET_LADDER_ON = os.environ.get("DESK_TARGET_LADDER", "1").strip().lower() not
     ("0", "off", "no", "false")
 TARGET_LADDER_MAX_USD = float(os.environ.get("DESK_TARGET_LADDER_MAX", "40") or "40")
 TARGET_LADDER_RUNGS = int(os.environ.get("DESK_TARGET_LADDER_RUNGS", "4") or "4")
+# SECURING. After the first rung is banked, the stop moves to the entry, so the
+# remainder of the trade cannot lose. The owner asked for it by name: "خلي يشتغل
+# عتأمين". It is the difference between a ladder and a lottery -- without it,
+# banking one rung and giving the rest back is a worse trade than no ladder.
+SECURE_ON = os.environ.get("DESK_SECURE", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
 # The desk's OWN replay over 2026 (the same year as duka_2026.json, the SAME
 # rules the desk trades -- see backtest/bot2026.py, which now READS these
 # constants instead of hardcoding them). A STUDY figure, never a live reading:
@@ -199,11 +205,24 @@ TREND_FILTER_ON = os.environ.get("DESK_TREND_FILTER", "1").strip().lower() not i
 # day cannot turn into a churn of a hundred entries. Set DESK_MAX_TRADES_DAY=0
 # to remove the cap.
 MAX_TRADES_DAY = int(os.environ.get("DESK_MAX_TRADES_DAY", "20") or "20")
+# PLANS-ONLY. The owner's final word on what may open a position: "خلي البوت
+# مايتداول غير عسيناريوهاتي يلي حطيتها". So the engine keeps its eyes -- it
+# still reads the tape, still builds its cards, still says what it sees -- but it
+# no longer TAKES its own signals. The only door into the book is a scenario he
+# wrote, fired by the market, taken by `_take_plan`.
+#
+# It is a switch and not a deletion: `studies`/`plan_check` still answer, and
+# the map and the analysis card still read the engine, because those are VIEWS.
+# Turning it off (DESK_PLANS_ONLY=0) restores the old desk without a revert.
+PLANS_ONLY = os.environ.get("DESK_PLANS_ONLY", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
 # The rest gap: after a trade CLOSES (a win or a loss), the desk waits this many
-# minutes before it may open the next one. The owner asked for it -- a fresh
-# signal one second after a stop is usually the SAME move taken again, and he
-# would rather the next trade be right than immediate. 0 disables the gap.
-REST_MINUTES = int(os.environ.get("DESK_REST_MINUTES", "15") or "15")
+# minutes before it may open the next one. The owner asked for it once -- a fresh
+# signal one second after a stop is usually the SAME move taken again. He has
+# since asked for the opposite: "بلا راحة بعد الصفقة". A scenario he armed is a
+# decision he already made, so a clock has no business queuing behind it.
+# DESK_REST_MINUTES>0 brings a gap back without a code change.
+REST_MINUTES = int(os.environ.get("DESK_REST_MINUTES", "0") or "0")
 # The no-chase filter: do not SELL into deep oversold (or BUY into deep
 # overbought) on the filter frame -- that is entering after the move, at the
 # edge of the range, where the retrace is most likely. Measured on 2026 with the
@@ -5051,6 +5070,17 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 """
 
+# The ladder columns, added by migration rather than by editing SCHEMA: a
+# running journal already has rows, and `CREATE TABLE IF NOT EXISTS` would leave
+# them without the new fields. `_migrate` adds each one only when it is absent,
+# so an old book opens unchanged and a new trade gets the full set.
+LADDER_COLUMNS = (
+    ("targets", "TEXT"),          # JSON list of rung prices, in order
+    ("rung_hit", "INTEGER DEFAULT 0"),   # how many rungs already banked
+    ("realized_usd", "REAL DEFAULT 0"),  # money already taken off the table
+    ("realized_r", "REAL DEFAULT 0"),    # its R, weighted by portion
+    ("init_stop", "REAL"),        # the ORIGINAL stop: the R denominator
+)
 
 def _conn() -> sqlite3.Connection:
     c = sqlite3.connect(DB_PATH, timeout=30)
@@ -5061,7 +5091,20 @@ def _conn() -> sqlite3.Connection:
 def _init_db() -> None:
     with closing(_conn()) as c:
         c.executescript(SCHEMA)
+        _migrate(c)
         c.commit()
+
+
+def _migrate(c: sqlite3.Connection) -> None:
+    """Add the ladder columns to a journal that predates them.
+
+    Idempotent by construction: each ALTER runs only when the column is missing,
+    so this is safe on every boot and on a book restored from the pinned
+    backup, which carries the OLD schema."""
+    have = {r["name"] for r in c.execute("PRAGMA table_info(trades)")}
+    for name, decl in LADDER_COLUMNS:
+        if name not in have:
+            c.execute(f"ALTER TABLE trades ADD COLUMN {name} {decl}")
 
 
 def _utcnow() -> str:
@@ -5079,12 +5122,26 @@ def _parse(stamp: str | None):
         return None
 
 
-def add_trade(direction, entry, stop, target=None, size=None, note=None) -> int:
+def add_trade(direction, entry, stop, target=None, size=None, note=None,
+              targets=None) -> int:
+    """Record a new open trade.
+
+    `targets` is the full ladder when there is one: the FIRST rung is also
+    written to `target`, so every reader that knows nothing about ladders --
+    the list line, the close card, the stats -- keeps working unchanged, and the
+    extra rungs live beside it. The original stop is copied to `init_stop`
+    because securing the trade MOVES `stop`, and R must stay measured against
+    the risk the trade was actually taken at.
+    """
+    ladder = [float(x) for x in (targets or [])]
+    first = ladder[0] if ladder else target
     with closing(_conn()) as c:
         cur = c.execute(
             "INSERT INTO trades (symbol,direction,entry,stop,target,size,"
-            "opened_at,note,status) VALUES (?,?,?,?,?,?,?,?,'open')",
-            (SYMBOL, direction, entry, stop, target, size, _utcnow(), note))
+            "opened_at,note,status,targets,init_stop) "
+            "VALUES (?,?,?,?,?,?,?,?,'open',?,?)",
+            (SYMBOL, direction, entry, stop, first, size, _utcnow(), note,
+             json.dumps(ladder) if ladder else None, stop))
         c.commit()
         return int(cur.lastrowid or 0)
 
@@ -5107,6 +5164,38 @@ def _settle(tid, result, exit_price, r) -> None:
         c.commit()
 
 
+def _ladder_of(t) -> list[float]:
+    """The trade's rung prices, in order. A trade written before ladders (or
+    without one) answers with its single target, so every caller has a list."""
+    try:
+        raw = t["targets"]
+    except (IndexError, KeyError):
+        raw = None
+    if raw:
+        try:
+            got = [float(x) for x in json.loads(raw)]
+            if got:
+                return got
+        except (ValueError, TypeError):
+            pass
+    try:
+        tgt = t["target"]
+    except (IndexError, KeyError):
+        tgt = None
+    return [float(tgt)] if tgt is not None else []
+
+
+def _init_risk(t) -> float:
+    """The risk the trade was TAKEN at. Securing moves `stop`, so the planned
+    risk can only come from `init_stop`; a pre-migration row falls back to its
+    stop, which is right because it was never secured."""
+    try:
+        base = t["init_stop"]
+    except (IndexError, KeyError):
+        base = None
+    return abs(float(t["entry"]) - float(base if base is not None else t["stop"]))
+
+
 def _risk(t) -> float:
     return abs(t["entry"] - t["stop"])
 
@@ -5119,11 +5208,25 @@ def _planned_r(t):
 
 
 def _money(t):
+    """The trade's money: the portions BANKED at the rungs plus the portion that
+    ran to its exit. A trade with no ladder reduces to the old single-exit
+    figure, so an old row and a new one are measured the same way.
+    """
     if t["exit_price"] is None:
         return None
-    pts = (t["exit_price"] - t["entry"]) if t["direction"] == "long" \
-        else (t["entry"] - t["exit_price"])
-    return pts * _size_of(t) * 100.0
+    banked = 0.0
+    done = 0
+    try:
+        banked = float(t["realized_usd"] or 0)
+        done = int(t["rung_hit"] or 0)
+    except (IndexError, KeyError):
+        banked, done = 0.0, 0
+    size = _size_of(t)
+    d = 1 if t["direction"] == "long" else -1
+    n = len(_ladder_of(t)) or 1
+    left = max(n - done, 0) / n          # the share that settled at exit_price
+    pts = (t["exit_price"] - t["entry"]) * d
+    return banked + pts * size * 100.0 * left
 
 
 def _size_of(t) -> float:
@@ -5238,6 +5341,83 @@ def _rest_until() -> datetime | None:
     return ready if datetime.now(UTC) < ready else None
 
 
+def _secure_on() -> bool:
+    return SECURE_ON
+
+
+def _secure_stop(tid: int, entry: float) -> None:
+    """Move the stop to breakeven: the rest of the position can no longer lose.
+
+    Only ever MOVES the stop in the trade's favour -- never back -- so a second
+    rung cannot undo the first one's protection.
+    """
+    with closing(_conn()) as c:
+        c.execute("UPDATE trades SET stop=? WHERE id=? AND status='open'",
+                  (entry, tid))
+        c.commit()
+
+
+def _grade_trade(t, window) -> tuple[bool, str | None, float | None,
+                                     float | None]:
+    """Walk one trade over `window`. Returns (settled, result, exit, r).
+
+    First touch wins and a bar that spans the stop and a target still takes the
+    stop -- the ambiguity always resolves against the trade, never for it. What
+    is new is the ladder: each rung banks its 1/n of the position and, after the
+    first one, the stop moves to breakeven ("تأمين"). The last rung closes what
+    is left, so the trade's R is the portion-weighted average of every exit.
+    """
+    long = t["direction"] == "long"
+    risk = _init_risk(t)
+    rungs = _ladder_of(t)
+    if not rungs:
+        return False, None, None, None
+    n = len(rungs)
+    portion = 1.0 / n
+    entry = float(t["entry"])
+    # Running totals, seeded from the book so a trade graded across several
+    # ticks resumes where it left off. Kept locally because several rungs can
+    # fall on ONE bar, and re-reading `t` between them would lose the rung that
+    # was banked a moment ago.
+    banked = int(t["rung_hit"] or 0)
+    base_m = float(t["realized_usd"] or 0)
+    base_r = float(t["realized_r"] or 0)
+    for x in window:
+        stop_now = float(t["stop"])
+        if (x["low"] <= stop_now) if long else (x["high"] >= stop_now):
+            if not banked:
+                return True, "stop", stop_now, -1.0
+            left = (n - banked) / n
+            pts = (stop_now - entry) if long else (entry - stop_now)
+            r_left = (pts / risk) if risk else 0.0
+            with closing(_conn()) as c:
+                c.execute("UPDATE trades SET realized_usd=? WHERE id=?",
+                          (base_m + pts * _size_of(t) * 100.0 * left, t["id"]))
+                c.commit()
+            return True, "stop", stop_now, base_r + r_left * left
+        while banked < n:
+            rung = rungs[banked]
+            if not ((x["high"] >= rung) if long else (x["low"] <= rung)):
+                break
+            last = banked == n - 1
+            pts = (rung - entry) if long else (entry - rung)
+            r_here = (pts / risk) if risk else 0.0
+            base_m += pts * _size_of(t) * 100.0 * portion
+            base_r += r_here * portion
+            banked += 1
+            with closing(_conn()) as c:
+                c.execute(
+                    "UPDATE trades SET rung_hit=?, realized_usd=?, realized_r=? "
+                    "WHERE id=?", (banked, base_m, base_r, t["id"]))
+                c.commit()
+            if last:
+                return True, "target", rung, base_r
+            if SECURE_ON and banked == 1:
+                _secure_stop(t["id"], entry)
+                t = next(y for y in all_trades() if y["id"] == t["id"])
+    return False, None, None, None
+
+
 def grade() -> int:
     """Walk every open trade forward on 5m bars. First touch wins; a bar that
     spans both the stop and the target takes the stop. Returns how many settled.
@@ -5252,21 +5432,10 @@ def grade() -> int:
         if start is None:
             continue
         window = [x for x in b if (_parse(x["openTime"]) or start) >= start]
-        long = t["direction"] == "long"
-        risk = _risk(t)
-        for x in window:
-            hit_stop = (x["low"] <= t["stop"]) if long else (x["high"] >= t["stop"])
-            hit_tgt = t["target"] is not None and (
-                (x["high"] >= t["target"]) if long else (x["low"] <= t["target"]))
-            if hit_stop:
-                _settle(t["id"], "stop", t["stop"], -1.0)
-                settled += 1
-                break
-            if hit_tgt and t["target"] is not None:
-                r = (abs(t["target"] - t["entry"]) / risk) if risk else None
-                _settle(t["id"], "target", t["target"], r)
-                settled += 1
-                break
+        done, result, exit_price, r = _grade_trade(t, window)
+        if done:
+            _settle(t["id"], result, exit_price, r)
+            settled += 1
     return settled
 
 
@@ -7027,13 +7196,17 @@ def restore_journal(tg: Telegram) -> int:
         for t in blob.get("trades") or []:
             c.execute(
                 "INSERT INTO trades (symbol,direction,entry,stop,target,size,"
-                "opened_at,note,status,result,exit_price,r_multiple,closed_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "opened_at,note,status,result,exit_price,r_multiple,closed_at,"
+                "targets,init_stop,rung_hit,realized_usd,realized_r) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (t.get("symbol") or SYMBOL, t.get("direction"), t.get("entry"),
                  t.get("stop"), t.get("target"), t.get("size"),
                  t.get("opened_at") or _utcnow(), t.get("note"),
                  t.get("status") or "open", t.get("result"),
-                 t.get("exit_price"), t.get("r_multiple"), t.get("closed_at")))
+                 t.get("exit_price"), t.get("r_multiple"), t.get("closed_at"),
+                 t.get("targets"), t.get("init_stop"),
+                 t.get("rung_hit") or 0, t.get("realized_usd") or 0,
+                 t.get("realized_r") or 0))
             n += 1
         c.commit()
     allow = blob.get("allow") or []
@@ -7334,9 +7507,34 @@ def _pending_plan(p: dict, limit: float) -> dict:
     return q
 
 
-def _write_plan(p: dict, note: str = "desk") -> int:
+def _write_plan(p: dict, note: str = "desk", targets=None) -> int:
     return add_trade(p["direction"], p["entry"], p["stop"], p["target"],
-                     LOT, note=note)
+                     LOT, note=note, targets=targets)
+
+
+def _plan_rungs(plan: dict, p: dict, fired: dict) -> list[float]:
+    """The owner's own targets, made usable as a ladder.
+
+    His scenario carries the levels he wants out at. They are taken AS WRITTEN
+    when they sit ahead of the entry and in order -- his plan, not a rescaled
+    version of it -- and the engine's single target is used only when he gave
+    none. Levels the market has already passed are dropped: a rung behind the
+    entry is not a target, it is history.
+    """
+    d = 1 if p["direction"] == "long" else -1
+    entry = float(p["entry"])
+    ahead = []
+    for lv in plan.get("targets") or []:
+        try:
+            lv = float(lv)
+        except (TypeError, ValueError):
+            continue
+        if (lv - entry) * d > 0:
+            ahead.append(lv)
+    ahead.sort(key=lambda x: (x - entry) * d)
+    if ahead:
+        return ahead
+    return [float(p["target"])] if p.get("target") is not None else []
 
 
 def _in_profit(t) -> bool:
@@ -8265,6 +8463,14 @@ def _plan_open_card(plan: dict, p: dict, row, vol: dict | None = None) -> str:
     if plan["targets"]:
         lines.append("  🎯 أهدافك: <b>"
                      + " → ".join(num(t) for t in plan["targets"]) + "</b>")
+    # The ladder explained: a rung is a partial exit, not a second target to
+    # pick from. Without this line the owner cannot tell what "3 أهداف" means
+    # for his money -- and a ladder he does not understand is worse than none.
+    if len(_plan_rungs(plan, p, {})) > 1:
+        lines.append(f"  📐 <b>بطلع بكل هدف "
+                     f"{100 // len(_plan_rungs(plan, p, {}))}%</b> "
+                     f"من الصفقة — والوقف بينتقل لنقطة الدخول بعد أول هدف "
+                     f"(<b>تأمين</b>): الباقي ما بيخسر.")
     if vol:
         if vol.get("ok") is True:
             lines.append(f"📊 <b>الحجم: مؤكّد</b> — {vol['vol']:,.0f} = "
@@ -8400,7 +8606,8 @@ def _take_plan(tg: Telegram, allow: set[str], fired: dict) -> None:
             tg.send(c, _plan_blocked_card(plan, "full", op[0]),
                     menu_reply_kb(c))
         return
-    tid = _write_plan(p, note=f"plan:{plan['id']}")
+    tid = _write_plan(p, note=f"plan:{plan['id']}",
+                      targets=_plan_rungs(plan, p, fired))
     row = next(x for x in all_trades() if x["id"] == tid)
     for c in _public_chats(allow):
         tg.send(c, _plan_open_card(plan, p, row, fired.get("vol")), menu_reply_kb(c))
@@ -9045,6 +9252,17 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     fired = plans_watch(seen)
     if fired:
         _take_plan(tg, allow, fired)
+    # PLANS-ONLY: the book now closes here. Everything below is the engine
+    # taking its OWN trades -- the day cap announcement, the rest clock, the
+    # pullback parking, the immediate entry with its pre-trade note. The owner
+    # said "مايتداول غير عسيناريوهاتي يلي حطيتها", so none of it may run.
+    #
+    # This is a RETURN, not a deletion: the engine's reads still serve the map,
+    # the analysis card and `plan()` -- the surfaces that TELL him what the
+    # market is doing. He asked the bot to stop TRADING on its own, not to stop
+    # LOOKING. `PLANS_ONLY=0` restores the old desk.
+    if PLANS_ONLY:
+        return
     # The daily cap first: if the session already opened MAX_TRADES_DAY trades,
     # nothing more is taken today whatever the signal says. Announced once.
     if MAX_TRADES_DAY and trades_opened_today() >= MAX_TRADES_DAY:

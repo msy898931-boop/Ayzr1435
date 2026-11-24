@@ -442,6 +442,176 @@ class GradeTest(_DbCase):
         self.assertEqual(self._one()["status"], "open")
 
 
+class LadderAndSecureTest(_DbCase):
+    """Multiple targets with securing ("تأمين"), the owner's third ask:
+    "خلي يشتغل عتأمين وعأكتر من هدف اذا كان موجود".
+
+    One position, but n rungs. Each rung banks 1/n of it, and after the FIRST
+    rung the stop moves to the entry so the remainder cannot lose. The R of the
+    closed trade is the portion-weighted average of every exit -- not the last
+    rung's number dressed up as the whole thing.
+    """
+
+    def _trade(self, targets, entry=4100, stop=4091):
+        tid = bot.add_trade("long", entry, stop, targets[0], bot.LOT,
+                            note="p", targets=targets)
+        return next(x for x in bot.all_trades() if x["id"] == tid)
+
+    def _grade(self, t, bars):
+        done = bot._grade_trade(t, bars)
+        if done[0]:
+            bot._settle(t["id"], done[1], done[2], done[3])
+        return next(x for x in bot.all_trades() if x["id"] == t["id"]), done
+
+    @staticmethod
+    def _bar(high, low, day="01"):
+        return {"openTime": f"2026-01-{day}T00:00:00Z", "open": 4100,
+                "high": high, "low": low, "close": high}
+
+    def test_a_plain_trade_still_grades_exactly_as_before(self):
+        """No ladder must mean no change: the old behaviour is the floor."""
+        t, done = self._grade(self._trade([4118]),
+                              [self._bar(4120, 4099)])
+        self.assertTrue(done[0])
+        self.assertEqual(t["result"], "target")
+        self.assertAlmostEqual(t["r_multiple"], 2.0, places=6)
+        self.assertAlmostEqual(bot._money(t), 18.0, places=2)
+
+    def test_each_rung_banks_its_share_and_the_total_is_the_whole_trade(self):
+        """Three rungs, all reached: 12+24+36 points, a third each = 24 points.
+        The money must be the SUM, not the last rung standing in for the rest."""
+        t, done = self._grade(self._trade([4112, 4124, 4136]),
+                              [self._bar(4140, 4099)])
+        self.assertTrue(done[0])
+        self.assertEqual(t["result"], "target")
+        self.assertAlmostEqual(bot._money(t), 24.0, places=2)
+        # (12 + 24 + 36) / 3 / 9 risk = 2.666...
+        self.assertAlmostEqual(t["r_multiple"], 72 / 3 / 9, places=4)
+
+    def test_the_first_rung_moves_the_stop_to_breakeven(self):
+        """The securing itself: after rung 1 the stop IS the entry, so the rest
+        of the position cannot lose. This is the difference between a ladder and
+        a lottery -- bank one rung, give the rest back, and the ladder is worse
+        than no ladder at all."""
+        t = self._trade([4112, 4124, 4136])
+        bot._grade_trade(t, [self._bar(4113, 4099)])
+        t = next(x for x in bot.all_trades() if x["id"] == t["id"])
+        self.assertEqual(t["rung_hit"], 1)
+        self.assertAlmostEqual(t["stop"], 4100.0, places=2)
+
+    def test_a_secured_trade_cannot_close_at_a_loss(self):
+        """Rung 1 banked, price falls back to the entry: the trade closes
+        POSITIVE. A secured trade losing money would mean the securing is a
+        label and not a rule."""
+        t, _ = self._grade(self._trade([4112, 4124, 4136]),
+                           [self._bar(4113, 4099), self._bar(4100, 4095, "02")])
+        self.assertEqual(t["result"], "stop")
+        self.assertGreater(bot._money(t), 0)
+        self.assertGreater(t["r_multiple"], 0)
+
+    def test_two_rungs_then_breakeven_keeps_both_shares(self):
+        t, _ = self._grade(self._trade([4112, 4124, 4136]),
+                           [self._bar(4125, 4099), self._bar(4100, 4095, "02")])
+        # Only the TWO rungs the market actually paid were banked; the last
+        # third went out at breakeven when the stop was reached.
+        self.assertEqual(t["rung_hit"], 2)
+        # 12/3 + 24/3 banked = 12$, the last third exits at the entry = 0.
+        self.assertAlmostEqual(bot._money(t), 12.0, places=2)
+
+    def test_an_unreached_ladder_leaves_the_trade_open(self):
+        t, done = self._grade(self._trade([4112, 4124, 4136]),
+                              [self._bar(4105, 4096)])
+        self.assertFalse(done[0])
+        self.assertEqual(t["status"], "open")
+
+    def test_a_ladder_level_behind_the_entry_is_dropped(self):
+        """A rung the market has already passed is history, not a target."""
+        t = self._trade([4095, 4112])
+        self.assertEqual(sorted(bot._ladder_of(t)), [4095.0, 4112.0])
+        p = bot._sized(4100.0, "long", 4091.0)
+        rungs = bot._plan_rungs({"targets": [4095, 4112]}, p, {})
+        self.assertEqual(rungs, [4112.0])
+
+    def test_securing_can_be_turned_off(self):
+        saved = bot.SECURE_ON
+        bot.SECURE_ON = False
+        try:
+            t = self._trade([4112, 4124, 4136])
+            bot._grade_trade(t, [self._bar(4113, 4099)])
+            t = next(x for x in bot.all_trades() if x["id"] == t["id"])
+            self.assertAlmostEqual(t["stop"], 4091.0, places=2)
+        finally:
+            bot.SECURE_ON = saved
+
+
+class PlansOnlyTest(_DbCase):
+    """The owner's last word: the bot trades ONLY his scenarios.
+
+    "خلي البوت مايتداول غير عسيناريوهاتي يلي حطتها". The engine may still LOOK
+    -- the map and the analysis card read it -- but it may not open its own
+    position any more.
+    """
+
+    def test_the_desk_takes_no_engine_trade_when_plans_only_is_on(self):
+        self.assertTrue(bot.PLANS_ONLY, "the owner's default must be plans-only")
+        tg = unittest.mock.Mock()
+        real = bot._sized(3000.0, "long", 2990.0)
+        pc = {"plan": real, "reason": "ok", "detail": ""}
+        before = len(bot.all_trades())
+        with unittest.mock.patch.object(bot, "plans_watch", return_value=None), \
+             unittest.mock.patch.object(bot, "confirm_watch", return_value=None), \
+             unittest.mock.patch.object(bot, "plan_check", return_value=pc), \
+             unittest.mock.patch.object(bot, "grade", return_value=0), \
+             unittest.mock.patch.object(bot, "maybe_daily_report"), \
+             unittest.mock.patch.object(bot, "maybe_daily_analysis"), \
+             unittest.mock.patch.object(bot, "maybe_open_bell"), \
+             unittest.mock.patch.object(bot, "desk_is_silenced", return_value=False):
+            bot.desk_tick(tg, {bot.SEED_CHATS[0]}, {})
+        self.assertEqual(len(bot.all_trades()), before,
+                         "the engine still opened a trade of its own")
+
+    def test_the_engine_trades_again_when_the_switch_is_off(self):
+        """...and the switch actually switches: PLANS_ONLY=0 restores the desk,
+        so the owner can change his mind without a code revert."""
+        saved = bot.PLANS_ONLY
+        bot.PLANS_ONLY = False
+        tg = unittest.mock.Mock()
+        p = bot._sized(3000.0, "long", 2990.0)
+        pc = {"plan": p, "reason": "ok", "detail": ""}
+        before = len(bot.all_trades())
+        try:
+            with unittest.mock.patch.object(bot, "plans_watch", return_value=None), \
+                 unittest.mock.patch.object(bot, "confirm_watch", return_value=None), \
+                 unittest.mock.patch.object(bot, "plan_check", return_value=pc), \
+                 unittest.mock.patch.object(bot, "grade", return_value=0), \
+                 unittest.mock.patch.object(bot, "maybe_daily_report"), \
+                 unittest.mock.patch.object(bot, "maybe_daily_analysis"), \
+                 unittest.mock.patch.object(bot, "maybe_open_bell"), \
+                 unittest.mock.patch.object(bot, "desk_is_silenced", return_value=False):
+                bot.desk_tick(tg, {bot.SEED_CHATS[0]}, {})
+        finally:
+            bot.PLANS_ONLY = saved
+        self.assertEqual(len(bot.all_trades()), before + 1)
+
+    def test_the_ladder_columns_are_migrated_onto_an_old_journal(self):
+        """A journal restored from the pinned backup carries the OLD schema.
+        The migration must add the ladder columns instead of failing on them."""
+        import sqlite3
+        old = sqlite3.connect(":memory:")
+        old.execute("CREATE TABLE trades (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    "symbol TEXT, direction TEXT, entry REAL, stop REAL,"
+                    "target REAL, size REAL, opened_at TEXT, note TEXT,"
+                    "status TEXT, result TEXT, exit_price REAL,"
+                    "r_multiple REAL, closed_at TEXT)")
+        old.row_factory = sqlite3.Row
+        bot._migrate(old)
+        cols = {r["name"] for r in old.execute("PRAGMA table_info(trades)")}
+        for name, _ in bot.LADDER_COLUMNS:
+            self.assertIn(name, cols)
+        bot._migrate(old)      # idempotent: a second boot must not raise
+        old.close()
+
+
 class ParseTradeTest(unittest.TestCase):
     def test_full_arabic_line(self):
         got = bot.parse_trade("سجل شراء 4075 وقف 4069 هدف 4085")
@@ -3442,23 +3612,36 @@ class DailyCapTest(unittest.TestCase):
 
 
 class RestGapTest(_DbCase):
-    """After a trade closes, the desk waits REST_MINUTES before the next entry.
+    """The rest gap between closes and the next entry.
 
-    A fresh signal one second after a stop is usually the same move taken
-    again; the owner would rather the next trade be right than immediate.
+    It exists as a mechanism (the desk once wanted "the next trade right, not
+    immediate"), but the owner has since asked for the opposite -- "بلا راحة بعد
+    الصفقة" -- so the DEFAULT is now 0. The blocking half is still tested with
+    REST_MINUTES set by hand, because a switch that can be turned back on must
+    keep working when it is.
     """
 
     def test_no_closed_trade_means_no_wait(self):
         self.assertIsNone(bot._rest_until())
 
+    def test_the_default_is_no_rest_gap(self):
+        """The owner's words, pinned as a default: no waiting after a close."""
+        src = (pathlib.Path(bot.__file__).parent / "bot.py").read_text()
+        self.assertIn('os.environ.get("DESK_REST_MINUTES", "0")', src)
+
     def test_a_recent_close_blocks_the_next_entry(self):
         tid = bot.add_trade("short", 3900, 3910, 3880, bot.LOT, note="t")
         bot._settle(tid, "stop", 3910.0, -1.0)   # closed_at = now
-        ready = bot._rest_until()
+        saved = bot.REST_MINUTES
+        bot.REST_MINUTES = 15
+        try:
+            ready = bot._rest_until()
+        finally:
+            bot.REST_MINUTES = saved
         self.assertIsNotNone(ready)
         left = (ready - bot.datetime.now(bot.UTC)).total_seconds() / 60
-        self.assertGreater(left, bot.REST_MINUTES - 2)
-        self.assertLessEqual(left, bot.REST_MINUTES)
+        self.assertGreater(left, 13)
+        self.assertLessEqual(left, 15)
 
     def test_an_old_close_does_not_block(self):
         tid = bot.add_trade("short", 3900, 3910, 3880, bot.LOT, note="t")
@@ -4994,6 +5177,15 @@ class ArmedPlansTest(_DbCase):
         self.assertIn("أهدافك", card)
         self.assertIn("3,529.00", card)
 
+    def test_the_card_explains_the_split_and_the_securing(self):
+        """A ladder the owner does not understand is worse than no ladder: the
+        card must say that each target sells a share and that the stop moves to
+        the entry after the first one."""
+        p = bot._sized(3535.5, "short", 3540.33)
+        card = bot._plan_open_card(self.PLANS[0], p, {"id": 7})
+        self.assertIn("33%", card)
+        self.assertIn("تأمين", card)
+
     def test_the_card_prices_with_the_desk_sizing(self):
         """One engine: the entry/stop/target come from `_sized`, so an armed
         plan can never quote a trade the desk would refuse to size."""
@@ -5030,11 +5222,15 @@ class ArmedPlansTest(_DbCase):
         self.assertEqual(t["direction"], "short")
         self.assertEqual(t["status"], "open")
         self.assertEqual(t["note"], "plan:1")
-        # Priced by the one sizing function, not by the plan's own numbers.
+        # Entry and stop come from the one sizing function...
         p = bot._sized(3535.0, "short", 3540.33)
         self.assertAlmostEqual(t["entry"], p["entry"], places=2)
         self.assertAlmostEqual(t["stop"], p["stop"], places=2)
-        self.assertAlmostEqual(t["target"], p["target"], places=2)
+        # ...but the TARGET is the owner's own first rung, not the engine's.
+        # "خلي يشتغل عأكتر من هدف اذا كان موجود": his scenario carries the
+        # levels he wants out at, and his ladder outranks a computed single.
+        self.assertAlmostEqual(t["target"], 3529.0, places=2)
+        self.assertEqual(bot._ladder_of(t), [3529.0, 3514.0, 3502.0])
 
     def test_an_opened_plan_trade_is_graded_and_watched_like_any_other(self):
         """It must be a FIRST-CLASS trade: `grade()` settles it and
