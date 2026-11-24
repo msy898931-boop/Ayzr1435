@@ -186,7 +186,12 @@ class Health(BaseHTTPRequestHandler):
                              # set actually reached the running bot -- the same
                              # reason `levels` is here.
                              "plans": len(desk.PLANS),
-                             "plan_ids": [p["id"] for p in desk.PLANS]})
+                             "plan_ids": [p["id"] for p in desk.PLANS],
+                             # The owner asked for the recurring plan push to
+                             # stop. "off" here is the proof a deploy took it,
+                             # the same way `confirm_only` proves its promise.
+                             "plan_push": ("on" if desk.AYZR_PLAN_PUSH
+                                           else "off")})
         else:
             self._send(404, {"error": "not found"})
 
