@@ -171,6 +171,10 @@ class Health(BaseHTTPRequestHandler):
                              # levels made it 11, it was 9 before).
                              "commit": (os.environ.get("RENDER_GIT_COMMIT")
                                         or "unknown")[:7],
+                             # The master alert switch, live: `/health` is the
+                             # only way to prove from outside that a deploy
+                             # actually took the owner's silence.
+                             "alerts": "off" if desk.alerts_are_off() else "on",
                              "levels": len(desk.WATCH_LEVELS)})
         else:
             self._send(404, {"error": "not found"})

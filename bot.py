@@ -414,6 +414,15 @@ def _basis_ar() -> str:
 # so it outlives a Render restart; `apply_settings` rewrites the module
 # globals, so a toggle takes effect on the next read with no redeploy.
 GATE_KEYS = ("entry_basis", "nochase", "filters", "trend_filter")
+# The MASTER switch: stop every unprompted word the bot says. Each alert below
+# has its own guard, but they all live ABOVE `desk_is_silenced()` on purpose (a
+# level breaking or a headline is a fact, so the owner was meant to keep hearing
+# them with auto-trading off). That left the owner no single way to say "stop
+# talking to me" -- he had to hunt six switches. This one means it: no level
+# alerts, no direction flips, no news, no plan push, no trades announced.
+# Defined BEFORE `apply_settings(load_settings())` so a saved panel choice wins.
+ALERTS_ON = os.environ.get("DESK_ALERTS", "1").strip().lower() not in \
+    ("0", "off", "no", "false")
 # The news alert is not an entry gate, so `open_all`/`close_all` must not touch
 # it -- but it IS a switch the owner controls from the same panel. It must be
 # defined BEFORE `apply_settings(load_settings())` below, or a saved choice
@@ -438,6 +447,7 @@ _GATE_VAR = {"entry_basis": "ENTRY_BASIS_ON", "nochase": "NOCHASE_ON",
              "filters": "FILTERS_ON", "trend_filter": "TREND_FILTER_ON",
              "bounce_entry": "BOUNCE_ENTRY",
              "fast_basis": "FAST_BASIS",
+             "alerts": "ALERTS_ON",
              "news_alerts": "NEWS_ALERTS_ON", "news_prep": "NEWS_PREP_ON",
              "news_result": "CAL_RESULT_ON"}
 GATE_LABELS = {"entry_basis": "أساس الدخول (عند مستوى)",
@@ -446,13 +456,14 @@ GATE_LABELS = {"entry_basis": "أساس الدخول (عند مستوى)",
                "trend_filter": "فلتر شمعة 15د",
                "bounce_entry": "بيع الارتداد (من المستوى)",
                "fast_basis": "باسيس سريع (فريم 15د)",
+               "alerts": "🔔 كل الإشعارات (المفتاح الرئيسي)",
                "news_alerts": "تنبيه الأخبار المهمة",
                "news_prep": "تنبيه التحضير قبل الخبر",
                "news_result": "تنبيه نزول الخبر (النتيجة)"}
 # Everything the panel shows and persists. `gate_state` stays GATE_KEYS only so
 # `open_all`/`close_all` keep meaning "the entry filters"; the news switches and
 # the bounce-entry behaviour are carried alongside but flipped on their own.
-PANEL_KEYS = GATE_KEYS + ("news_alerts", "news_prep", "news_result",
+PANEL_KEYS = GATE_KEYS + ("alerts", "news_alerts", "news_prep", "news_result",
                            "bounce_entry", "fast_basis")
 
 
@@ -5355,6 +5366,12 @@ def card_settings() -> str:
     """
     st = panel_state()
     lines = ["⚙️ <b>إعدادات البوت</b> — تحكّم المالك", ""]
+    amark = "🟢" if st["alerts"] else "🔴"
+    lines.append(f"{amark} <b>{GATE_LABELS['alerts']}</b>: "
+                 f"<b>{'مشغّلة' if st['alerts'] else 'مطفّية'}</b>")
+    lines.append("<i>مطفّية = البوت ما بيبعت ولا رسالة من حالو — "
+                 "لا تنبيهات، لا مستوى انكسر، لا خبر، لا خطة.</i>")
+    lines.append("")
     for k in GATE_KEYS:
         mark = "🟢" if st[k] else "🔴"
         lines.append(f"{mark} {GATE_LABELS[k]}: "
@@ -5390,8 +5407,10 @@ def card_settings() -> str:
 
 def settings_keyboard() -> dict:
     st = panel_state()
-    rows = [[(f"{'🟢' if st[k] else '🔴'} {GATE_LABELS[k]}", f"cfg:{k}")]
-            for k in GATE_KEYS]
+    rows = [[(f"{'🟢' if st['alerts'] else '🔴'} {GATE_LABELS['alerts']}",
+              "cfg:alerts")]]
+    rows += [[(f"{'🟢' if st[k] else '🔴'} {GATE_LABELS[k]}", f"cfg:{k}")]
+             for k in GATE_KEYS]
     rows.append([("🔵 افتح كل الفلاتر", "cfg:open_all"),
                  ("🔒 اقفل كل الفلاتر", "cfg:close_all")])
     nlabel = f"{'🟢' if st['news_alerts'] else '🔴'} {GATE_LABELS['news_alerts']}"
@@ -6881,6 +6900,17 @@ def restore_journal(tg: Telegram) -> int:
     # applied when no local file exists, so a fresh local choice always wins.
     settings = blob.get("settings")
     if isinstance(settings, dict) and not SETTINGS_PATH.exists():
+        # ...EXCEPT for the master alert switch when it is set explicitly in
+        # the environment. The panel is normally the source of truth, but this
+        # one switch is what the owner reaches for when he wants silence, and
+        # on Render he has no disk: the pinned blob would restore "alerts: on"
+        # over a DESK_ALERTS=0 he set in the dashboard, on every single restart.
+        # An explicit deploy-time value must survive the thing it is guarding.
+        settings = dict(settings)
+        env_alerts = os.environ.get("DESK_ALERTS")
+        if env_alerts is not None:
+            settings["alerts"] = env_alerts.strip().lower() not in (
+                "0", "off", "no", "false")
         apply_settings(settings)
         save_settings(panel_state())
     # The sticky pool outlives the container too: a restart must not forget the
@@ -7379,6 +7409,20 @@ def desk_is_silenced() -> bool:
     can silence the desk from the Render dashboard in seconds."""
     return os.environ.get("DESK_AUTO", "1").strip().lower() in \
         ("0", "off", "no", "false")
+
+
+def alerts_are_off() -> bool:
+    """The master switch: True means say NOTHING unprompted.
+
+    Every watch in `desk_tick` runs ABOVE `desk_is_silenced()` on purpose (a
+    level breaking is a fact, not a trade decision), so switching auto-trading
+    off did not stop the chatter -- the owner had six switches to hunt through
+    and still got the plan push from a separate loop. This is the one answer:
+    the watches return nothing, the plan loop stands down, and the trade
+    announcements are held. Typed commands and buttons still answer, because
+    those are replies to the owner, not the bot talking to itself.
+    """
+    return not ALERTS_ON
 
 
 def _load_daily() -> dict:
@@ -8244,6 +8288,12 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     # then silence forever.
     allow |= load_allow()
     grade()
+    # The master switch, first and alone: EVERY message below is unprompted, so
+    # one flag stops them all. It also stops a trade being OPENED, because a
+    # silent entry is worse than no entry -- the owner would hold a position he
+    # was never told about.
+    if alerts_are_off():
+        return
     # The day's record goes out on the market's close, before the silence
     # switch: it is a fact about the day, not a trade decision, so the owner
     # still gets it when auto-trading is off.
@@ -8477,6 +8527,12 @@ def ayzr_plan_loop(tg: Telegram, stop: threading.Event | None = None) -> None:
     booted = False
     while not (stop and stop.is_set()):
         try:
+            # Re-read the switch each wake, not once at boot: the owner taps the
+            # panel and expects silence NOW, and this loop is the one nobody
+            # remembers -- it pushed a plan card every 1-2h from its own thread.
+            if alerts_are_off():
+                time.sleep(min(5.0, AYZR_PLAN_STEP_S))
+                continue
             import ayzr
             q = ayzr.quote()
             px = q.get("mid") or q.get("bid") or 0.0

@@ -4489,6 +4489,132 @@ class AyzrButtonTest(unittest.TestCase):
             bot.ayzr_plan_loop(tg, threading.Event())   # returns at once
         tg.send.assert_not_called()
 
+    def test_the_plan_push_stands_down_when_alerts_are_off(self):
+        """The plan push has its own thread and its own flag.
+
+        Before the master switch, silencing the desk left this loop pushing a
+        plan card every 1-2 hours -- the alert the owner could not find a switch
+        for. It must read the switch on EVERY wake, not once at boot, or a tap
+        on the panel would not take effect until the next restart.
+
+        The loop only leaves on its stop event, so the test drives that too --
+        an unset event here spins forever (this test hung the suite once).
+        """
+        import threading
+        tg = unittest.mock.Mock()
+        stop = threading.Event()
+        threading.Timer(0.2, stop.set).start()
+        with unittest.mock.patch.object(bot, "AYZR_PLAN_PUSH", True), \
+             unittest.mock.patch.object(bot, "ALERTS_ON", False), \
+             unittest.mock.patch.object(bot, "AYZR_PLAN_STEP_S", 0.01):
+            bot.ayzr_plan_loop(tg, stop)
+            tg.send.assert_not_called()
+            self.assertTrue(bot.alerts_are_off())
+
+
+class AlertsMasterSwitchTest(_DbCase):
+    """One switch must stop EVERY unprompted message.
+
+    Each watch in `desk_tick` runs above `desk_is_silenced()` by design (a level
+    breaking is a fact, so the owner kept hearing it with auto-trading off).
+    The cost was that "stop the notifications" had no single answer -- and the
+    plan push came from a thread outside `desk_tick` entirely.
+    """
+
+    def _tick(self, tg, seen):
+        with unittest.mock.patch.object(bot, "grade", return_value=0):
+            bot.desk_tick(tg, {bot.SEED_CHATS[0]}, seen)
+
+    def test_the_switch_is_on_by_default_and_stops_every_watch(self):
+        self.assertTrue("alerts" in bot.PANEL_KEYS)
+        with unittest.mock.patch.object(bot, "ALERTS_ON", True):
+            self.assertFalse(bot.alerts_are_off())
+
+    def test_alerts_off_sends_nothing_at_all(self):
+        """Not "fewer": nothing. Every watch is stubbed to a NOTE, which is the
+        worst case -- with the switch off the owner must still get silence."""
+        tg = unittest.mock.Mock()
+        notes = ("support_watch", "levels_watch", "gate_watch", "trend_watch",
+                 "entry_watch", "news_watch", "news_prep_watch",
+                 "news_result_watch", "watch_points_watch", "trade_watch")
+        patches = [unittest.mock.patch.object(bot, n, return_value="NOTE")
+                   for n in notes]
+        patches += [unittest.mock.patch.object(bot, "maybe_daily_report"),
+                    unittest.mock.patch.object(bot, "maybe_daily_analysis"),
+                    unittest.mock.patch.object(bot, "maybe_open_bell"),
+                    unittest.mock.patch.object(bot, "ALERTS_ON", False)]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                patches[5], patches[6], patches[7], patches[8], patches[9], \
+                patches[10], patches[11], patches[12], patches[13]:
+            self._tick(tg, {})
+            self.assertFalse(tg.send.called,
+                             "the master switch still let a message through")
+
+    def test_a_trade_is_not_opened_silently(self):
+        """A silent entry is worse than no entry: the owner would hold a
+        position he was never told about. The switch must stop the OPEN too."""
+        tg = unittest.mock.Mock()
+        before = len(bot.all_trades())
+        with unittest.mock.patch.object(bot, "ALERTS_ON", False), \
+             unittest.mock.patch.object(bot, "plan_check") as pc:
+            self._tick(tg, {})
+        pc.assert_not_called()
+        self.assertEqual(len(bot.all_trades()), before)
+
+    def test_the_switch_round_trips_through_the_panel(self):
+        saved = bot.ALERTS_ON
+        try:
+            bot.apply_settings({"alerts": False})
+            self.assertTrue(bot.alerts_are_off())
+            d = bot.toggle_gate("alerts")
+            self.assertTrue(d["alerts"])
+            self.assertFalse(bot.alerts_are_off())
+        finally:
+            bot.ALERTS_ON = saved
+            bot.save_settings(bot.panel_state())
+
+    def test_the_switch_does_not_touch_the_entry_filters(self):
+        """`open_all`/`close_all` mean the filters; they must never silently
+        turn the owner's alerts back on behind his back."""
+        self.assertNotIn("alerts", bot.GATE_KEYS)
+        self.assertNotIn("alerts", bot.gate_state())
+
+    def test_an_env_silence_survives_the_pinned_restore(self):
+        """A restart must not undo the owner's silence.
+
+        Render has no disk, so every boot restores `settings` from the pinned
+        backup -- which still says "alerts: on" from before he muted. Without the
+        guard, `DESK_ALERTS=0` in the dashboard was overridden on every single
+        restart: silence that lasts until the container blinks.
+        """
+        import json as _json
+        blob = _json.dumps({"trades": [],
+                            "settings": {"alerts": True, "nochase": True}})
+
+        class FakeTg:
+            def call(self, method, payload, timeout=25):
+                return {"result": {"pinned_message": {
+                    "document": {"file_name": bot.BACKUP_FILE,
+                                 "file_id": "f1"}}}}
+
+            def file_bytes(self, file_id):
+                return blob.encode()
+
+        saved = bot.ALERTS_ON
+        saved_path = bot.SETTINGS_PATH
+        # restore_journal WRITES the settings file, so it must never be the real
+        # data/settings.json -- that would turn the owner's own bot silent.
+        bot.SETTINGS_PATH = pathlib.Path(_STICKY_DIR) / "settings.json"
+        try:
+            with unittest.mock.patch.dict(os.environ, {"DESK_ALERTS": "0"}):
+                bot.restore_journal(FakeTg())
+            self.assertTrue(bot.alerts_are_off(),
+                            "the pinned restore turned the alerts back on")
+        finally:
+            bot.SETTINGS_PATH = saved_path
+            bot.ALERTS_ON = saved
+            bot.save_settings(bot.panel_state())
+
 
 class DeskTickRestartTest(_DbCase):
     """A restart must not replay the book as fresh closures.
