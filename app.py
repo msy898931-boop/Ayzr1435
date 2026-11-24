@@ -175,6 +175,11 @@ class Health(BaseHTTPRequestHandler):
                              # only way to prove from outside that a deploy
                              # actually took the owner's silence.
                              "alerts": "off" if desk.alerts_are_off() else "on",
+                             # Same reason: the confirmed-only mode is a
+                             # deploy-time promise ("open it"), and a 200 alone
+                             # cannot prove it landed.
+                             "confirm_only": ("on" if desk.CONFIRM_ONLY
+                                              else "off"),
                              "levels": len(desk.WATCH_LEVELS)})
         else:
             self._send(404, {"error": "not found"})

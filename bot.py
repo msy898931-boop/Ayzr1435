@@ -6942,17 +6942,20 @@ def restore_journal(tg: Telegram) -> int:
     # applied when no local file exists, so a fresh local choice always wins.
     settings = blob.get("settings")
     if isinstance(settings, dict) and not SETTINGS_PATH.exists():
-        # ...EXCEPT for the master alert switch when it is set explicitly in
-        # the environment. The panel is normally the source of truth, but this
-        # one switch is what the owner reaches for when he wants silence, and
-        # on Render he has no disk: the pinned blob would restore "alerts: on"
-        # over a DESK_ALERTS=0 he set in the dashboard, on every single restart.
-        # An explicit deploy-time value must survive the thing it is guarding.
+        # ...EXCEPT for the switches that are set explicitly in the
+        # environment. The panel is normally the source of truth, but these are
+        # what the owner reaches for when he wants silence or wants the desk to
+        # speak only on a confirmed close, and on Render he has no disk: the
+        # pinned blob would restore the OLD value over his deploy-time choice on
+        # every single restart. An explicit deploy-time value must survive the
+        # thing it is guarding.
         settings = dict(settings)
-        env_alerts = os.environ.get("DESK_ALERTS")
-        if env_alerts is not None:
-            settings["alerts"] = env_alerts.strip().lower() not in (
-                "0", "off", "no", "false")
+        for key, env in (("alerts", "DESK_ALERTS"),
+                         ("confirm_only", "DESK_CONFIRM_ONLY")):
+            env_raw = os.environ.get(env)
+            if env_raw is not None:
+                settings[key] = env_raw.strip().lower() not in (
+                    "0", "off", "no", "false")
         apply_settings(settings)
         save_settings(panel_state())
     # The sticky pool outlives the container too: a restart must not forget the

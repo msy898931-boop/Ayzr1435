@@ -4910,6 +4910,82 @@ class AlertsMasterSwitchTest(_DbCase):
             bot.ALERTS_ON = saved
             bot.save_settings(bot.panel_state())
 
+    def test_an_env_confirm_mode_survives_the_pinned_restore(self):
+        """The same trap, one switch over -- and this one was still open.
+
+        "Open it" is a DEPLOY-TIME promise, and Render has no disk: the pinned
+        blob still says `confirm_only: false` from before the feature existed,
+        so on every boot it would restore "off" over `DESK_CONFIRM_ONLY=1`. The
+        mode would be on for exactly one container lifetime and then quietly
+        revert -- the owner would hear approach chatter again and have no idea
+        why. Guarded exactly like the master switch.
+        """
+        import json as _json
+        blob = _json.dumps({"trades": [],
+                            "settings": {"alerts": True,
+                                         "confirm_only": False}})
+
+        class FakeTg:
+            def call(self, method, payload, timeout=25):
+                return {"result": {"pinned_message": {
+                    "document": {"file_name": bot.BACKUP_FILE,
+                                 "file_id": "f1"}}}}
+
+            def file_bytes(self, file_id):
+                return blob.encode()
+
+        saved = bot.CONFIRM_ONLY
+        saved_path = bot.SETTINGS_PATH
+        # A FRESH path per test: restore_journal only applies the blob when no
+        # local settings file exists, so a leftover file from a sibling test
+        # would silently skip the restore and make this assertion vacuous.
+        tmp = pathlib.Path(tempfile.mkdtemp()) / "settings.json"
+        bot.SETTINGS_PATH = tmp
+        try:
+            with unittest.mock.patch.dict(os.environ,
+                                          {"DESK_CONFIRM_ONLY": "1"}):
+                bot.restore_journal(FakeTg())
+            self.assertTrue(bot.CONFIRM_ONLY,
+                            "the pinned restore turned the confirmed-only "
+                            "mode back off")
+        finally:
+            bot.SETTINGS_PATH = saved_path
+            bot.CONFIRM_ONLY = saved
+            bot.save_settings(bot.panel_state())
+            shutil.rmtree(tmp.parent, ignore_errors=True)
+
+    def test_an_env_off_still_wins_over_a_pinned_on(self):
+        """The guard cuts both ways: `DESK_CONFIRM_ONLY=0` must also beat a
+        pinned `true`, or an explicit "off" in the dashboard could never stick."""
+        import json as _json
+        blob = _json.dumps({"trades": [],
+                            "settings": {"alerts": True,
+                                         "confirm_only": True}})
+
+        class FakeTg:
+            def call(self, method, payload, timeout=25):
+                return {"result": {"pinned_message": {
+                    "document": {"file_name": bot.BACKUP_FILE,
+                                 "file_id": "f1"}}}}
+
+            def file_bytes(self, file_id):
+                return blob.encode()
+
+        saved = bot.CONFIRM_ONLY
+        saved_path = bot.SETTINGS_PATH
+        tmp = pathlib.Path(tempfile.mkdtemp()) / "settings.json"
+        bot.SETTINGS_PATH = tmp
+        try:
+            with unittest.mock.patch.dict(os.environ,
+                                          {"DESK_CONFIRM_ONLY": "0"}):
+                bot.restore_journal(FakeTg())
+            self.assertFalse(bot.CONFIRM_ONLY)
+        finally:
+            bot.SETTINGS_PATH = saved_path
+            bot.CONFIRM_ONLY = saved
+            bot.save_settings(bot.panel_state())
+            shutil.rmtree(tmp.parent, ignore_errors=True)
+
 
 class DeskTickRestartTest(_DbCase):
     """A restart must not replay the book as fresh closures.
