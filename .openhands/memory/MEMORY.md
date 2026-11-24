@@ -1568,3 +1568,47 @@ Detail for all of these lives in `MARKETDESK.md`; the daily log is `2026-11-02.m
   list endpoint returns `{key, value}` with **no `id`**, so a loop that reads
   `envVar.id` finds nothing. Setting an env var does NOT redeploy — POST a
   deploy or the running bot keeps the old code (and the old env).
+
+## MarketDesk — plans now TRADE, and the plan push is dead (2026-11-25)
+
+- ⭐ **The owner's follow-up rewrote the feature's meaning:** "اول شي بدي ياك
+  تلغيلي اشعار الخطة والاستراتيجية يلي عم يجيني كل شوي... ونخلي البوت ياخد
+  هدول السيناريوهات بصفقات عندو". Two asks in one breath: KILL the recurring
+  push, and make the scenario OPEN a trade. He does not want a narrator, he
+  wants a trader.
+- ⭐ **The push he meant is `ayzr_plan_loop` -> `🏛️ AYZR — خطتي والاستراتيجية`**
+  from `ayzr.plan_section()`, sent every 30-120 min by its OWN thread. NOT the
+  armed-plans card. `AYZR_PLAN_PUSH` now defaults to **0**; the loop stays
+  registered in `start_desk()` behind the flag so `DESK_AYZR_PLAN_PUSH=1` can
+  bring it back. `/health` gained `plan_push: on|off` because a 200 proves
+  nothing about whether the switch took.
+- ⭐ **Detection and execution are two functions, on purpose.** `plans_watch`
+  returns `{"plan","bar","live","vol"}` (a dict, not a card); `_take_plan`
+  consumes it. That split is what lets a gate REFUSE without spending the
+  latch -- a plan that fired into a full book can still fire later.
+- ⭐ **The take sits BELOW `desk_is_silenced()`.** Every level watch sits above
+  it because they report FACTS. This opens a POSITION, so `DESK_AUTO=0` must
+  stop it -- the switch he reaches for to stop trading has to stop ALL trading.
+  Pinned by `test_a_silenced_desk_opens_no_plan_trade` (asserts `plans_watch`
+  is never even called).
+- ⭐ **It obeys one-position-at-a-time but NOT the trend/chase filters.**
+  Scenario 2 is a counter-trend reversal BY DESIGN; running it through
+  `plan_check`'s gates would silently disarm his own plan. `_sized()` still
+  prices it, so the dollars are the engine's own windows.
+- The trade is written with `add_trade(note="plan:<id>")`, so `grade()` settles
+  it and `trade_watch` narrates the close like any other position -- no side
+  channel. Refusal card: `_plan_blocked_card`, says "ما خدت الصفقة" so a seen
+  scenario is never silently dropped.
+- ⚠ **`bullet`-style trap:** `_write_plan` gained `note="desk"`, default kept,
+  so every existing caller is untouched.
+- ⚠ **`__pycache__` lies after a sed edit.** `python3 -c "import bot"` kept
+  reporting `AYZR_PLAN_PUSH=True` after the file said "0". Invalidate by
+  `rm -rf __pycache__` (or `-B` is NOT enough -- the stale .pyc still loads if
+  it is newer than nothing the import sees). Verify a default by reading a
+  module CONSTANT after a cache clear, never from a previous interpreter.
+- Gates after the change: **464 tests green**, ruff bot.py **43** / tests **4**
+  (both baselines, no new findings), mypy **3** (same three, moved). Live
+  `d1bc5e1`, `/health` `plans: 4, plan_push: off`.
+- ⚠ **`Render_api_key` 403s; `RENDER_API_KEY_NEW` is the one that works.**
+  Also POST `/deploys` returns **202 with an empty body** -- `json.load` on it
+  throws. Read the newest deploy from `GET /deploys?limit=1` instead.
