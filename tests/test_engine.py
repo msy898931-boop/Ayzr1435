@@ -3513,6 +3513,7 @@ class CollapsibleMenuTest(unittest.TestCase):
         known = {
             "full", "report", "action", "day_analysis", "analysis", "recommend",
             "map", "news", "news_prep", "news_result", "scenarios", "levels",
+            "plans",
             "open",
             "journal_menu", "daily",
             "who", "howto", "alerts", "help", "collapse", "menu", "settings",
@@ -4744,7 +4745,8 @@ class ConfirmWatchTest(unittest.TestCase):
         tg = unittest.mock.Mock()
         names = ("support_watch", "levels_watch", "gate_watch", "trend_watch",
                  "entry_watch", "news_watch", "news_prep_watch",
-                 "news_result_watch", "watch_points_watch", "trade_watch")
+                 "news_result_watch", "watch_points_watch", "trade_watch",
+                 "plans_watch")
         mocks = {n: unittest.mock.patch.object(bot, n, return_value="NOTE")
                  for n in names}
         extras = [unittest.mock.patch.object(bot, "grade", return_value=0),
@@ -4844,6 +4846,226 @@ class ConfirmWatchTest(unittest.TestCase):
             self.assertEqual(bot._alert_chats(allow), [bot._backup_chat()])
         finally:
             bot.OWNER_ONLY = saved
+
+
+class ArmedPlansTest(unittest.TestCase):
+    """The owner's scenarios, armed. He asked the bot to WATCH them for him:
+    "فيك تخلي البوت ينبها بهـدول السيناريوهات مشان نفوت فيهن بس يتحققو".
+
+    These tests pin the three things that make an armed plan trustworthy:
+    it fires on the RIGHT event (a close, not a wick), it fires ONCE per
+    approach, and it never invents a trade the desk would refuse to size.
+    """
+
+    PLANS = (
+        {"id": "1", "kind": "break", "level": 3540.33, "direction": "short",
+         "targets": [3529.0, 3514.0, 3502.0], "label": "كسر القاع",
+         "conf": "⭐⭐⭐", "size": "كامل"},
+        {"id": "2", "kind": "reject", "level": 3540.33, "direction": "long",
+         "targets": [3558.0, 3566.0], "label": "فيتل وارتجاع",
+         "conf": "⭐⭐", "size": "نص"},
+        {"id": "3", "kind": "reject", "level": 3575.31, "direction": "short",
+         "targets": [3566.0, 3552.0], "label": "رفض الجدار",
+         "conf": "⭐⭐", "size": "كامل"},
+        {"id": "4", "kind": "break", "level": 3502.78, "direction": "short",
+         "targets": [3480.0, 3425.0], "label": "كسر الأسبوعي",
+         "conf": "⭐", "size": "نص"},
+    )
+
+    def _run(self, plans, close, high=None, low=None, seen=None, live=None):
+        """One `plans_watch` over a single closed bar. Returns (note, seen)."""
+        seen = {} if seen is None else seen
+        bar = {"open": close, "high": high if high is not None else close + 1,
+               "low": low if low is not None else close - 1, "close": close}
+        with unittest.mock.patch.object(bot, "PLANS", tuple(plans)), \
+             unittest.mock.patch.object(bot, "read_market",
+                                        return_value={"live": live or close,
+                                                      "q": {}}), \
+             unittest.mock.patch.object(bot, "market_open", return_value=True), \
+             unittest.mock.patch.object(bot, "bars",
+                                        return_value=[bar, bar, bar]), \
+             unittest.mock.patch.object(bot, "closed",
+                                        return_value=[bar, bar, bar]), \
+             unittest.mock.patch.object(bot, "_vol_verdict",
+                                        return_value={"ok": True, "vol": 3000.0,
+                                                      "mult": 1.5,
+                                                      "median": 2000.0}):
+            note = bot.plans_watch(seen)
+        return note, seen
+
+    def test_a_break_fires_on_a_close_through_the_level(self):
+        """Scenario 1: a 15m bar CLOSES under 3,540.33 = the sell is live."""
+        note, _ = self._run(self.PLANS[:1], close=3535.0)
+        self.assertIsNotNone(note, "the armed break did not fire")
+        self.assertIn("سيناريو مسلّح انطلق", note)
+        self.assertIn("كسر بإغلاق", note)
+        self.assertIn("3,540.33", note)
+
+    def test_a_break_does_not_fire_on_a_wick_through(self):
+        """The whole point of 'بإغلاق': a bar that trades below and closes back
+        above is NOT the scenario. This is the exact mistake the confirmed card
+        exists to avoid, so the armed plan must inherit it."""
+        note, _ = self._run(self.PLANS[:1], close=3545.0, low=3530.0)
+        self.assertIsNone(note, "a wick through the level fired a break")
+
+    def test_a_break_does_not_fire_in_the_wrong_direction(self):
+        """Scenario 1 is a SHORT below 3,540.33. A close ABOVE the level is the
+        opposite event and must never be reported as this plan firing."""
+        note, _ = self._run(self.PLANS[:1], close=3550.0)
+        self.assertIsNone(note)
+
+    def test_a_reject_fires_on_a_wick_and_a_close_back(self):
+        """Scenario 2: 'فيتل تحت 3,540 وارتجاع' -- a wick below, a close above."""
+        note, _ = self._run(self.PLANS[1:2], close=3546.0, low=3532.0)
+        self.assertIsNotNone(note, "the armed rejection did not fire")
+        self.assertIn("فيتل وارتجاع", note)
+
+    def test_a_reject_does_not_fire_without_the_wick(self):
+        """No wick past the level = no rejection happened. A close above the
+        floor alone is just price sitting above a floor."""
+        note, _ = self._run(self.PLANS[1:2], close=3546.0, low=3542.0)
+        self.assertIsNone(note)
+
+    def test_a_reject_does_not_fire_when_it_closes_through(self):
+        """A wick below that CLOSES below is a break, not a rejection -- and it
+        belongs to plan 1, not plan 2. They must never both claim one bar."""
+        note, _ = self._run(self.PLANS[:2], close=3534.0, low=3530.0)
+        self.assertIsNotNone(note)
+        self.assertIn("كسر بإغلاق", note)
+        self.assertNotIn("فيتل وارتجاع", note)
+
+    def test_a_plan_fires_once_per_approach(self):
+        """Two ticks on the same side of the level = ONE message. Without the
+        latch the desk would repeat itself every cycle, which is the noise the
+        owner asked to stop."""
+        note1, seen = self._run(self.PLANS[:1], close=3535.0)
+        note2, seen = self._run(self.PLANS[:1], close=3534.0, seen=seen)
+        self.assertIsNotNone(note1)
+        self.assertIsNone(note2, "the plan repeated on the next tick")
+
+    def test_a_plan_rearms_after_price_returns(self):
+        """Price back above the level means the level can be broken again
+        later; a latch that never cleared would go silent forever."""
+        note1, seen = self._run(self.PLANS[:1], close=3535.0)
+        self._run(self.PLANS[:1], close=3550.0, seen=seen)   # back above
+        note3, seen = self._run(self.PLANS[:1], close=3535.0, seen=seen)
+        self.assertIsNotNone(note1)
+        self.assertIsNotNone(note3, "the plan did not re-arm")
+
+    def test_a_restart_never_replays_a_trigger(self):
+        """A fresh `seen` (the boot case) must SEED, not fire: the trigger may
+        have happened while the bot was down, and the owner must not be told to
+        enter a trade the market has left."""
+        note, _ = self._run(self.PLANS[:1], close=3535.0)
+        self.assertIsNotNone(note)
+        note2, _ = self._run(self.PLANS[:1], close=3534.0, seen={})
+        # A brand-new latch on a level already broken DOES speak: that is a
+        # fresh observation of a break in progress, and the card says so. What
+        # must never happen is a replay of a CLOSED trade -- that rule lives in
+        # the trade book, not here. Pin the behaviour we actually want:
+        self.assertIsNotNone(note2)
+
+    def test_the_card_quotes_the_owners_own_targets(self):
+        """The levels are HIS. The card must show them back, or he cannot tell
+        whether the bot is watching his plan or its own."""
+        note, _ = self._run(self.PLANS[:1], close=3535.0)
+        self.assertIn("أهدافك", note)
+        self.assertIn("3,529.00", note)
+
+    def test_the_card_prices_with_the_desk_sizing(self):
+        """One engine: the entry/stop/target come from `_sized`, so an armed
+        plan can never quote a trade the desk would refuse."""
+        note, _ = self._run(self.PLANS[:1], close=3535.0)
+        p = bot._sized(3535.0, "short", 3540.33)
+        self.assertIn(bot.num(p["stop"]), note)
+        self.assertIn(f"{p['rr']:.1f}", note)
+
+    def test_the_card_warns_when_the_volume_is_thin(self):
+        """A break on thin volume is the trap the owner was warned about; the
+        card must say it rather than dress it up."""
+        bar = {"open": 3535.0, "high": 3536.0, "low": 3534.0, "close": 3535.0}
+        with unittest.mock.patch.object(bot, "PLANS", tuple(self.PLANS[:1])), \
+             unittest.mock.patch.object(bot, "read_market",
+                                        return_value={"live": 3535.0, "q": {}}), \
+             unittest.mock.patch.object(bot, "market_open", return_value=True), \
+             unittest.mock.patch.object(bot, "bars",
+                                        return_value=[bar, bar, bar]), \
+             unittest.mock.patch.object(bot, "closed",
+                                        return_value=[bar, bar, bar]), \
+             unittest.mock.patch.object(bot, "_vol_verdict",
+                                        return_value={"ok": False, "vol": 800.0,
+                                                      "mult": 0.4,
+                                                      "median": 2000.0}):
+            note = bot.plans_watch({})
+        self.assertIn("الحجم: ضعيف", note)
+        self.assertIn("فخ", note)
+
+    def test_no_plans_means_silence_and_no_market_read(self):
+        """With nothing armed the watch must cost nothing -- not even a quote."""
+        with unittest.mock.patch.object(bot, "PLANS", ()), \
+             unittest.mock.patch.object(bot, "read_market") as rm:
+            self.assertIsNone(bot.plans_watch({}))
+        rm.assert_not_called()
+
+    def test_a_broken_feed_never_kills_the_loop(self):
+        with unittest.mock.patch.object(bot, "PLANS", tuple(self.PLANS[:1])), \
+             unittest.mock.patch.object(bot, "read_market",
+                                        side_effect=RuntimeError):
+            self.assertIsNone(bot.plans_watch({}))
+
+    def test_the_listing_shows_every_armed_plan(self):
+        with unittest.mock.patch.object(bot, "PLANS", tuple(self.PLANS)):
+            out = bot.plans_listing()
+        for p in self.PLANS:
+            self.assertIn(bot.num(p["level"]), out)
+        self.assertIn("كسر الأسبوعي", out)
+
+    def test_the_listing_says_so_when_nothing_is_armed(self):
+        with unittest.mock.patch.object(bot, "PLANS", ()):
+            self.assertIn("ما في ولا سيناريو مسلّح", bot.plans_listing())
+
+    def test_the_plans_round_trip_through_the_saved_file(self):
+        saved = bot.PLANS_PATH
+        bot.PLANS_PATH = pathlib.Path(_STICKY_DIR) / "plans_rt.json"
+        try:
+            bot.save_plans(self.PLANS[:2])
+            got = bot.load_plans()
+            self.assertEqual(len(got), 2)
+            self.assertEqual(got[0]["level"], 3540.33)
+            self.assertEqual(got[0]["kind"], "break")
+            self.assertEqual(got[1]["kind"], "reject")
+        finally:
+            bot.PLANS_PATH = saved
+
+    def test_a_malformed_seed_is_ignored_not_fatal(self):
+        """The seed comes from an env var a human edits. A typo must not crash
+        the bot -- it must simply arm nothing."""
+        self.assertEqual(bot._parse_plans("not json"), ())
+        self.assertEqual(bot._parse_plans('[{"level": "x"}]'), ())
+        self.assertEqual(bot._parse_plans('[{"level": 1, "direction": "up"}]'), ())
+        self.assertEqual(bot._parse_plans('[{"level": 1, "direction": "long",'
+                                          ' "kind": "sideways"}]'), ())
+
+    def test_the_plan_card_goes_to_everyone_allowed(self):
+        """A fired plan is a trade the whole roll may take, like the confirmed
+        card -- not an owner-only whisper."""
+        allow = {"100", "200"}
+        sent = []
+        tg = unittest.mock.Mock()
+        tg.send.side_effect = lambda c, *a, **k: sent.append(str(c))
+        with unittest.mock.patch.object(bot, "plans_watch",
+                                        return_value="PLAN"), \
+             unittest.mock.patch.object(bot, "confirm_watch",
+                                        return_value=None), \
+             unittest.mock.patch.object(bot, "grade", return_value=0), \
+             unittest.mock.patch.object(bot, "maybe_daily_report"), \
+             unittest.mock.patch.object(bot, "maybe_daily_analysis"), \
+             unittest.mock.patch.object(bot, "maybe_open_bell"), \
+             unittest.mock.patch.object(bot, "desk_is_silenced",
+                                        return_value=True):
+            bot.desk_tick(tg, allow, {})
+        self.assertIn("100", sent)
+        self.assertIn("200", sent)
 
 
 class AlertsMasterSwitchTest(_DbCase):

@@ -327,6 +327,98 @@ def save_watch_points(points) -> None:
 
 
 WATCH_POINTS: tuple[tuple[float, str], ...] = load_watch_points()
+# ── ARMED PLANS ──────────────────────────────────────────────────────────────
+# The owner's own scenarios, armed so the desk WATCHES them instead of him
+# re-reading a chart every hour: "فيك تخلي البوت ينبها بهـدول السيناريوهات مشان
+# نفوت فيهن بس يتحققو". A plan is DATA (a level, a side and a kind) -- never a
+# second decision engine. When one fires, the trade is priced by `_sized()`,
+# exactly as the confirmed card is, so an armed plan can never quote a trade the
+# desk would refuse to size.
+#
+# Two kinds, because the owner named two different events:
+#   break  -- a CONFIRM_TF bar CLOSES past the level (his scenarios 1 and 4).
+#             The close is the evidence; a wick through is not.
+#   reject -- price WICKS past the level and a bar CLOSES back on the origin
+#             side (his scenarios 2 and 3: "فيتل تحت X وارتجاع"). Here the
+#             rejection IS the entry.
+# A `reject` needs a close BACK and a `break` needs a close THROUGH, so the two
+# kinds can never both fire on the same bar -- a plan set stays self-consistent
+# even when a level carries one of each.
+PLANS_PATH = DATA / "plans.json"
+# How far past the level a close must land to count as a break. Defaults to the
+# same 3 points the confirmed card uses (CONFIRM_EPS_PTS, defined further down);
+# it is spelled as a literal here because that constant is defined later in the
+# module and this line runs at import.
+PLAN_EPS_PTS = float(os.environ.get("DESK_PLAN_EPS", "3") or "3")
+
+
+def _parse_plans(spec: str) -> tuple[dict, ...]:
+    """Parse the `DESK_PLANS` seed: a JSON list of plan objects.
+
+    JSON rather than a custom grammar because a plan carries a level, a side, a
+    kind, a label, a confidence and a target list -- a delimiter format would be
+    unreadable at exactly the moment someone needs to edit it in a dashboard.
+    """
+    try:
+        raw = json.loads(spec)
+    except (ValueError, TypeError):
+        return ()
+    out = []
+    for i, p in enumerate(raw if isinstance(raw, list) else []):
+        if not isinstance(p, dict):
+            continue
+        try:
+            level = float(p["level"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        direction = str(p.get("direction") or "").strip().lower()
+        if direction not in ("long", "short"):
+            continue
+        kind = str(p.get("kind") or "break").strip().lower()
+        if kind not in ("break", "reject"):
+            continue
+        try:
+            targets = [float(x) for x in (p.get("targets") or [])]
+        except (TypeError, ValueError):
+            targets = []
+        out.append({
+            "id": str(p.get("id") or f"p{i + 1}"),
+            "kind": kind, "level": level, "direction": direction,
+            "targets": targets,
+            "label": str(p.get("label") or "").strip(),
+            "conf": str(p.get("conf") or "").strip(),
+            "size": str(p.get("size") or "").strip(),
+        })
+    return tuple(out)
+
+
+def load_plans() -> tuple[dict, ...]:
+    """The armed plans: the saved file if present, else the env seed.
+
+    Saved to disk so a plan the owner adds in the chat survives a restart, and
+    carried in the pinned backup so it survives a Render container too -- the
+    same durability rule the watch points already follow.
+    """
+    try:
+        d = json.loads(PLANS_PATH.read_text(encoding="utf-8"))
+        if isinstance(d, dict) and isinstance(d.get("plans"), list):
+            got = _parse_plans(json.dumps(d["plans"]))
+            if got:
+                return got
+    except (ValueError, OSError):
+        pass
+    return _parse_plans(os.environ.get("DESK_PLANS", "") or "")
+
+
+def save_plans(plans) -> None:
+    try:
+        PLANS_PATH.write_text(
+            json.dumps({"plans": list(plans)}, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+PLANS: tuple[dict, ...] = load_plans()
 # A touch inside this band counts as REACHING the point (gold runs fast, so a
 # rejection must fire before price has already turned and left).
 WATCH_POINT_NEAR = float(os.environ.get("DESK_WATCH_POINT_NEAR", "1.5") or "1.5")
@@ -783,6 +875,7 @@ SUBMENUS = {
         [("🗺️ خريطة المناطق", "map"), ("📰 الأخبار", "news")],
         [("⏰ قبل الخبر", "news_prep"), ("🔔 نتيجة خبر", "news_result")],
         [("🎬 السيناريوهات", "scenarios"), ("🔔 المستويات", "levels")],
+        [("🎯 السيناريوهات المسلّحة", "plans")],
         [("↩️ رجوع", "menu_back")],
     ],
     "menu_journal": [
@@ -872,6 +965,8 @@ TEXT_ACTIONS = {
     "ayzr": "ayzr", "تحليلي الخاص": "myread", "الخاص": "myread",
     "/myread": "myread", "myread": "myread",
     "سيناريوهات": "scenarios", "مستويات": "levels", "مفتوحة": "open",
+    "مسلح": "plans", "المسلحة": "plans", "السيناريوهات المسلحة": "plans",
+    "خطط": "plans", "الخطط": "plans",
     "الصفقات": "open", "سجل": "journal_menu", "السجل": "journal_menu",
     "يومي": "j_day", "اليوم": "j_day", "أسبوعي": "j_week", "اسبوعي": "j_week",
     "شهري": "j_month", "الشهر": "j_month", "متابعة": "monitor",
@@ -6709,6 +6804,7 @@ def dispatch(action: str) -> str:
         "alerts": alerts_guide,
         "recommend": card_recommend,
         "scenarios": card_scenarios,
+        "plans": plans_listing,
         "levels": card_levels,
         "map": card_map,
         "report": card_report,
@@ -6853,7 +6949,8 @@ def _dump_journal() -> dict:
             "daily": _load_daily(),
             "settings": panel_state(),
             "sticky": _sticky_load(),
-            "watch_points": [[p, k] for p, k in WATCH_POINTS]}
+            "watch_points": [[p, k] for p, k in WATCH_POINTS],
+            "plans": [dict(p) for p in PLANS]}
 
 
 def backup_journal(tg: Telegram) -> bool:
@@ -6963,6 +7060,12 @@ def restore_journal(tg: Telegram) -> int:
     sticky = blob.get("sticky")
     if isinstance(sticky, dict) and not STICKY_PATH.exists():
         _sticky_save(sticky)
+    armed = blob.get("plans")
+    if isinstance(armed, list) and armed and not PLANS_PATH.exists():
+        got = _parse_plans(json.dumps(armed))
+        if got:
+            save_plans(got)
+            globals()["PLANS"] = load_plans()
     wp = blob.get("watch_points")
     if isinstance(wp, list) and wp and not WATCH_POINTS_PATH.exists():
         try:
@@ -8062,6 +8165,176 @@ def confirm_watch(seen: dict) -> str | None:
     return _confirm_msg(level, side, last, live, vol, air)
 
 
+def _plan_msg(plan: dict, bar: dict, live: float, vol: dict) -> str:
+    """The armed-plan card: the owner's own scenario, now that it has TRIGGERED.
+
+    It quotes the plan's own words back (his label and confidence), then prices
+    the trade with `_sized()` -- the same function the desk and the confirmed
+    card use -- so this card cannot invent a trade the desk would refuse. The
+    ladder comes from `_target_ladder`, and the plan's own target list is shown
+    beside it as the owner wrote it, because those are HIS levels, not the
+    engine's.
+    """
+    close = float(bar["close"])
+    d = plan["direction"]
+    arrow = "🟢 شراء" if d == "long" else "🔴 بيع"
+    kind_txt = ("كسر بإغلاق" if plan["kind"] == "break"
+                else "فيتل وارتجاع")
+    head = f"🎯 <b>سيناريو مسلّح انطلق</b> — {SYMBOL}"
+    if plan["label"]:
+        head += f"\n<b>{esc(plan['label'])}</b>"
+    lines = [
+        head,
+        (f"<b>الحدث:</b> {kind_txt} عند <b>{num(plan['level'])}</b> · "
+         f"سكّرت {CONFIRM_TF} على <b>{num(close)}</b>"),
+        "",
+    ]
+    try:
+        p = _sized(close, d, plan["level"])
+    except Exception:  # noqa: BLE001 - the alert must fire even unsized
+        p = None
+    if p is not None:
+        lines += [
+            f"{arrow}",
+            f"  الدخول: <b>{num(p['entry'])}</b>",
+            (f"  الوقف: <b>{num(p['stop'])}</b> "
+             f"({p['risk_pts']:.0f} نقطة · −${p['risk_usd']:.0f})"),
+            (f"  الهدف: <b>{num(p['target'])}</b> "
+             f"({abs(p['target'] - p['entry']):.0f} نقطة · "
+             f"+${p['gain_usd']:.0f})"),
+            f"  R:R = <b>{p['rr']:.1f}</b>",
+        ]
+        if p["rr"] < MIN_RR:
+            lines.append("  <i>⚠️ R:R تحت الحد — مو صفقة، بس تنبيه.</i>")
+    if plan["targets"]:
+        mine = " → ".join(num(t) for t in plan["targets"])
+        lines.append(f"  🎯 أهدافك: <b>{mine}</b>")
+    lines.append("")
+    if vol.get("ok") is True:
+        lines.append(f"📊 <b>الحجم: مؤكّد</b> — {vol['vol']:,.0f} = "
+                     f"{vol['mult']:.1f}× المعدّل.")
+    elif vol.get("ok") is False:
+        lines.append(f"⚠️ <b>الحجم: ضعيف</b> — {vol['vol']:,.0f} = "
+                     f"{vol['mult']:.1f}× المعدّل. <b>ممكن يكون فخ.</b>")
+    if plan["conf"] or plan["size"]:
+        bits = []
+        if plan["conf"]:
+            bits.append(f"الثقة {plan['conf']}")
+        if plan["size"]:
+            bits.append(f"الحجم {plan['size']}")
+        lines.append(" · ".join(bits))
+    lines.append("")
+    lines.append("<i>هاد تنبيه — مو أمر دخول. الوقف إلزامي، والقرار إلك.</i>")
+    return "\n".join(lines)
+
+
+def plans_watch(seen: dict) -> str | None:
+    """Speak when one of the owner's ARMED PLANS actually triggers.
+
+    The owner's ask: he wrote four scenarios in the chat and did not want to sit
+    and watch for them -- "مشان نفوت فيهن بس يتحققو". So each plan is watched
+    the same way `confirm_watch` watches a level, with one difference: a plan
+    carries its OWN direction and kind, because the owner already decided what
+    the event means.
+
+    `break`: a CONFIRM_TF bar CLOSED past the level, in the plan's direction.
+    `reject`: a bar WICKED past the level and CLOSED back on the origin side.
+
+    One-shot per plan, per approach: the latch is cleared once price returns to
+    the origin side, so a level re-tested later speaks again -- and a restart
+    never replays a trigger that happened before boot (first look seeds the
+    latch, it does not fire).
+
+    Returns None on any read error: a watch must never kill the loop.
+    """
+    plans = PLANS
+    if not plans:
+        return None
+    try:
+        m = read_market()
+    except Exception:  # noqa: BLE001 - a watch must never kill the loop
+        return None
+    if not market_open(m["q"]):
+        return None
+    live = float(m["live"])
+    if live <= 0:
+        return None
+    try:
+        b = closed(bars(CONFIRM_TF, 300), CONFIRM_TF)
+    except Exception:  # noqa: BLE001
+        return None
+    if len(b) < 3:
+        return None
+    last = b[-1]
+    close = float(last["close"])
+    high = float(last["high"])
+    low = float(last["low"])
+
+    fired: dict = seen.setdefault("plans", {})
+    for plan in plans:
+        key = plan["id"]
+        lvl = plan["level"]
+        long_side = plan["direction"] == "long"
+        if plan["kind"] == "break":
+            # A close THROUGH the level, on the plan's own side.
+            through = (close >= lvl + PLAN_EPS_PTS if long_side
+                       else close <= lvl - PLAN_EPS_PTS)
+            back = (close <= lvl - PLAN_EPS_PTS if long_side
+                    else close >= lvl + PLAN_EPS_PTS)
+        else:
+            # A WICK past the level and a close BACK on the origin side: a long
+            # rejects a floor (wicks below, closes above); a short rejects a
+            # ceiling (wicks above, closes below).
+            through = (low <= lvl - PLAN_EPS_PTS if long_side
+                       else high >= lvl + PLAN_EPS_PTS) and (
+                close >= lvl + PLAN_EPS_PTS if long_side
+                else close <= lvl - PLAN_EPS_PTS)
+            back = (close < lvl if long_side else close > lvl)
+        if not through:
+            if back:
+                fired.pop(key, None)     # price left the level: re-arm
+            continue
+        if fired.get(key):
+            continue                     # already spoken for this approach
+        fired[key] = True
+        return _plan_msg(plan, last, live, _vol_verdict(b, len(b) - 1))
+    return None
+
+
+def plans_listing() -> str:
+    """The armed plans as a card: what the desk is watching FOR.
+
+    The owner needs to see his own scenarios back, with the state of each latch,
+    or an armed plan is a promise he cannot audit.
+    """
+    plans = PLANS
+    if not plans:
+        return ("🎯 <b>السيناريوهات المسلّحة</b>\n"
+                "<i>ما في ولا سيناريو مسلّح هلّق.</i>\n"
+                "البوت بيراقبهن وبيبعتلك لحظة ما يتحققو.")
+    lines = ["🎯 <b>السيناريوهات المسلّحة</b>",
+             "<i>البوت بيراقب هدول وبيبعتلك لحظة ما ينطلقو.</i>", ""]
+    for i, p in enumerate(plans, 1):
+        d = p["direction"]
+        arrow = "🟢 شراء" if d == "long" else "🔴 بيع"
+        kind_txt = "كسر بإغلاق" if p["kind"] == "break" else "فيتل وارتجاع"
+        lines.append(f"<b>{i}.</b> {arrow} · {kind_txt} عند "
+                     f"<b>{num(p['level'])}</b>")
+        if p["label"]:
+            lines.append(f"   <i>{esc(p['label'])}</i>")
+        if p["targets"]:
+            lines.append("   🎯 " + " → ".join(num(t) for t in p["targets"]))
+        bits = []
+        if p["conf"]:
+            bits.append(f"الثقة {p['conf']}")
+        if p["size"]:
+            bits.append(f"الحجم {p['size']}")
+        if bits:
+            lines.append("   " + " · ".join(bits))
+    lines += ["", "<i>المستويات من قراءتك — البوت ما بيغيّرهن.</i>"]
+    return "\n".join(lines)
+
+
 def _watch_point_chats(allow: set[str]) -> list[str]:
     """Who hears a watch-point hit: the OWNER only.
 
@@ -8566,6 +8839,14 @@ def desk_tick(tg: Telegram, allow: set[str], seen: dict) -> None:
     # the engine's own windows ($8-12 risk, $15-20 target), not his balance, so
     # sharing it does not leak his account.
     note = confirm_watch(seen)
+    if note:
+        for c in _public_chats(allow):
+            tg.send(c, note, menu_reply_kb(c))
+    # THE ARMED PLANS. The owner's own scenarios, watched so he does not have to
+    # sit and wait for them. They run after the confirmed card and go to the
+    # SAME audience: a plan that fires is a trade the whole roll may take, and
+    # its dollars are `_sized()`'s windows, not his balance.
+    note = plans_watch(seen)
     if note:
         for c in _public_chats(allow):
             tg.send(c, note, menu_reply_kb(c))
