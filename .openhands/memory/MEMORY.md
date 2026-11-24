@@ -3,6 +3,25 @@
 Three projects live in this workspace. This file is the durable index; the full
 detail for each is in the archive beside it.
 
+## MarketDesk — his scenarios only, no rest, securing + ladder (2026-11-17)
+
+- ⭐ **PLANS_ONLY (default ON) ends `desk_tick` right after the plans fire.** The
+  engine still LOOKS (map, analysis card, `plan()`) — it just no longer opens
+  its own trade. `DESK_PLANS_ONLY=0` restores the old desk. Owner's words:
+  "خلي البوت مايتداول غير عسيناريوهاتي يلي حطيتها".
+- ⭐ **`REST_MINUTES` default 15 → 0** ("بلا راحة بعد الصفقة"). Mechanism kept.
+- ⭐ **A trade is now a LADDER, per-row:** `targets` (JSON), `rung_hit`,
+  `realized_usd`, `realized_r`, `init_stop`, added by an IDEMPOTENT `_migrate()`
+  because the pinned backup carries the old schema. Each rung banks 1/n; after
+  the FIRST the stop moves to the entry ("تأمين"), so the rest cannot lose.
+  `target` stays the first rung → old readers and old rows are untouched.
+  `init_stop` keeps R honest after the stop moves. **Several rungs can land on
+  one bar, so the running totals must be LOCAL** — re-reading the row between
+  rungs loses the one just banked. Rung prices are the owner's own targets,
+  taken as written; the engine's single target is only the fallback.
+- Verification: 477 tests, ruff 43/4, mypy 3 (baseline). Live `60b0189`,
+  `/health` → `plans_only: on`, `rest_min: 0`, `secure: on`.
+
 ## MarketDesk — the two-layer notification rule (2026-11-17)
 
 - ⭐ **Everything to the owner; guests get exactly SIX things:** trade entry,
